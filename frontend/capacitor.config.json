@@ -1,0 +1,8 @@
+{
+  "appId": "com.fmcglearning.engine",
+  "appName": "FMCG Learning Engine",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  }
+}
