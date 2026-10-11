@@ -13,7 +13,7 @@ import re
 # Each video is divided into 3-minute parts
 CHUNK_SECONDS = 180
 
-# Minimum supported media duration: 30 seconds
+# Minimum supported media duration: 10 seconds
 MIN_VIDEO_SECONDS = 10
 
 # Maximum supported video duration

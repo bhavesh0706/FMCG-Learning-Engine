@@ -59,3 +59,7 @@ export const listQuestionTemplates = (categoryId) =>
 export const createQuestionTemplate = (body) => change(api.post("/question-templates", body));
 export const updateQuestionTemplate = (id, body) => change(api.put(`/question-templates/${id}`, body));
 export const removeQuestionTemplate = (id) => change(api.delete(`/question-templates/${id}`));
+
+// Permanent deletion (only for deactivated items with no surveys / no products)
+export const deleteProductPermanently = (id) => change(api.delete(`/products/${id}/permanent`));
+export const deleteCategoryPermanently = (id) => change(api.delete(`/categories/${id}/permanent`));

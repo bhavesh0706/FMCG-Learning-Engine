@@ -7,6 +7,8 @@ import {
   createProduct,
   createQuestion,
   createQuestionTemplate,
+  deleteCategoryPermanently,
+  deleteProductPermanently,
   listQuestionTemplates,
   removeQuestionTemplate,
   getProductExecutives,
@@ -371,6 +373,52 @@ function TemplatesDialog({ onClose, notify }) {
   );
 }
 
+
+/* ================================================================
+   Permanent deletion: type the name to confirm (no accidental clicks)
+   ================================================================ */
+
+function DeleteForeverDialog({ kind, name, details, onClose, onConfirm }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const matches = typed.trim() === name.trim();
+  const go = async () => {
+    if (!matches) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm();
+    } catch (err) {
+      setError(catalogError(err, `The ${kind} couldn't be deleted.`));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Delete "${name}" permanently?`}
+      subtitle="This can't be undone."
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-danger" disabled={!matches || busy} onClick={go}>
+            {busy ? "Deleting…" : `Delete ${kind} permanently`}
+          </button>
+        </>
+      }
+    >
+      <ul className="delete-forever-list">{details.map((d, i) => <li key={i}>{d}</li>)}</ul>
+      <label className="field">
+        <span className="field-label">Type <strong>{name}</strong> to confirm</span>
+        <input className="input" value={typed} autoFocus autoComplete="off" spellCheck={false}
+          onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
+      </label>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </Modal>
+  );
+}
+
 /* ================================================================
    Page
    ================================================================ */
@@ -498,6 +546,22 @@ export default function CatalogPage() {
         />
       )}
       {dialog?.type === "templates" && <TemplatesDialog onClose={() => setDialog(null)} notify={notify} />}
+      {dialog?.type === "delete-category" && (
+        <DeleteForeverDialog
+          kind="category"
+          name={dialog.category.name}
+          details={["It has no products, so no products, surveys or feedback are affected.", "Question templates suggested for it are kept (for any category)."]}
+          onClose={() => setDialog(null)}
+          onConfirm={async () => {
+            const name = dialog.category.name;
+            await deleteCategoryPermanently(dialog.category.id);
+            setDialog(null);
+            setCategoryId("all");
+            await load();
+            notify("ok", `"${name}" was permanently deleted.`);
+          }}
+        />
+      )}
       {dialog?.type === "product" && (
         <ProductDialog
           categories={categories}
@@ -546,7 +610,12 @@ export default function CatalogPage() {
           <button type="button" className="btn btn-secondary" onClick={() => setProductId(null)}>Back to catalog</button>
         </header>
         <Notice notice={notice} onClose={() => setNotice(null)} />
-        <ProductPage key={product.id} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify} />
+        <ProductPage key={product.id} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify}
+          onDeleted={async (name) => {
+            setProductId(null);
+            await load();
+            notify("ok", `"${name}" was permanently deleted.`);
+          }} />
         {dialogs}
       </section>
     );
@@ -642,6 +711,21 @@ export default function CatalogPage() {
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => toggleCategory(category)}>
                   {category.is_active ? "Deactivate" : "Reactivate"}
                 </button>
+                {!category.is_active && (
+                  <button
+                    type="button"
+                    className="btn btn-danger btn-sm"
+                    disabled={products.some((p) => p.category_id === category.id)}
+                    title={
+                      products.some((p) => p.category_id === category.id)
+                        ? "Move its products to another category, or delete products created by mistake, first"
+                        : "Delete this category permanently"
+                    }
+                    onClick={() => setDialog({ type: "delete-category", category })}
+                  >
+                    Delete permanently
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -726,7 +810,7 @@ export default function CatalogPage() {
    Product page: Details · Survey questions · Recipe
    ================================================================ */
 
-function ProductPage({ product, categories, startTab, onChanged, notify }) {
+function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted }) {
   const [tab, setTab] = useState(startTab || "details");
   const onNotice = useCallback((n) => notify(n.tone, n.text), [notify]);
   const tabs = [
@@ -745,7 +829,7 @@ function ProductPage({ product, categories, startTab, onChanged, notify }) {
         ))}
       </div>
       <section className="panel product-panel">
-        {tab === "details" && <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} />}
+        {tab === "details" && <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} onDeleted={onDeleted} />}
         {tab === "access" && <SurveyAccess product={product} notify={notify} />}
         {tab === "questions" && <QuestionsTab product={product} onChanged={onChanged} onNotice={onNotice} />}
         {tab === "recipe" && <RecipeTab product={product} onNotice={onNotice} onSaved={onChanged} />}
@@ -893,7 +977,8 @@ function SurveyAccess({ product, notify }) {
   );
 }
 
-function DetailsTab({ product, categories, onChanged, notify }) {
+function DetailsTab({ product, categories, onChanged, notify, onDeleted }) {
+  const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
     category_id: product.category_id,
     name: product.name || "",
@@ -943,6 +1028,29 @@ function DetailsTab({ product, categories, onChanged, notify }) {
 
   return (
     <div className="catalog-fields details-form">
+      {!product.is_active && (
+        <p className={`catalog-hint ${(product.survey_count ?? 0) > 0 ? "is-warn" : ""}`}>
+          {(product.survey_count ?? 0) > 0
+            ? `This product is inactive. It has ${product.survey_count} ${product.survey_count === 1 ? "survey" : "surveys"}, so it can't be deleted: that would remove customers' feedback. It stays hidden from new surveys.`
+            : "This product is inactive and has no surveys. If it was created by mistake, you can delete it permanently."}
+        </p>
+      )}
+      {deleting && (
+        <DeleteForeverDialog
+          kind="product"
+          name={product.name}
+          details={[
+            `${product.question_count || 0} survey questions${product.has_recipe ? ", its recipe" : ""} and its executive assignments are deleted with it.`,
+            "It has no surveys, so no customer feedback is affected.",
+          ]}
+          onClose={() => setDeleting(false)}
+          onConfirm={async () => {
+            await deleteProductPermanently(product.id);
+            setDeleting(false);
+            onDeleted?.(product.name);
+          }}
+        />
+      )}
       <div className="catalog-row">
         <label className="field">
           <span className="field-label">Product name *</span>
@@ -966,9 +1074,16 @@ function DetailsTab({ product, categories, onChanged, notify }) {
         <textarea className="input" rows={3} value={form.description} onChange={set("description")} placeholder="Pack size, variant, target customers…" />
       </label>
       <div className="details-actions">
-        <button type="button" className="btn btn-secondary danger-outline" onClick={toggleActive}>
-          {product.is_active ? "Deactivate product" : "Reactivate product"}
-        </button>
+        <span className="details-actions-left">
+          <button type="button" className="btn btn-secondary danger-outline" onClick={toggleActive}>
+            {product.is_active ? "Deactivate product" : "Reactivate product"}
+          </button>
+          {!product.is_active && (product.survey_count ?? 0) === 0 && (
+            <button type="button" className="btn btn-danger" onClick={() => setDeleting(true)}>
+              Delete permanently
+            </button>
+          )}
+        </span>
         <button type="button" className="btn btn-primary" disabled={busy || form.name.trim().length < 2} onClick={save}>
           {busy ? "Saving…" : "Save changes"}
         </button>
