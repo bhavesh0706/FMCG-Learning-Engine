@@ -249,6 +249,7 @@ def _product_out(
         "has_recipe": bool(getattr(p, "recipe", None)),
         "recipe_steps": len((getattr(p, "recipe", None) or {}).get("steps") or []),
         "responses_collected": collected,
+        "survey_count": _all_surveys(db, p.id) if not p.is_active else None,  # only needed for inactive products
         # Drives the "Generate Consolidated Feedback" button.
         "can_consolidate": collected >= p.min_responses,
         "created_at": p.created_at,
@@ -345,6 +346,40 @@ def deactivate_category(category_id: int, db: Session = Depends(get_db)):
     category.is_active = 0
     db.commit()
     return {"id": category_id, "is_active": False, "message": "Category deactivated. Collected feedback is kept."}
+
+
+@router.delete("/categories/{category_id}/permanent")
+def delete_category_permanently(category_id: int, db: Session = Depends(get_db)):
+    """
+    Permanently delete a category created by mistake. It must be deactivated and have
+    no products left (move them, or permanently delete products created by mistake).
+    Question templates suggested for it are kept and become "any category".
+    """
+    from app.database.models import QuestionTemplate
+
+    category = _get_or_404(db, Category, category_id, "Category")
+    if category.is_active:
+        raise HTTPException(status_code=400, detail="Deactivate the category first, then delete it permanently.")
+    products = db.query(func.count(Product.id)).filter(Product.category_id == category.id).scalar() or 0
+    if products:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{category.name} still has {products} {'product' if products == 1 else 'products'} (including inactive ones). "
+                "Move them to another category, or delete products created by mistake, first."
+            ),
+        )
+    name = category.name
+    try:
+        db.query(QuestionTemplate).filter(QuestionTemplate.category_id == category.id).update(
+            {QuestionTemplate.category_id: None}, synchronize_session=False
+        )
+        db.delete(category)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"{name} is still referenced by other records, so it was not deleted.")
+    return {"id": category_id, "deleted": True, "message": f"{name} was permanently deleted."}
 
 
 # ============================================================
@@ -466,6 +501,49 @@ def deactivate_product(product_id: int, db: Session = Depends(get_db)):
     product.is_active = 0
     db.commit()
     return {"id": product_id, "is_active": False, "message": "Product deactivated. Collected feedback is kept."}
+
+
+def _all_surveys(db: Session, product_id: int) -> int:
+    """Every survey of a product, in any status (drafts and unanalyzed ones too)."""
+    return db.query(func.count(SurveyResponse.id)).filter(SurveyResponse.product_id == product_id).scalar() or 0
+
+
+@router.delete("/products/{product_id}/permanent")
+def delete_product_permanently(product_id: int, db: Session = Depends(get_db)):
+    """
+    Permanently delete a product created by mistake, with its questions, recipe,
+    executive assignments and any (empty) report, in one transaction.
+
+    Safety rules:
+      - it must be deactivated first (two deliberate steps);
+      - it must have NO surveys: collected answers, recordings and reports are never
+        destroyed. A product with surveys stays deactivated instead.
+    """
+    from app.database.models import ConsolidatedReport, ProductAssignment
+
+    product = _get_or_404(db, Product, product_id, "Product")
+    if product.is_active:
+        raise HTTPException(status_code=400, detail="Deactivate the product first, then delete it permanently.")
+    surveys = _all_surveys(db, product.id)
+    if surveys:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{product.name} has {surveys} {'survey' if surveys == 1 else 'surveys'}, so it can't be deleted: "
+                "that would remove customers' feedback. It stays deactivated (hidden from new surveys) instead."
+            ),
+        )
+    name = product.name
+    try:
+        questions = db.query(SurveyQuestion).filter(SurveyQuestion.product_id == product.id).delete(synchronize_session=False)
+        db.query(ProductAssignment).filter(ProductAssignment.product_id == product.id).delete(synchronize_session=False)
+        db.query(ConsolidatedReport).filter(ConsolidatedReport.product_id == product.id).delete(synchronize_session=False)
+        db.delete(product)  # the recipe is stored on the product row
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"{name} is still referenced by other records, so it was not deleted.")
+    return {"id": product_id, "deleted": True, "questions_deleted": questions, "message": f"{name} was permanently deleted."}
 
 
 # ============================================================
