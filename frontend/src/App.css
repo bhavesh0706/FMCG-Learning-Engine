@@ -9104,3 +9104,59 @@ input[type="radio"] {
 .cell-rating {
   white-space: nowrap;
 }
+
+/* Catalog: question templates */
+.tab-intro-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.template-list {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.template-list > li {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.template-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.template-name {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  flex: 1;
+}
+
+.template-name .muted {
+  font-size: 13px;
+}
+
+.link-btn.danger {
+  color: var(--neg, #c8414f);
+}
+
+.template-questions {
+  margin: 0;
+  padding: 10px 14px 12px 34px;
+  display: grid;
+  gap: 6px;
+  background: var(--bg);
+  font-size: 13.5px;
+}
+
+.template-questions .qtype {
+  margin-left: 6px;
+}

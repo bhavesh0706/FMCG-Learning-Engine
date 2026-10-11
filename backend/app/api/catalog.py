@@ -61,8 +61,21 @@ class ProductIn(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     launch_date: Optional[date] = None
     min_responses: int = Field(default=10, ge=1, le=1000)
+    # Optional starting survey questions (copied; the product owns them afterwards):
+    question_template_id: Optional[int] = None          # from a question template
+    copy_questions_from_product_id: Optional[int] = None  # from another product
 
     _clean_text = field_validator("name", "sku", "description", mode="before")(_clean)
+
+    @model_validator(mode="after")
+    def one_question_source(self):
+        if self.question_template_id and self.copy_questions_from_product_id:
+            raise ValueError("Choose either a question template or a product to copy questions from, not both.")
+        return self
+
+
+# Fields of ProductIn that are not Product columns.
+STARTING_QUESTION_FIELDS = {"question_template_id", "copy_questions_from_product_id"}
 
 
 class ProductUpdate(BaseModel):
@@ -361,14 +374,60 @@ def list_products(
     return {"products": [_product_out(db, p, c, counts=counts) for p, c in rows]}
 
 
+def question_dicts(questions) -> List[dict]:
+    """
+    Validate a list of questions (from a template, a product or a request) with the
+    same rules as adding a question one by one, and return them as plain dicts.
+    """
+    out = []
+    for i, q in enumerate(questions or [], start=1):
+        data = q if isinstance(q, dict) else {
+            "text": q.text, "question_type": q.question_type, "options": q.options,
+            "required": bool(q.required), "report_role": getattr(q, "report_role", None),
+        }
+        try:
+            checked = QuestionIn(**{k: data.get(k) for k in ("text", "question_type", "options", "required", "report_role") if data.get(k) is not None})
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=f"Question {i}: {e}")
+        out.append(checked.model_dump())
+    if len(out) > MAX_QUESTIONS:
+        raise HTTPException(status_code=422, detail=f"At most {MAX_QUESTIONS} questions are allowed; this has {len(out)}.")
+    return out
+
+
+def _starting_questions(db: Session, body: ProductIn) -> List[dict]:
+    if body.question_template_id:
+        from app.database.models import QuestionTemplate
+
+        template = db.get(QuestionTemplate, body.question_template_id)
+        if not template or not template.is_active:
+            raise HTTPException(status_code=404, detail="That question template no longer exists.")
+        return question_dicts(template.questions)
+    if body.copy_questions_from_product_id:
+        source = _get_or_404(db, Product, body.copy_questions_from_product_id, "Product to copy questions from")
+        return question_dicts(_active_questions(db, source.id))
+    return []
+
+
 @router.post("/products", status_code=201)
 def create_product(body: ProductIn, db: Session = Depends(get_db)):
     category = _get_or_404(db, Category, body.category_id, "Category")
     if not category.is_active:
         raise HTTPException(status_code=400, detail="This category is deactivated. Restore it first.")
-    product = Product(**body.model_dump())
+    starting = _starting_questions(db, body)  # validated before anything is written
+
+    # One transaction: the product and its starting questions are saved together, or not at all.
+    product = Product(**body.model_dump(exclude=STARTING_QUESTION_FIELDS))
     db.add(product)
-    _commit(db, f'"{body.name}" already exists in {category.name}, or the SKU is already used.')
+    conflict = f'"{body.name}" already exists in {category.name}, or the SKU is already used.'
+    try:
+        db.flush()  # assigns product.id; duplicates are detected here
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=conflict)
+    for position, q in enumerate(starting, start=1):
+        db.add(SurveyQuestion(product_id=product.id, position=position, **q))
+    _commit(db, conflict)
     db.refresh(product)
     return _product_out(db, product, category, with_questions=True)
 

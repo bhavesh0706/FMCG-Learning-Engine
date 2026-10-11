@@ -8,10 +8,119 @@ import { jsPDF } from "jspdf";
   and the PDF both use it, so the downloaded file always matches the page.
 */
 
+/* ================================================================
+   Narrative normalization (display only; saved reports are never changed)
+
+   The saved report narrative (backend: services/consolidation.py) has these shapes:
+     open_answers           {"<question_id>": {answered, summary, points:[{point, customers}],
+                             translations:[...], error?}}  (an OBJECT keyed by question id)
+     common_positives,
+     recurring_issues       [{point, customers}]
+     neutral_feedback,
+     suggestions,
+     recommended_actions    ["text"]
+     recipe_recommendations [{change, ingredient?, step?, reason?, customers}]
+     conclusion             "text"
+   Older reports or AI replies may differ (a list instead of the object, plain strings
+   instead of {point}, a JSON string, null). normalizeNarrative() accepts all of these
+   and keeps every piece of feedback, so the page never calls .map/.find on a non-array.
+   ================================================================ */
+
+function parseMaybeJson(v) {
+  if (typeof v !== "string") return v;
+  const t = v.trim();
+  if ((t.startsWith("[") && t.endsWith("]")) || (t.startsWith("{") && t.endsWith("}"))) {
+    try {
+      return JSON.parse(t);
+    } catch {
+      return v; // not JSON after all: keep the text
+    }
+  }
+  return v;
+}
+
+// Any value -> array: arrays as-is, objects -> their values, a non-empty string -> [string].
+export function asList(v) {
+  const x = parseMaybeJson(v);
+  if (Array.isArray(x)) return x;
+  if (x == null || x === "") return [];
+  if (typeof x === "object") return Object.values(x);
+  return [x];
+}
+
+const textOf = (x) =>
+  typeof x === "string" || typeof x === "number"
+    ? String(x).trim()
+    : x && typeof x === "object"
+    ? String(x.point ?? x.text ?? x.action ?? x.suggestion ?? x.theme ?? x.summary ?? "").trim()
+    : "";
+
+const countOf = (x) => {
+  const n = x && typeof x === "object" ? Number(x.customers ?? x.count) : NaN;
+  return Number.isFinite(n) ? n : null; // null = count unknown (e.g. the point was plain text)
+};
+
+// [{point, customers}] from objects or plain strings; empty points are the only thing skipped.
+export function asPoints(v) {
+  return asList(v)
+    .map((x) => ({ ...(x && typeof x === "object" ? x : {}), point: textOf(x), customers: countOf(x) }))
+    .filter((x) => x.point);
+}
+
+export const asStrings = (v) => asList(v).map(textOf).filter(Boolean);
+
+function asOpenAnswerEntry(x) {
+  const e = x && typeof x === "object" && !Array.isArray(x) ? x : { summary: textOf(x) };
+  return {
+    ...e,
+    summary: typeof e.summary === "string" ? e.summary : textOf(e.summary),
+    points: asPoints(e.points),
+    translations: asList(e.translations),
+  };
+}
+
+// open_answers -> {"<question_id>": entry}, whatever shape it was saved in.
+export function openAnswersById(v) {
+  const x = parseMaybeJson(v);
+  const out = {};
+  if (Array.isArray(x)) {
+    x.forEach((item, i) => {
+      const id = item && typeof item === "object" ? item.question_id ?? item.id : undefined;
+      out[id != null && id !== "" ? String(id) : `unmatched-${i}`] = asOpenAnswerEntry(item);
+    });
+  } else if (x && typeof x === "object") {
+    Object.entries(x).forEach(([k, item]) => {
+      out[String(k)] = asOpenAnswerEntry(item);
+    });
+  }
+  return out;
+}
+
+export function normalizeNarrative(raw) {
+  const nv = parseMaybeJson(raw);
+  if (!nv || typeof nv !== "object" || Array.isArray(nv)) return { open_answers: {} };
+  const conclusion = Array.isArray(nv.conclusion) ? asStrings(nv.conclusion).join(" ") : textOf(nv.conclusion);
+  return {
+    ...nv, // every other field is passed through unchanged
+    conclusion,
+    common_positives: asPoints(nv.common_positives),
+    recurring_issues: asPoints(nv.recurring_issues),
+    neutral_feedback: asStrings(nv.neutral_feedback),
+    suggestions: asStrings(nv.suggestions),
+    recommended_actions: asStrings(nv.recommended_actions),
+    themes: asList(nv.themes).filter((t) => t && typeof t === "object"),
+    recipe_recommendations: asList(nv.recipe_recommendations)
+      .map((r) => (r && typeof r === "object" ? r : { change: textOf(r) }))
+      .filter((r) => textOf(r.change ?? r)),
+    open_answers: openAnswersById(nv.open_answers),
+  };
+}
+
 const pctOf = (count, total) => Math.round((100 * count) / Math.max(1, total));
 
 export function clientHeadline(stats, n, narrative = {}) {
   const cs = stats.client_summary || {};
+  narrative = normalizeNarrative(narrative);
   const pref = cs.preference;
   const intent = cs.purchase_intent;
   if (pref) {
@@ -33,7 +142,7 @@ export function clientHeadline(stats, n, narrative = {}) {
 */
 export function buildClientSections(stats, narrative, n) {
   const cs = stats.client_summary || {};
-  const nv = narrative || {};
+  const nv = normalizeNarrative(narrative);
   const out = [];
   const { preference: pref, price, score, improvement: imp, purchase_intent: intent, ease } = cs;
 
@@ -56,7 +165,11 @@ export function buildClientSections(stats, narrative, n) {
   if ((nv.common_positives || []).length) {
     out.push({
       title: "Why customers like it",
-      points: nv.common_positives.map((p) => ({ text: p.point, meta: `${p.customers} of ${n} customers (${pctOf(p.customers, n)}%)`, tone: "positive" })),
+      points: nv.common_positives.map((p) => ({
+        text: p.point,
+        meta: p.customers != null ? `${p.customers} of ${n} customers (${pctOf(p.customers, n)}%)` : "",
+        tone: "positive",
+      })),
     });
   }
   if (price) {
@@ -99,15 +212,23 @@ export function buildClientSections(stats, narrative, n) {
   }
   if (imp) {
     const rows = imp.from_text
-      ? ((nv.open_answers || []).find((o) => o.question_id === imp.question_id)?.points || []).map((p) => ({
-          option: p.point, count: p.customers, pct: pctOf(p.customers, imp.answered),
+      ? (nv.open_answers[String(imp.question_id)]?.points || []).map((p) => ({
+          option: p.point,
+          count: p.customers, // null = not counted (older reports): shown as "—", not as 0
+          pct: p.customers != null ? pctOf(p.customers, imp.answered) : null,
         }))
       : imp.rows;
     out.push({
       title: "Areas of improvement",
       sub: imp.question,
       table: rows.length
-        ? { head: ["Improvement area", "Customers", "% rate"], rows: rows.map((r, i) => ({ highlight: i === 0 && r.count > 0, cells: [r.option, String(r.count), `${r.pct}%`] })) }
+        ? {
+            head: ["Improvement area", "Customers", "% rate"],
+            rows: rows.map((r, i) => ({
+              highlight: i === 0 && r.count > 0,
+              cells: [r.option, r.count != null ? String(r.count) : "—", r.pct != null ? `${r.pct}%` : "—"],
+            })),
+          }
         : null,
       text: rows.length ? null : "Grouped improvement points appear once the report wording has been generated.",
       note: rows[0]?.count ? `Top request: ${rows[0].option} (${rows[0].pct}% of customers).` : null,
@@ -123,7 +244,11 @@ export function buildClientSections(stats, narrative, n) {
   if ((nv.recurring_issues || []).length) {
     out.push({
       title: "Product weaknesses",
-      points: nv.recurring_issues.map((p) => ({ text: p.point, meta: `${p.customers} of ${n} customers`, tone: "concern" })),
+      points: nv.recurring_issues.map((p) => ({
+        text: p.point,
+        meta: p.customers != null ? `${p.customers} of ${n} customers` : "",
+        tone: "concern",
+      })),
     });
   }
   if (nv.conclusion || (nv.recommended_actions || []).length || (nv.suggestions || []).length) {
@@ -140,7 +265,7 @@ export function buildClientSections(stats, narrative, n) {
       recipe: nv.recipe_recommendations.map((r) => ({
         change: r.change,
         where: [r.step, r.ingredient].filter(Boolean).join(" · "),
-        meta: `${r.customers} of ${n} customers`,
+        meta: Number.isFinite(Number(r.customers)) && r.customers != null ? `${r.customers} of ${n} customers` : "",
         reason: r.reason || "",
       })),
       note: "Test changes in small batches with your food technologist before changing production.",
@@ -182,7 +307,7 @@ const clean = (s) =>
 
 export function downloadConsolidatedPdf({ report, product, fileName }) {
   const stats = report.stats || {};
-  const nv = report.narrative || {};
+  const nv = normalizeNarrative(report.narrative);
   const n = stats.response_count || report.response_count || 0;
 
   const doc = new jsPDF({ unit: "pt", format: "a4" });

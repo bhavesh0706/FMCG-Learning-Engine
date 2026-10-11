@@ -38,7 +38,7 @@ import {
 import { getTeam, updateTeamMember } from "./services/teamApi";
 import CatalogPage from "./components/CatalogPage";
 import LoginPage from "./components/LoginPage";
-import { buildClientSections, clientHeadline, downloadConsolidatedPdf } from "./services/consolidatedReportPdf";
+import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
 import axios from "axios";
 import { AddMemberDialog, AssignProductsDialog, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
 import { startAnalysis, waitForAnalysis, announceDataChanged, DATA_CHANGED } from "./services/analysisApi";
@@ -3593,7 +3593,8 @@ function ClientSummary({ stats, narrative, n, report, product }) {
 function ConsolidatedReportView({ report, product }) {
   const [breakdown, setBreakdown] = useState("gender");
   const st = report.stats || {};
-  const nv = report.narrative || {};
+  // Saved narratives come in a few shapes (see normalizeNarrative); display them all safely.
+  const nv = normalizeNarrative(report.narrative);
   const n = st.response_count || report.response_count || 0;
   const sd = st.sentiment_distribution || {};
   const ratingDist = st.rating_distribution || {};
@@ -3690,7 +3691,7 @@ function ConsolidatedReportView({ report, product }) {
                           {oa.points.map((pt, k) => (
                             <li key={k}>
                               <span>{pt.point}</span>
-                              <span className="count-badge">{pt.customers} of {oa.answered || qr.answered}</span>
+                              {pt.customers != null && <span className="count-badge">{pt.customers} of {oa.answered || qr.answered}</span>}
                             </li>
                           ))}
                         </ul>

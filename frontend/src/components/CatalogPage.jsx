@@ -6,6 +6,9 @@ import {
   createCategory,
   createProduct,
   createQuestion,
+  createQuestionTemplate,
+  listQuestionTemplates,
+  removeQuestionTemplate,
   getProductExecutives,
   getRecipe,
   listTeam,
@@ -111,7 +114,7 @@ function CategoryDialog({ category, onClose, onSaved }) {
   );
 }
 
-function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNeedCategory }) {
+function ProductDialog({ categories, products = [], defaultCategoryId, onClose, onCreated, onNeedCategory }) {
   const active = categories.filter((c) => c.is_active);
   const [form, setForm] = useState({
     category_id: defaultCategoryId || active[0]?.id || "",
@@ -123,6 +126,29 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const valid = form.name.trim().length >= 2 && form.category_id;
+
+  // Starting survey questions: "" (none) | "t:<template id>" | "p:<product id>"
+  const [templates, setTemplates] = useState([]);
+  const [startWith, setStartWith] = useState("");
+  const [picked, setPicked] = useState(false); // the admin chose something: stop auto-suggesting
+  useEffect(() => {
+    listQuestionTemplates()
+      .then((d) => setTemplates(listOf(d, "templates")))
+      .catch(() => setTemplates([]));
+  }, []);
+  useEffect(() => {
+    if (picked) return;
+    // Suggest the template made for this category, if there is one.
+    const forCategory = templates.find((t) => String(t.category_id) === String(form.category_id));
+    setStartWith(forCategory ? `t:${forCategory.id}` : "");
+  }, [form.category_id, templates, picked]);
+  const copyable = products.filter((p) => p.is_active && (p.question_count || 0) > 0);
+  const chosen = startWith.startsWith("t:")
+    ? templates.find((t) => `t:${t.id}` === startWith)
+    : startWith.startsWith("p:")
+    ? copyable.find((p) => `p:${p.id}` === startWith)
+    : null;
+  const chosenCount = chosen ? chosen.question_count || 0 : 0;
 
   if (!active.length) {
     return (
@@ -143,6 +169,8 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         description: form.description.trim() || null,
+        question_template_id: startWith.startsWith("t:") ? Number(startWith.slice(2)) : null,
+        copy_questions_from_product_id: startWith.startsWith("p:") ? Number(startWith.slice(2)) : null,
       });
       onCreated(p);
     } catch (err) {
@@ -183,7 +211,162 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={form.description} placeholder="Pack size, variant… (optional)" onChange={set("description")} />
       </label>
+      <label className="field">
+        <span className="field-label">Starting survey questions</span>
+        <select className="input" value={startWith} onChange={(e) => { setStartWith(e.target.value); setPicked(true); }}>
+          <option value="">None: I'll add the questions myself</option>
+          {templates.length > 0 && (
+            <optgroup label="Question templates">
+              {templates.map((t) => (
+                <option key={t.id} value={`t:${t.id}`}>
+                  {t.name} ({t.question_count} questions{t.category_name ? ` · ${t.category_name}` : ""})
+                </option>
+              ))}
+            </optgroup>
+          )}
+          {copyable.length > 0 && (
+            <optgroup label="Copy from a product">
+              {copyable.map((p) => (
+                <option key={p.id} value={`p:${p.id}`}>{p.name} ({p.question_count} questions)</option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+        <span className="field-hint">
+          {chosen
+            ? `${chosenCount} questions will be added. You can edit, reorder or remove them afterwards; the template itself won't change.`
+            : templates.length || copyable.length
+            ? "The product starts without questions; add 5–10 on its Survey questions tab."
+            : 'No templates yet. After adding questions to a product, use "Save as template" to reuse them.'}
+        </span>
+      </label>
       {error && <p className="form-error" role="alert">{error}</p>}
+    </Modal>
+  );
+}
+
+
+/* ================================================================
+   Question templates (stored in MySQL; offered when adding a product)
+   ================================================================ */
+
+function SaveTemplateDialog({ product, count, onClose, onSaved }) {
+  const [name, setName] = useState(`${product.name} questions`);
+  const [scope, setScope] = useState(product.category_id ? "category" : "any");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    if (name.trim().length < 2) return;
+    setBusy(true);
+    setError("");
+    try {
+      const t = await createQuestionTemplate({
+        name: name.trim(),
+        from_product_id: product.id,
+        category_id: scope === "category" ? product.category_id : null,
+        description: `Created from ${product.name}.`,
+      });
+      onSaved(t);
+    } catch (err) {
+      setError(catalogError(err, "The template couldn't be saved."));
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal
+      title="Save as question template"
+      subtitle={`The ${count} current questions of ${product.name} become a template you can choose when adding a product.`}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+          <button type="button" className="btn btn-primary" disabled={busy || name.trim().length < 2} onClick={save}>
+            {busy ? "Saving…" : "Save template"}
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        <span className="field-label">Template name *</span>
+        <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+      </label>
+      <label className="field">
+        <span className="field-label">Suggest it for</span>
+        <select className="input" value={scope} onChange={(e) => setScope(e.target.value)}>
+          {product.category_id && <option value="category">New products in {product.category_name || "this category"}</option>}
+          <option value="any">Any category (choose it manually)</option>
+        </select>
+      </label>
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </Modal>
+  );
+}
+
+function TemplatesDialog({ onClose, notify }) {
+  const [state, setState] = useState({ loading: true, error: "", items: [] });
+  const [open, setOpen] = useState(null);
+  const load = useCallback(() => {
+    listQuestionTemplates()
+      .then((d) => setState({ loading: false, error: "", items: listOf(d, "templates") }))
+      .catch((err) => setState({ loading: false, error: catalogError(err, "Templates couldn't be loaded."), items: [] }));
+  }, []);
+  useEffect(load, [load]);
+  const remove = async (t) => {
+    const ok = await confirmDialog({
+      title: `Remove "${t.name}"?`,
+      message: "It will no longer be offered when adding products. Products created from it keep their questions.",
+      confirmLabel: "Remove template",
+      cancelLabel: "Keep",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await removeQuestionTemplate(t.id);
+      notify("ok", `Template "${t.name}" removed.`);
+      load();
+    } catch (err) {
+      notify("error", catalogError(err, "The template couldn't be removed."));
+    }
+  };
+  return (
+    <Modal
+      title="Question templates"
+      subtitle='Starting questions offered when adding a product. Create one with "Save as template" on any product&apos;s Survey questions tab.'
+      onClose={onClose}
+      footer={<button type="button" className="btn btn-secondary" onClick={onClose}>Close</button>}
+    >
+      {state.loading ? (
+        <p className="muted">Loading…</p>
+      ) : state.error ? (
+        <p className="form-error" role="alert">{state.error}</p>
+      ) : !state.items.length ? (
+        <p className="muted">No templates yet. Open a product, go to Survey questions and choose "Save as template".</p>
+      ) : (
+        <ul className="template-list">
+          {state.items.map((t) => (
+            <li key={t.id}>
+              <div className="template-row">
+                <button type="button" className="template-name" aria-expanded={open === t.id} onClick={() => setOpen(open === t.id ? null : t.id)}>
+                  <strong>{t.name}</strong>
+                  <span className="muted">
+                    {t.question_count} questions · {t.category_name ? `for ${t.category_name}` : "any category"}
+                  </span>
+                </button>
+                <button type="button" className="link-btn danger" onClick={() => remove(t)}>Remove</button>
+              </div>
+              {open === t.id && (
+                <ol className="template-questions">
+                  {t.questions.map((q, i) => (
+                    <li key={i}>
+                      {q.text} <span className={`qtype qtype-${q.question_type}`}>{TYPES[q.question_type] || q.question_type}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </Modal>
   );
 }
@@ -314,16 +497,23 @@ export default function CatalogPage() {
           }}
         />
       )}
+      {dialog?.type === "templates" && <TemplatesDialog onClose={() => setDialog(null)} notify={notify} />}
       {dialog?.type === "product" && (
         <ProductDialog
           categories={categories}
+          products={products}
           defaultCategoryId={categoryId !== "all" ? categoryId : undefined}
           onClose={() => setDialog(null)}
           onNeedCategory={() => setDialog({ type: "category" })}
           onCreated={async (p) => {
             setDialog(null);
             await load();
-            notify("ok", `"${p.name}" created. Add 5–10 survey questions so executives can survey it.`);
+            notify(
+              "ok",
+              p.question_count
+                ? `"${p.name}" created with ${p.question_count} survey questions. Review them, then add its recipe.`
+                : `"${p.name}" created. Add 5–10 survey questions so executives can survey it.`
+            );
             openProduct(p.id, "questions");
           }}
         />
@@ -371,6 +561,9 @@ export default function CatalogPage() {
           <p className="home-sub">The products executives survey, their questions and recipes.</p>
         </div>
         <div className="catalog-head-actions">
+          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "templates" })}>
+            Question templates
+          </button>
           <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "category" })}>
             Add category
           </button>
@@ -799,6 +992,7 @@ const REPORT_ROLES = {
 };
 
 function QuestionsTab({ product, onChanged, onNotice }) {
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null); // { id|null, ...form }
@@ -936,16 +1130,38 @@ function QuestionsTab({ product, onChanged, onNotice }) {
           <strong>Survey questions</strong>
           <p className="muted">What executives ask each customer about {product.name}, in this order. Products need 5–10 questions.</p>
         </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={count >= 10 || Boolean(editing)}
-          title={count >= 10 ? "A product can have up to 10 questions" : undefined}
-          onClick={() => setEditing({ id: null, ...emptyQuestion })}
-        >
-          + Add question
-        </button>
+        <span className="tab-intro-actions">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={count === 0 || Boolean(editing)}
+            title={count === 0 ? "Add questions first" : "Reuse these questions when adding new products"}
+            onClick={() => setSavingTemplate(true)}
+          >
+            Save as template
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={count >= 10 || Boolean(editing)}
+            title={count >= 10 ? "A product can have up to 10 questions" : undefined}
+            onClick={() => setEditing({ id: null, ...emptyQuestion })}
+          >
+            + Add question
+          </button>
+        </span>
       </div>
+      {savingTemplate && (
+        <SaveTemplateDialog
+          product={product}
+          count={count}
+          onClose={() => setSavingTemplate(false)}
+          onSaved={(t) => {
+            setSavingTemplate(false);
+            onNotice({ tone: "ok", text: `Template "${t.name}" saved with ${t.question_count} questions. Choose it when adding a product.` });
+          }}
+        />
+      )}
       {editing && !editing.id && editor}
       <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>
         {count} of 5–10 questions. {count < 5 ? `Add ${5 - count} more before it can be surveyed.` : "Ready for surveys."}

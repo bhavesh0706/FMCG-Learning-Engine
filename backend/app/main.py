@@ -11,6 +11,7 @@ from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
 from app.api.analysis import router as analysis_router, reanalyze_router
 from app.api.recipes import router as recipes_router
+from app.api.question_templates import router as question_templates_router
 from app.api.access import install_access_control
 from app.services import analysis_worker
 from app.database.migrations import run_migrations
@@ -115,6 +116,11 @@ app.include_router(
 # Product recipes (used by consolidated reports)
 app.include_router(
     recipes_router
+)
+
+# Question templates: reusable starting questions for new products (stored in MySQL)
+app.include_router(
+    question_templates_router
 )
 
 

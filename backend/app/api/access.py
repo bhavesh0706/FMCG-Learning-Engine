@@ -50,6 +50,8 @@ ADMIN = [
     # Catalog changes (reading the catalog is needed to take surveys)
     (WRITE, r"^/(categories|products|questions)(/|$)"),
     ({"GET"}, r"^/products/\d+/recipe$"),
+    # Question templates (starting questions for new products): Catalog admins only
+    (None, r"^/question-templates(/|$)"),
     # The full list of recordings, and changing or deleting them
     ({"GET"}, r"^/feedback/?$"),
     ({"PUT", "PATCH", "DELETE"}, r"^/feedback(/|$)"),

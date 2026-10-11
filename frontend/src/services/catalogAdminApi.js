@@ -52,3 +52,10 @@ export const getProductExecutives = (productId) => data(api.get(`/admin/products
 export const saveProductExecutives = (productId, userIds) =>
   change(api.put(`/admin/products/${productId}/executives`, { user_ids: userIds }));
 export const listTeam = () => data(api.get("/admin/users"));
+
+// Question templates: reusable starting questions for new products (stored in MySQL)
+export const listQuestionTemplates = (categoryId) =>
+  data(api.get("/question-templates", { params: categoryId ? { category_id: categoryId } : {} }));
+export const createQuestionTemplate = (body) => change(api.post("/question-templates", body));
+export const updateQuestionTemplate = (id, body) => change(api.put(`/question-templates/${id}`, body));
+export const removeQuestionTemplate = (id) => change(api.delete(`/question-templates/${id}`));

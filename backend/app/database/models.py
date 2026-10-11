@@ -248,6 +248,27 @@ class SurveyAnswer(Base):
 
 
 # ============================================================
+# QUESTION TEMPLATES: reusable starting questions for new products.
+# Managed in the app (Catalog); a template with a category is suggested
+# for products of that category. Copying a template never links the
+# product to it: the product's questions are its own afterwards.
+# ============================================================
+
+class QuestionTemplate(Base):
+    __tablename__ = "question_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    category_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
+    # [{"text", "question_type", "options", "required", "report_role"}, ...] in order
+    questions = Column(JSON, nullable=False)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+# ============================================================
 # PRODUCT ASSIGNMENTS: which executives may survey which product.
 # A product with no rows here is open to every executive.
 # ============================================================
