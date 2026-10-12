@@ -1,0 +1,1215 @@
+{
+  "format": "fmcg-baseline/1",
+  "generated_at": "2026-10-12T06:40:37Z",
+  "source": "Exported from database 'fmcg_learning' with --export-baseline (reference and catalog data only).",
+  "rating_rules": [
+    {
+      "rule_key": "positive_strong",
+      "sentiment": "Positive",
+      "severity": "Strong",
+      "rating": 5.0,
+      "weight": 1.0,
+      "description": "Strongly positive customer feedback with clear satisfaction or enthusiasm.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_moderate",
+      "sentiment": "Positive",
+      "severity": "Moderate",
+      "rating": 4.5,
+      "weight": 1.0,
+      "description": "Clearly positive feedback with moderate satisfaction.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_mild",
+      "sentiment": "Positive",
+      "severity": "Mild",
+      "rating": 4.2,
+      "weight": 1.0,
+      "description": "Positive feedback with limited intensity.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_none",
+      "sentiment": "Positive",
+      "severity": "None",
+      "rating": 4.0,
+      "weight": 1.0,
+      "description": "Positive feedback without strong emotional intensity.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_concerns_strong",
+      "sentiment": "Positive with concerns",
+      "severity": "Strong",
+      "rating": 3.0,
+      "weight": 1.0,
+      "description": "Customer likes the product but identifies a significant concern.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_concerns_moderate",
+      "sentiment": "Positive with concerns",
+      "severity": "Moderate",
+      "rating": 3.4,
+      "weight": 1.0,
+      "description": "Customer is generally positive but reports a noticeable concern.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_concerns_mild",
+      "sentiment": "Positive with concerns",
+      "severity": "Mild",
+      "rating": 3.7,
+      "weight": 1.0,
+      "description": "Customer is positive with a relatively minor concern.",
+      "is_active": true
+    },
+    {
+      "rule_key": "positive_concerns_none",
+      "sentiment": "Positive with concerns",
+      "severity": "None",
+      "rating": 3.9,
+      "weight": 1.0,
+      "description": "Customer is mostly positive with only a very limited concern.",
+      "is_active": true
+    },
+    {
+      "rule_key": "neutral_strong",
+      "sentiment": "Neutral",
+      "severity": "Strong",
+      "rating": 2.8,
+      "weight": 1.0,
+      "description": "Feedback is strongly neutral or provides no clear positive or negative preference.",
+      "is_active": true
+    },
+    {
+      "rule_key": "neutral_moderate",
+      "sentiment": "Neutral",
+      "severity": "Moderate",
+      "rating": 3.0,
+      "weight": 1.0,
+      "description": "Balanced or neutral customer feedback.",
+      "is_active": true
+    },
+    {
+      "rule_key": "neutral_mild",
+      "sentiment": "Neutral",
+      "severity": "Mild",
+      "rating": 3.1,
+      "weight": 1.0,
+      "description": "Mostly neutral feedback with slight directional indication.",
+      "is_active": true
+    },
+    {
+      "rule_key": "neutral_none",
+      "sentiment": "Neutral",
+      "severity": "None",
+      "rating": 3.0,
+      "weight": 1.0,
+      "description": "No meaningful positive or negative sentiment detected.",
+      "is_active": true
+    },
+    {
+      "rule_key": "negative_strong",
+      "sentiment": "Negative",
+      "severity": "Strong",
+      "rating": 1.0,
+      "weight": 1.0,
+      "description": "Strongly negative feedback indicating serious dissatisfaction.",
+      "is_active": true
+    },
+    {
+      "rule_key": "negative_moderate",
+      "sentiment": "Negative",
+      "severity": "Moderate",
+      "rating": 2.0,
+      "weight": 1.0,
+      "description": "Clearly negative feedback with noticeable dissatisfaction.",
+      "is_active": true
+    },
+    {
+      "rule_key": "negative_mild",
+      "sentiment": "Negative",
+      "severity": "Mild",
+      "rating": 2.7,
+      "weight": 1.0,
+      "description": "Negative feedback with limited intensity.",
+      "is_active": true
+    },
+    {
+      "rule_key": "negative_none",
+      "sentiment": "Negative",
+      "severity": "None",
+      "rating": 2.9,
+      "weight": 1.0,
+      "description": "Slightly negative feedback without strong intensity.",
+      "is_active": true
+    }
+  ],
+  "feedback_aspects": [
+    {
+      "aspect_key": "taste",
+      "aspect_name": "Taste",
+      "category": "Product",
+      "parent_key": null,
+      "description": "Overall customer opinion about the taste of the product.",
+      "keywords": [
+        "taste",
+        "flavour",
+        "flavor",
+        "tasty",
+        "delicious",
+        "yummy"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "sweetness",
+      "aspect_name": "Sweetness",
+      "category": "Taste",
+      "parent_key": null,
+      "description": "Customer feedback about how sweet the product is.",
+      "keywords": [
+        "sweet",
+        "sweetness",
+        "too sweet",
+        "less sweet",
+        "sugary"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "saltiness",
+      "aspect_name": "Saltiness",
+      "category": "Taste",
+      "parent_key": null,
+      "description": "Customer feedback about the salt level.",
+      "keywords": [
+        "salty",
+        "salt",
+        "too salty",
+        "less salty"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "texture",
+      "aspect_name": "Texture",
+      "category": "Product",
+      "parent_key": null,
+      "description": "Customer feedback about mouthfeel, crunchiness, softness, thickness, or consistency.",
+      "keywords": [
+        "texture",
+        "crunchy",
+        "crispy",
+        "soft",
+        "hard",
+        "thick",
+        "thin",
+        "consistency"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "aroma",
+      "aspect_name": "Aroma",
+      "category": "Product",
+      "parent_key": null,
+      "description": "Customer feedback about smell or aroma.",
+      "keywords": [
+        "smell",
+        "aroma",
+        "fragrance",
+        "scent"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "freshness",
+      "aspect_name": "Freshness",
+      "category": "Quality",
+      "parent_key": null,
+      "description": "Customer feedback about freshness or stale condition.",
+      "keywords": [
+        "fresh",
+        "freshness",
+        "stale",
+        "staleness"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "quality",
+      "aspect_name": "Overall Quality",
+      "category": "Quality",
+      "parent_key": null,
+      "description": "General customer assessment of product quality.",
+      "keywords": [
+        "quality",
+        "good quality",
+        "poor quality",
+        "high quality"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "packaging",
+      "aspect_name": "Packaging",
+      "category": "Packaging",
+      "parent_key": null,
+      "description": "General feedback about the product packaging.",
+      "keywords": [
+        "packaging",
+        "packet",
+        "pack",
+        "wrapper",
+        "container"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "packaging_durability",
+      "aspect_name": "Packaging Durability",
+      "category": "Packaging",
+      "parent_key": null,
+      "description": "Feedback about whether packaging is strong, weak, or easily damaged.",
+      "keywords": [
+        "tear",
+        "tears easily",
+        "weak packet",
+        "strong packet",
+        "durable packaging"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "packaging_leakage",
+      "aspect_name": "Packaging Leakage",
+      "category": "Packaging",
+      "parent_key": null,
+      "description": "Feedback about leakage, spills, or broken seals.",
+      "keywords": [
+        "leak",
+        "leaking",
+        "leakage",
+        "spill",
+        "broken seal"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "price",
+      "aspect_name": "Price",
+      "category": "Commercial",
+      "parent_key": null,
+      "description": "Customer feedback about the product price.",
+      "keywords": [
+        "price",
+        "expensive",
+        "cheap",
+        "cost",
+        "priced"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "value_for_money",
+      "aspect_name": "Value for Money",
+      "category": "Commercial",
+      "parent_key": null,
+      "description": "Customer opinion about whether the product is worth its price.",
+      "keywords": [
+        "value for money",
+        "worth it",
+        "worth the price",
+        "good value",
+        "poor value"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "quantity",
+      "aspect_name": "Quantity",
+      "category": "Product",
+      "parent_key": null,
+      "description": "Customer feedback about product quantity or pack size.",
+      "keywords": [
+        "quantity",
+        "amount",
+        "pack size",
+        "size",
+        "less product",
+        "more product"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "availability",
+      "aspect_name": "Availability",
+      "category": "Distribution",
+      "parent_key": null,
+      "description": "Customer feedback about whether the product is available when needed.",
+      "keywords": [
+        "available",
+        "availability",
+        "out of stock",
+        "not available",
+        "stock"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "ingredients",
+      "aspect_name": "Ingredients",
+      "category": "Product",
+      "parent_key": null,
+      "description": "Customer feedback about ingredients or composition.",
+      "keywords": [
+        "ingredients",
+        "ingredient",
+        "contents",
+        "composition"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "ease_of_use",
+      "aspect_name": "Ease of Use",
+      "category": "Product Experience",
+      "parent_key": null,
+      "description": "How easy and convenient the product is to use.",
+      "keywords": [
+        "easy to use",
+        "ease of use",
+        "convenient",
+        "simple to use"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "performance_on_everyday_dirt",
+      "aspect_name": "Performance on Everyday Dirt",
+      "category": "Performance",
+      "parent_key": null,
+      "description": "How effectively the product handles normal everyday dirt and cleaning.",
+      "keywords": [
+        "everyday dirt",
+        "daily dirt",
+        "normal dirt",
+        "regular cleaning"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "cleaning_performance",
+      "aspect_name": "Cleaning Performance",
+      "category": "Performance",
+      "parent_key": null,
+      "description": "Overall effectiveness of the product in cleaning.",
+      "keywords": [
+        "cleaning performance",
+        "cleans well",
+        "cleaning results",
+        "cleaning power"
+      ],
+      "is_active": true
+    },
+    {
+      "aspect_key": "convenience",
+      "aspect_name": "Convenience",
+      "category": "Product Experience",
+      "parent_key": null,
+      "description": "How convenient the product is during normal use.",
+      "keywords": [
+        "convenience",
+        "convenient",
+        "less mess",
+        "faster",
+        "easier"
+      ],
+      "is_active": true
+    }
+  ],
+  "categories": [
+    {
+      "name": "Breakfast Cereals",
+      "description": "Ready to eat breakfast cereals for a convenient and nutritious start to the day.",
+      "products": [
+        {
+          "name": "Honey Nut Granola",
+          "sku": "FOOD-HONEY-NUT-GRANOLA",
+          "description": "Crunchy baked oats with honey and nuts, designed for breakfast or snacking.",
+          "launch_date": null,
+          "min_responses": 10,
+          "questions": [
+            {
+              "text": "How often do you consume Honey Nut Granola",
+              "question_type": "single_choice",
+              "options": [
+                "Daily",
+                "2–3 times a week",
+                "Once a week",
+                "Less often"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the overall taste of Honey Nut Granola?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": "score"
+            },
+            {
+              "text": "How would you rate the sweetness of Honey Nut Granola?",
+              "question_type": "single_choice",
+              "options": [
+                "Too sweet",
+                "Just right",
+                "Not sweet enough"
+              ],
+              "required": true,
+              "report_role": "preference"
+            },
+            {
+              "text": "How would you rate the crunchiness of Honey Nut Granola?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": "score"
+            },
+            {
+              "text": "How would you rate the honey and nut flavour?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": "score"
+            },
+            {
+              "text": "How do you rate the value for money?",
+              "question_type": "single_choice",
+              "options": [
+                "Too expensive",
+                "Fair",
+                "Good value"
+              ],
+              "required": true,
+              "report_role": "price"
+            },
+            {
+              "text": "Would you purchase Honey Nut Granola again?",
+              "question_type": "yes_no",
+              "options": null,
+              "required": true,
+              "report_role": "purchase_intent"
+            },
+            {
+              "text": "What would you change about this product?",
+              "question_type": "text",
+              "options": null,
+              "required": true,
+              "report_role": "improvement"
+            }
+          ],
+          "recipe": {
+            "notes": "Store in a cool, dry place away from direct sunlight and moisture. Keep the package tightly sealed after opening to preserve crispness. This formulation contains almonds and may contain other allergens depending on ingredient sourcing and manufacturing conditions. Validate the recipe, baking conditions, moisture specifications, food-safety controls and shelf life before commercial production.",
+            "steps": [
+              {
+                "title": "Prepare ingredients",
+                "details": "Inspect, weigh and prepare the oats, nuts, seeds and other ingredients. Check ingredient quality and allergen controls.",
+                "duration": "10 min",
+                "temperature": "20–25°C"
+              },
+              {
+                "title": "Prepare the binder",
+                "details": "Gently warm and mix the honey, brown sugar, sunflower oil and vanilla until evenly combined.",
+                "duration": "5-10 min",
+                "temperature": "40–50°C"
+              },
+              {
+                "title": "Mix the ingredients",
+                "details": "Combine oats, almonds, pumpkin seeds, coconut, cinnamon and salt. Add the binder and mix until evenly coated.",
+                "duration": "5-10 min",
+                "temperature": "Room temperature"
+              },
+              {
+                "title": "Bake the granola",
+                "details": "Spread the mixture on baking trays and bake until golden and crisp. Stir as needed to promote even browning. Validate the actual time for your equipment and batch depth.",
+                "duration": "20–30 min, indicative",
+                "temperature": "140–150°C"
+              },
+              {
+                "title": "Cool and check quality",
+                "details": "Cool under hygienic conditions. Check colour, flavour, crispness, moisture and batch consistency before packaging.",
+                "duration": "20–30 min, indicative",
+                "temperature": "Controlled cooling"
+              },
+              {
+                "title": "Pack and seal",
+                "details": "Pack the cooled granola in clean, moisture-resistant packaging. Seal properly and label ingredients and allergens accurately.",
+                "duration": "10–15 min, indicative",
+                "temperature": "Cool, dry environment"
+              }
+            ],
+            "batch_size": "10 kg batch = approximately 100 servings of 100 g",
+            "updated_at": "2026-10-11T06:18:54.288648",
+            "ingredients": [
+              {
+                "name": "Rolled oats",
+                "unit": "kg",
+                "notes": "Main cereal base",
+                "quantity": "6"
+              },
+              {
+                "name": "Honey",
+                "unit": "kg",
+                "notes": "Sweetness and binding",
+                "quantity": "1.2"
+              },
+              {
+                "name": "Almonds, chopped",
+                "unit": "kg",
+                "notes": "Nut flavour and crunch",
+                "quantity": "0.8"
+              },
+              {
+                "name": "Sunflower oil",
+                "unit": "kg",
+                "notes": "Texture and browning",
+                "quantity": "0.6"
+              },
+              {
+                "name": "Brown sugar",
+                "unit": "kg",
+                "notes": "Sweetness and crispness",
+                "quantity": "0.5"
+              },
+              {
+                "name": "Pumpkin seeds",
+                "unit": "kg",
+                "notes": "Texture and nutritional value",
+                "quantity": "0.4"
+              },
+              {
+                "name": "Desiccated coconut",
+                "unit": "kg",
+                "notes": "Flavour and texture",
+                "quantity": "0.3"
+              },
+              {
+                "name": "Vanilla extract",
+                "unit": "kg",
+                "notes": "Flavour enhancement",
+                "quantity": "0.1"
+              },
+              {
+                "name": "Cinnamon",
+                "unit": "kg",
+                "notes": "Warm spice flavour",
+                "quantity": "0.05"
+              },
+              {
+                "name": "Salt",
+                "unit": "kg",
+                "notes": "Flavour balance",
+                "quantity": "0.05"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Kellogg's Corn Flakes",
+          "sku": "FOOD-CORN-FLAKES",
+          "description": "Classic crunchy corn flakes for a convenient breakfast with milk",
+          "launch_date": null,
+          "min_responses": 10,
+          "questions": [
+            {
+              "text": "How often did you eat Kellogg's Corn Flakes during the period you used it?",
+              "question_type": "single_choice",
+              "options": [
+                "Daily",
+                "2–3 times a week",
+                "Once a week",
+                "Less often"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the corn flavour of Kellogg's Corn Flakes?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How is the sweetness of Kellogg's Corn Flakes?",
+              "question_type": "single_choice",
+              "options": [
+                "Too sweet",
+                "Just right",
+                "Not sweet enough"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the crunchiness of Kellogg's Corn Flakes?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How well do Kellogg's Corn Flakes stay crunchy after adding milk?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How easy is the Kellogg's Corn Flakes pack to open, pour and store?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How do you rate the value of Kellogg's Corn Flakes for its quantity?",
+              "question_type": "single_choice",
+              "options": [
+                "Too expensive",
+                "Fair",
+                "Good value"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "Would you buy Kellogg's Corn Flakes again?",
+              "question_type": "yes_no",
+              "options": null,
+              "required": true,
+              "report_role": null
+            }
+          ],
+          "recipe": {
+            "notes": "Store in a cool, dry place. Keep the package tightly sealed after opening. Protect from moisture and direct sunlight to maintain freshness and crunchiness.",
+            "steps": [
+              {
+                "title": "Prepare and cook the corn grits with sugar, malt flavouring, salt, and water.",
+                "details": "Mix thoroughly and cook until the corn mixture is evenly hydrated and softened.",
+                "duration": "30 min",
+                "temperature": "85 °C"
+              },
+              {
+                "title": "Roll the cooked corn mixture into thin flakes.",
+                "details": "Pass the conditioned corn through rollers to achieve a thin, uniform flake.",
+                "duration": "10 min",
+                "temperature": "Room temperature"
+              },
+              {
+                "title": "Dry the flakes to reduce moisture.",
+                "details": "Dry evenly until the flakes reach the desired moisture level and crispness.",
+                "duration": "20 min",
+                "temperature": "110 °C"
+              },
+              {
+                "title": "Toast the flakes until golden and crunchy.",
+                "details": "Toast evenly without over-browning.",
+                "duration": "8 min",
+                "temperature": "180 °C"
+              },
+              {
+                "title": "Cool, fortify, and pack the Corn Flakes.",
+                "details": "Cool completely, apply the vitamin and mineral premix, then pack in moisture-resistant packaging.",
+                "duration": "15 min",
+                "temperature": "Room temperature"
+              }
+            ],
+            "batch_size": "100 kg batch = approximately 1000 servings of 100 g",
+            "updated_at": "2026-10-07T16:03:25.719870",
+            "ingredients": [
+              {
+                "name": "Corn grits / maize",
+                "unit": "kg",
+                "notes": "Main cereal base",
+                "quantity": "82"
+              },
+              {
+                "name": "Sugar",
+                "unit": "kg",
+                "notes": "Sweetness",
+                "quantity": "8"
+              },
+              {
+                "name": "Malt flavouring",
+                "unit": "kg",
+                "notes": "Flavour",
+                "quantity": "2"
+              },
+              {
+                "name": "Salt",
+                "unit": "kg",
+                "notes": "Taste balance",
+                "quantity": "1"
+              },
+              {
+                "name": "Barley malt extract",
+                "unit": "kg",
+                "notes": "Flavour and browning",
+                "quantity": "2"
+              },
+              {
+                "name": "Vitamins & minerals premix",
+                "unit": "kg",
+                "notes": "Fortification",
+                "quantity": "0.5"
+              },
+              {
+                "name": "Vegetable oil",
+                "unit": "kg",
+                "notes": "Processing/coating",
+                "quantity": "4.5"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Food & Confectionery",
+      "description": "Jellies, sweets, chocolates and snack foods.",
+      "products": [
+        {
+          "name": "Aam (Mango) Jelly",
+          "sku": "FOOD-AAM-JELLY",
+          "description": "Mango-flavoured jelly.",
+          "launch_date": null,
+          "min_responses": 10,
+          "questions": [
+            {
+              "text": "How often did you eat Aam Jelly in the period you used it?",
+              "question_type": "single_choice",
+              "options": [
+                "Daily",
+                "2-3 times a week",
+                "Once a week",
+                "Less often"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the mango taste?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How is the sweetness?",
+              "question_type": "single_choice",
+              "options": [
+                "Too sweet",
+                "Just right",
+                "Not sweet enough"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the texture?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How easy was the pack to open and store?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "Is the price right for the quantity?",
+              "question_type": "single_choice",
+              "options": [
+                "Too expensive",
+                "Fair",
+                "Good value"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "Would you buy Aam Jelly again?",
+              "question_type": "yes_no",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "What would you change about it?",
+              "question_type": "text",
+              "options": null,
+              "required": true,
+              "report_role": null
+            }
+          ],
+          "recipe": {
+            "notes": "Store in a cool, dry place away from direct sunlight. Keep the container tightly closed after opening and use a clean, dry spoon. Monitor pH, soluble solids, texture, hygiene and packaging integrity. Determine shelf life through appropriate product testing and use only food additives permitted under applicable regulations.",
+            "steps": [
+              {
+                "title": "Prepare mango pulp",
+                "details": "Inspect the mango pulp for quality, remove any unwanted particles, and prepare it for mixing.",
+                "duration": "10 min",
+                "temperature": "25–30 °C"
+              },
+              {
+                "title": "Mix sugar and pectin",
+                "details": "Premix the sugar and pectin to help disperse the pectin evenly and reduce lump formation.",
+                "duration": "10 min",
+                "temperature": "40–50 °C"
+              },
+              {
+                "title": "Cook the mixture",
+                "details": "Combine the mango pulp, water, sugar mixture and glucose syrup. Heat while stirring until the mixture is uniform.",
+                "duration": "20 min",
+                "temperature": "85–90 °C"
+              },
+              {
+                "title": "Adjust acidity and consistency",
+                "details": "Add the citric acid according to the validated formulation. Check pH and soluble solids to achieve the required jelly consistency.",
+                "duration": "5 min",
+                "temperature": "80–85 °C"
+              },
+              {
+                "title": "Quality check",
+                "details": "Check colour, mango flavour, sweetness, consistency and texture. Add only approved flavouring, colouring or preservatives at validated levels.",
+                "duration": "10 min",
+                "temperature": "Product-specific"
+              },
+              {
+                "title": "Fill and seal",
+                "details": "Fill into clean, food-grade containers using a validated filling process. Seal securely, label the batch and check packaging integrity.",
+                "duration": "15 min",
+                "temperature": "Validated filling temperature"
+              }
+            ],
+            "batch_size": "100 kg batch = approximately 2000 servings of 50 g",
+            "updated_at": "2026-10-09T20:39:55.183153",
+            "ingredients": [
+              {
+                "name": "Mango pulp",
+                "unit": "kg",
+                "notes": "Main mango flavour",
+                "quantity": "35"
+              },
+              {
+                "name": "Sugar",
+                "unit": "kg",
+                "notes": "Sweetness",
+                "quantity": "45"
+              },
+              {
+                "name": "Water",
+                "unit": "kg",
+                "notes": "Mixing and consistency",
+                "quantity": "12"
+              },
+              {
+                "name": "Glucose syrup",
+                "unit": "kg",
+                "notes": "Texture and smoothness",
+                "quantity": "5"
+              },
+              {
+                "name": "Pectin",
+                "unit": "kg",
+                "notes": "Jelly setting",
+                "quantity": "1.2"
+              },
+              {
+                "name": "Citric acid",
+                "unit": "kg",
+                "notes": "Acidity and flavour balance",
+                "quantity": "0.8"
+              },
+              {
+                "name": "Permitted food flavour/colour",
+                "unit": "kg",
+                "notes": "Flavour and appearance",
+                "quantity": "0.5"
+              },
+              {
+                "name": "Preservative, if permitted",
+                "unit": "kg",
+                "notes": "Shelf-life support",
+                "quantity": "0.5"
+              }
+            ]
+          }
+        },
+        {
+          "name": "Dark Chocolate",
+          "sku": "FOOD-DARK-CHOCOLATE",
+          "description": "Rich dark chocolate with a naturally bitter cocoa taste.",
+          "launch_date": null,
+          "min_responses": 10,
+          "questions": [
+            {
+              "text": "How often did you eat Dark Chocolate during the period you used it?",
+              "question_type": "single_choice",
+              "options": [
+                "Daily",
+                "2-3 times a week",
+                "Once a week",
+                "Less often"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the overall taste?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the bitterness?",
+              "question_type": "single_choice",
+              "options": [
+                "Too bitter",
+                "Just right",
+                "Not bitter enough"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the sweetness?",
+              "question_type": "single_choice",
+              "options": [
+                "Too sweet",
+                "Just right",
+                "Not sweet enough"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "How would you rate the texture and smoothness?",
+              "question_type": "rating",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "Is the price right for the quantity?",
+              "question_type": "single_choice",
+              "options": [
+                "Too expensive",
+                "Fair",
+                "Good value"
+              ],
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "Would you buy Dark Chocolate again?",
+              "question_type": "yes_no",
+              "options": null,
+              "required": true,
+              "report_role": null
+            },
+            {
+              "text": "What would you change about it?",
+              "question_type": "text",
+              "options": null,
+              "required": true,
+              "report_role": null
+            }
+          ],
+          "recipe": {
+            "notes": "Store in a cool, dry place away from direct sunlight, strong odours and moisture. Maintain controlled storage temperatures to reduce blooming and preserve flavour and texture. Check cocoa content, particle size, tempering quality, weight and packaging integrity. This is a representative demo formulation, not a proprietary manufacturer's recipe; validate ingredients, processing conditions and food-safety requirements before commercial production.",
+            "steps": [
+              {
+                "title": "Prepare ingredients",
+                "details": "Weigh and inspect the cocoa mass, cocoa butter, sugar, cocoa powder and other ingredients.",
+                "duration": "10 min",
+                "temperature": "25–30 °C"
+              },
+              {
+                "title": "Melt cocoa butter",
+                "details": "Melt the cocoa butter gently in suitable food-processing equipment.",
+                "duration": "15 min",
+                "temperature": "45–50 °C"
+              },
+              {
+                "title": "Mix ingredients",
+                "details": "Add the cocoa mass, cocoa powder and sugar. Mix until the chocolate mass is uniform.",
+                "duration": "20 min",
+                "temperature": "45–50 °C"
+              },
+              {
+                "title": "Refine the chocolate",
+                "details": "Refine the mixture to reduce particle size and achieve a smoother mouthfeel.",
+                "duration": "30 min",
+                "temperature": "45–50 °C"
+              },
+              {
+                "title": "Conch and flavour",
+                "details": "Continue mixing and refining according to the required flavour and texture. Add lecithin and vanilla according to the validated process.",
+                "duration": ": 2–6 hours",
+                "temperature": "45–60 °C"
+              },
+              {
+                "title": "Temper the chocolate",
+                "details": "Use a validated dark-chocolate tempering curve to develop gloss, a clean snap and stable cocoa-butter crystals.",
+                "duration": "10 min",
+                "temperature": "Product-specific"
+              },
+              {
+                "title": "Mould and cool",
+                "details": "Pour the tempered chocolate into moulds, remove air bubbles and cool under controlled conditions.",
+                "duration": "20-30 min",
+                "temperature": "Controlled cooling"
+              },
+              {
+                "title": "Package",
+                "details": "Demould, inspect the bars and seal them in suitable moisture- and odour-resistant packaging.",
+                "duration": "15 min",
+                "temperature": "Cool, dry environment"
+              }
+            ],
+            "batch_size": "100 kg batch = approximately 2,000 servings of 50 g",
+            "updated_at": "2026-10-09T20:50:00.633819",
+            "ingredients": [
+              {
+                "name": "Cocoa mass (cocoa liquor)",
+                "unit": "kg",
+                "notes": "Main chocolate flavour",
+                "quantity": "40"
+              },
+              {
+                "name": "Cocoa butter",
+                "unit": "kg",
+                "notes": "Smoothness and melting texture",
+                "quantity": "22"
+              },
+              {
+                "name": "Sugar",
+                "unit": "kg",
+                "notes": "Sweetness",
+                "quantity": "30"
+              },
+              {
+                "name": "Cocoa powder",
+                "unit": "kg",
+                "notes": "Rich cocoa flavour",
+                "quantity": "7"
+              },
+              {
+                "name": "Soy lecithin",
+                "unit": "kg",
+                "notes": "Emulsification and flow",
+                "quantity": "0.5"
+              },
+              {
+                "name": "Vanilla flavour",
+                "unit": "kg",
+                "notes": "Flavour balance",
+                "quantity": "0.5"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "question_templates": [
+    {
+      "name": "Template Questions",
+      "category": null,
+      "description": "Created from Aam (Mango) Jelly.",
+      "questions": [
+        {
+          "text": "How often did you eat Aam Jelly in the period you used it?",
+          "question_type": "single_choice",
+          "options": [
+            "Daily",
+            "2-3 times a week",
+            "Once a week",
+            "Less often"
+          ],
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "How would you rate the mango taste?",
+          "question_type": "rating",
+          "options": null,
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "How is the sweetness?",
+          "question_type": "single_choice",
+          "options": [
+            "Too sweet",
+            "Just right",
+            "Not sweet enough"
+          ],
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "How would you rate the texture?",
+          "question_type": "rating",
+          "options": null,
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "How easy was the pack to open and store?",
+          "question_type": "rating",
+          "options": null,
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "Is the price right for the quantity?",
+          "question_type": "single_choice",
+          "options": [
+            "Too expensive",
+            "Fair",
+            "Good value"
+          ],
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "Would you buy Aam Jelly again?",
+          "question_type": "yes_no",
+          "options": null,
+          "required": true,
+          "report_role": null
+        },
+        {
+          "text": "What would you change about it?",
+          "question_type": "text",
+          "options": null,
+          "required": true,
+          "report_role": null
+        }
+      ]
+    }
+  ]
+}

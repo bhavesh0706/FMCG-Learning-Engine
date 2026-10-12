@@ -29,6 +29,7 @@ chroma_db/
 # Generated uploads and private data
 uploads/*
 !uploads/.gitkeep
+data_exports/
 
 # Model files
 *.gguf
