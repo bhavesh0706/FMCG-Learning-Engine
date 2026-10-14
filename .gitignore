@@ -43,3 +43,16 @@ data_exports/
 *.onnx
 ai_service/models/*
 !ai_service/models/README.txt
+# Recordings and data exports (never in Git)
+*.wav
+*.mp3
+*.mp4
+*.m4a
+*.webm
+*.ogg
+*.aac
+*.mov
+*.mkv
+data_exports/
+uploads/
+uploads_backup_*/
