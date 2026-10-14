@@ -1,0 +1,5 @@
+# Optional: translation models (IndicTrans2 / NLLB-200) used after Whisper.
+# Without these, Whisper's own translation is used, exactly as before.
+# CPU-only PyTorch:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+transformers
+sentencepiece

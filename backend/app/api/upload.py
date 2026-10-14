@@ -4,7 +4,8 @@ import traceback
 import pandas as pd
 from fastapi import APIRouter, UploadFile, File, HTTPException
 
-from app.services.ollama_service import analyze_feedback
+# Qwen runs in the AI Model Service; this calls it over HTTP.
+from app.services import ai_client
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
@@ -75,7 +76,10 @@ async def upload_file(file: UploadFile = File(...)):
             .tolist()
         )
 
-        ai_analysis = analyze_feedback(feedback_list)
+        try:
+            ai_analysis = await ai_client.analyze_feedback(feedback_list)
+        except ai_client.AIServiceError as ai_error:
+            raise HTTPException(ai_error.status_code, ai_error.detail)
 
         return {
             "success": True,

@@ -11,6 +11,7 @@ Runs separately from the API, so analyses never slow down the web or the app.
 
 import argparse
 
+from app import config  # noqa: F401  (loads backend/.env first, also when started by hand)
 from app.database.migrations import run_migrations
 from app.services.analysis_worker import worker_main
 

@@ -19,7 +19,7 @@ export function catalogError(err, fallback = "Something went wrong. Try again.")
   const d = err?.response?.data?.detail;
   if (typeof d === "string") return d;
   if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg).replace("Value error, ", "");
-  if (err?.code === "ERR_NETWORK") return "Can't reach the backend on port 8000.";
+  if (err?.code === "ERR_NETWORK") return `Can't reach the backend at ${API_BASE_URL}.`;
   return fallback;
 }
 

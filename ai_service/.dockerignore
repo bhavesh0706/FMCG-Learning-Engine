@@ -1,0 +1,7 @@
+venv
+.venv
+**/__pycache__
+*.pyc
+work
+noise_test
+models/deep-filter.exe

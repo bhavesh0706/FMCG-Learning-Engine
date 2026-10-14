@@ -2068,7 +2068,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
     } catch (err) {
       if (silent) return; // background refresh: keep what is on screen
       console.error(err);
-      setData((d) => ({ ...d, loading: false, error: "Survey history couldn't be loaded. Check that the backend is running on port 8000." }));
+      setData((d) => ({ ...d, loading: false, error: `Survey history couldn't be loaded. Check that the backend is running at ${API_BASE_URL}.` }));
     }
   }, []);
 
@@ -2306,7 +2306,7 @@ function TeamPage() {
         error:
           err?.response?.status === 404
             ? "The backend doesn't have team management yet. Add the admin router to app/main.py."
-            : "The team couldn't be loaded. Check that the backend is running on port 8000.",
+            : `The team couldn't be loaded. Check that the backend is running at ${API_BASE_URL}.`,
       }));
     }
   }, []);
@@ -3213,7 +3213,7 @@ function AllSurveysList({ onOpenFeedback }) {
     } catch (err) {
       if (silent) return; // background refresh: keep what is on screen
       console.error(err);
-      setData((d) => ({ ...d, loading: false, error: "The surveys couldn't be loaded. Check that the backend is running on port 8000." }));
+      setData((d) => ({ ...d, loading: false, error: `The surveys couldn't be loaded. Check that the backend is running at ${API_BASE_URL}.` }));
     }
   }, []);
 
@@ -4252,7 +4252,7 @@ function AppContent({ user }) {
       setHistoryError("");
     } catch (err) {
       console.error(err);
-      if (!silent) setHistoryError("Unable to load survey history. Make sure the backend is running on port 8000.");
+      if (!silent) setHistoryError(`Unable to load survey history. Make sure the backend is running at ${API_BASE_URL}.`);
     } finally {
       setHistoryLoading(false);
     }
@@ -4605,7 +4605,7 @@ function AppContent({ user }) {
         err?.surveySaveFailed
           ? `${err.message} Check the connection and try again; nothing was lost.`
           : noNetwork
-          ? "The connection dropped before the upload finished, or the backend isn't running on port 8000."
+          ? `The connection dropped before the upload finished, or the backend isn't running at ${API_BASE_URL}.`
           : serverReason ||
               "The video couldn't be processed on the server. Try again, or check the backend log for details."
       );

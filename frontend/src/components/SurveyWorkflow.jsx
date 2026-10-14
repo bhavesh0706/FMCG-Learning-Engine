@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { getCategories, getProducts, getProductQuestions } from "../services/feedbackApi";
 import { CATALOG_CHANGED, DATA_CHANGED } from "../services/appEvents";
 import { getSession } from "../services/auth";
+import { API_BASE_URL } from "../config";
 
 /*
   Field survey, steps 1-3: Product -> Respondent -> Questions.
@@ -441,7 +442,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                 <strong>{catalogError ? "The product list couldn't be loaded" : "No products have been set up yet"}</strong>
                 <p>
                   {catalogError
-                    ? `${catalogError} Check that the backend is running on port 8000.`
+                    ? `${catalogError} Check that the backend is running at ${API_BASE_URL}.`
                     : "The catalog is empty. An admin needs to add categories and products, or load the sample catalog with: python -m app.database.seed_catalog"}
                 </p>
                 <button type="button" className="btn btn-secondary" onClick={loadCatalog}>

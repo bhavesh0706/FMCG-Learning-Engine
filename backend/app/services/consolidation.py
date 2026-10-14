@@ -401,31 +401,16 @@ def fallback_narrative(product_name: str, stats: dict) -> dict:
 # So: translations are cached in the database and done ahead of time, the whole
 # report is ONE short request, and the model stays loaded between requests.
 
-# Optional faster model just for reports, e.g. in PowerShell before uvicorn:
-#   $env:FMCG_REPORT_MODEL = "qwen2.5:3b"     (run "ollama pull qwen2.5:3b" once)
-REPORT_MODEL = os.environ.get("FMCG_REPORT_MODEL", "").strip() or None
-
-# Keep the model in memory so the next request doesn't wait for it to load.
-KEEP_ALIVE = os.environ.get("FMCG_OLLAMA_KEEP_ALIVE", "30m")
+# The language model now runs behind the AI Model Service (its own port).
+# FMCG_REPORT_MODEL (optional faster model just for reports, e.g. "qwen2.5:3b")
+# and FMCG_OLLAMA_KEEP_ALIVE are now read by the AI service, which sends the
+# same request to Ollama as this function did before.
 
 
 def _ollama(prompt: str, num_predict: int, json_mode: bool = True, timeout: int = 300) -> str:
-    import requests
+    from app.services.ai_client import llm_generate
 
-    from app.services.ollama_service import MODEL, OLLAMA_URL
-
-    payload = {
-        "model": REPORT_MODEL or MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0.1, "num_predict": num_predict, "num_ctx": 4096},
-    }
-    if json_mode:
-        payload["format"] = "json"
-    r = requests.post(OLLAMA_URL, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json().get("response", "").strip()
+    return llm_generate(prompt, num_predict=num_predict, json_mode=json_mode, timeout=timeout).strip()
 
 
 def _parse_json(text: str):

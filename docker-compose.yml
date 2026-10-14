@@ -1,0 +1,87 @@
+# Three containers:
+#   frontend  -> http://localhost:3000
+#   backend   -> backend API on 8000 (./backend) + AI Model Service on 8001 (./ai_service),
+#                same container, two processes
+#   mysql     -> MySQL 8 (data kept in the "mysql_data" volume)
+#
+# Ollama (Qwen) keeps running on the host machine; the AI service reaches it at
+# host.docker.internal:11434. Start:  docker compose up -d --build
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-fmcg_learning}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # Optional: put a dump of your current database here to import it on first start.
+      - ./db-init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "3307:3306"          # 3307 on the host so it doesn't clash with a local MySQL
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend-ai.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # Backend -> MySQL
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-fmcg_learning}
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      # Backend -> AI Model Service (same container, its own port)
+      AI_SERVICE_URL: http://127.0.0.1:8001
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      # AI Model Service -> Ollama on the host
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+      # Sign-in tokens survive container rebuilds
+      FMCG_SECRET_KEY: ${FMCG_SECRET_KEY:?set FMCG_SECRET_KEY in .env}
+      APP_ENV: production
+      BACKEND_HOST: 0.0.0.0
+      BACKEND_PORT: "8000"
+      BACKEND_RELOAD: "false"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Same settings as before, all optional
+      FMCG_WHISPER_MODEL: ${FMCG_WHISPER_MODEL:-small}
+      FMCG_ANALYSIS_WORKERS: ${FMCG_ANALYSIS_WORKERS:-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"                # backend API (frontend talks to this)
+      - "127.0.0.1:8001:8001"      # AI service: only reachable from this computer (for testing)
+    volumes:
+      - recordings:/srv/uploads                 # uploaded recordings (video_path in MySQL)
+      - backend_work:/srv/backend/uploads       # analysis queue
+      - ai_models:/srv/ai_service/models        # speaker / noise models (+ Linux deep-filter)
+      - hf_cache:/root/.cache/huggingface       # Whisper + translation model downloads
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Backend address as the browser reaches it (fixed at build time)
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  mysql_data:
+  recordings:
+  backend_work:
+  ai_models:
+  hf_cache:

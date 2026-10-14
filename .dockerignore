@@ -1,0 +1,15 @@
+**/venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+backend/uploads
+backend/.env
+backend/.secret_key
+ai_service/work
+ai_service/noise_test
+frontend
+data
+data_exports
+flutter
+docs

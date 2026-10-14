@@ -1,11 +1,10 @@
 import axios from "axios";
-import { Capacitor } from "@capacitor/core";
+import { API_BASE_URL } from "../config";
 
 // All calls to the FastAPI backend live here, so App.jsx only deals with the UI.
-export const API_BASE_URL =
-  Capacitor.getPlatform() === "android"
-    ? "http://10.0.2.2:8000"
-    : "http://127.0.0.1:8000";
+// The backend address comes from VITE_API_BASE_URL (see src/config.js).
+// Re-exported so existing imports from this file keep working.
+export { API_BASE_URL };
 
 const api = axios.create({
   baseURL: API_BASE_URL,

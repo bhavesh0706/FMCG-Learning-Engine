@@ -1,3 +1,6 @@
+# Must be the first import: loads backend/.env before other modules read settings.
+from app import config
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +17,7 @@ from app.api.recipes import router as recipes_router
 from app.api.question_templates import router as question_templates_router
 from app.api.access import install_access_control
 from app.services import analysis_worker
+from app.services import ai_client
 from app.database.migrations import run_migrations
 
 
@@ -50,10 +54,8 @@ install_access_control(app)
 app.add_middleware(
     CORSMiddleware,
 
-    allow_origins=[
-        "http://localhost:5173",
-        "https://localhost",
-    ],
+    # The frontend's address(es), from CORS_ORIGINS in backend/.env.
+    allow_origins=config.CORS_ORIGINS,
 
     allow_credentials=True,
 
@@ -154,10 +156,20 @@ def root():
 @app.get("/health")
 def health():
 
+    # The AI Model Service runs on its own port; report whether it answers.
+    ai = ai_client.health()
+
     return {
         "status": "healthy",
 
         "service": "FastAPI",
 
-        "ollama": "connected"
+        "ollama": ai.get("ollama", "unknown"),
+
+        "ai_service": {
+            "status": ai.get("status"),
+            "whisper_model": ai.get("whisper_model"),
+            "llm_model": ai.get("llm_model"),
+            "busy": ai.get("busy"),
+        },
     }

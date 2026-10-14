@@ -6,10 +6,12 @@ venv/
 env/
 .pytest_cache/
 
-# Secrets
+# Secrets / environment files (any folder). Only templates are committed.
 .env
 .env.*
 !.env.example
+*.local
+.secret_key
 
 # Frontend
 node_modules/
@@ -29,6 +31,8 @@ chroma_db/
 # Generated uploads and private data
 uploads/*
 !uploads/.gitkeep
+backend/uploads/
+ai_service/work/
 data_exports/
 
 # Model files
@@ -36,3 +40,6 @@ data_exports/
 *.safetensors
 *.pt
 *.pth
+*.onnx
+ai_service/models/*
+!ai_service/models/README.txt

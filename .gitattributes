@@ -1,0 +1,3 @@
+# Keep Linux line endings for scripts that run inside containers
+*.sh text eol=lf
+Dockerfile text eol=lf

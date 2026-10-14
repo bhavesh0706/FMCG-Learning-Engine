@@ -22,23 +22,9 @@ from app.database.models import (
     SurveyResponse,
 )
 
-from app.services.ffmpeg_service import (
-    extract_audio,
-    split_audio,
-    get_video_duration,
-    CHUNK_SECONDS,
-    MIN_VIDEO_SECONDS,
-    MAX_VIDEO_SECONDS,
-)
-
-from app.services.whisper_service import (
-    transcribe
-)
-
-from app.services.ollama_service import (
-    analyze_feedback,
-    summarize_chunk,
-)
+# Whisper, FFmpeg and Qwen now run in the AI Model Service (its own port).
+# The backend sends the recording there over HTTP and gets the raw results back.
+from app.services import ai_client
 
 
 # ============================================================
@@ -72,45 +58,16 @@ VIDEO_DIR = (
     / "videos"
 )
 
-AUDIO_DIR = (
-    PROJECT_ROOT
-    / "uploads"
-    / "audio"
-)
-
 VIDEO_DIR.mkdir(
     parents=True,
     exist_ok=True
 )
 
-AUDIO_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+# Temporary audio is handled by the AI service (ai_service/work).
 
 
-# ============================================================
-# NO-SPEECH RESULTS
-# ============================================================
-# When Whisper finds no recognisable speech, Qwen must not be asked to
-# analyze an empty transcript: it would invent a review from nothing.
-
-NO_SPEECH_PART_SUMMARY = {
-    "summary": "No recognisable speech was found in this part.",
-    "sentiment": "Neutral",
-    "key_point": "",
-    "feedback": [],
-}
-
-NO_SPEECH_SUMMARY = {
-    "summary": (
-        "No recognisable speech was found in this recording, so it "
-        "could not be analyzed. The speaker may be using a language "
-        "the system does not support yet, or the audio may be too "
-        "noisy or quiet."
-    ),
-    "sentiment": "Neutral",
-}
+# The no-speech results (NO_SPEECH_PART_SUMMARY / NO_SPEECH_SUMMARY) moved to
+# ai_service/pipeline.py together with the rest of the AI steps.
 
 
 # ============================================================
@@ -825,260 +782,61 @@ async def upload_video(
         )
 
         # ----------------------------------------------------
-        # Get REAL video duration
+        # AI analysis in the AI Model Service
+        # (duration check, audio extraction, 3-minute parts,
+        #  Whisper + Qwen per part, overall summary)
         # ----------------------------------------------------
 
+        print("\n")
+        print(
+            "Sending recording to the AI service..."
+        )
+
         try:
-            duration = get_video_duration(
-                str(video_path)
+            ai = await ai_client.analyze_media(
+                video_path,
+                file.filename,
             )
-        except Exception as read_error:
-            # The file can't be opened: usually it's incomplete (didn't finish
-            # copying or recording) or not really a video. Remove it and tell
-            # the user what to do, instead of a generic server error.
-            details = str(read_error).lower()
-            video_path.unlink(missing_ok=True)
-            print(f"Unreadable upload: {read_error!r}"[:500])
-            if "moov atom not found" in details:
-                reason = (
-                    "This file is incomplete: it's cut off before the end, so it can't be "
-                    "played or analyzed. It probably didn't finish copying, downloading or "
-                    "recording. Get the file again from the phone or source and upload it again."
-                )
-            elif "invalid data" in details or "could not read" in details:
-                reason = (
-                    "This file is damaged or isn't a valid video or audio file, so it can't "
-                    "be analyzed. Try exporting it again, or convert it to MP4 and upload it again."
-                )
-            else:
-                reason = "This file couldn't be read. Try a different file, or convert it to MP4."
-            raise HTTPException(status_code=400, detail=reason)
+        except ai_client.AIServiceError as ai_error:
+            # The file can't be opened: remove it, as before. (Too short /
+            # too long recordings were kept before, so they still are.)
+            if ai_error.code == "unreadable":
+                video_path.unlink(missing_ok=True)
+            print(f"AI service error ({ai_error.status_code}): {ai_error.detail}"[:500])
+            raise HTTPException(status_code=ai_error.status_code, detail=ai_error.detail)
 
-        duration_seconds = (
-            duration["seconds"]
-        )
-
-        duration_formatted = (
-            duration["formatted"]
-        )
+        duration_seconds = ai["duration_seconds"]
+        duration_formatted = ai["duration_formatted"]
+        part_seconds = ai["part_duration_seconds"]
+        total_parts = ai["total_parts"]
+        transcript = ai["transcript"]
+        complete_transcript = ai["complete_transcript"]
+        speech_detected = ai["speech_detected"]
+        summary = ai["summary"]
 
         print(
             f"Video Length: "
             f"{duration_formatted}"
         )
 
-        # ----------------------------------------------------
-        # Validate duration
-        # ----------------------------------------------------
-
-        if duration_seconds < MIN_VIDEO_SECONDS:
-
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Video is shorter than "
-                    "the minimum supported "
-                    "duration of 30 seconds."
-                )
-            )
-
-        if duration_seconds > MAX_VIDEO_SECONDS:
-
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Video is longer than "
-                    "the maximum supported "
-                    "duration of 35 minutes."
-                )
-            )
-
-        # ----------------------------------------------------
-        # Extract audio
-        # ----------------------------------------------------
-
-        audio_path = (
-            AUDIO_DIR
-            / f"{video_path.stem}.wav"
-        )
-
-        print("\n")
         print(
-            "Extracting audio..."
+            f"AI analysis completed in "
+            f"{ai.get('ai_processing_seconds')}s "
+            f"({total_parts} parts)."
         )
 
-        extract_audio(
-            str(video_path),
-            str(audio_path)
-        )
-
-        print(
-            "Audio extraction completed."
-        )
-
-        # ----------------------------------------------------
-        # Split audio
-        # ----------------------------------------------------
-
-        print("\n")
-        print(
-            f"Splitting video into "
-            f"{CHUNK_SECONDS // 60}-minute parts..."
-        )
-
-        chunks = split_audio(
-            str(audio_path)
-        )
-
-        total_parts = len(chunks)
-
-        print(
-            f"Created {total_parts} parts."
-        )
-
-        # ----------------------------------------------------
-        # Processing containers
-        # ----------------------------------------------------
-
-        transcript = []
-
-        complete_text = []
+        # ====================================================
+        # MATCH ASPECTS & RATINGS FOR EACH PART (MySQL)
+        # ====================================================
 
         chapters = []
-
-        print("\n")
-        print("=" * 70)
-        print(
-            f"STARTING ANALYSIS "
-            f"({total_parts} PARTS)"
-        )
-        print("=" * 70)
-
-        # ====================================================
-        # PROCESS EACH PART
-        # ====================================================
 
         db_session: Session = SessionLocal()
 
         try:
-            for index, chunk in enumerate(chunks):
+            for part in ai["parts"]:
 
-                part_start_time = time.time()
-
-                part_number = index + 1
-
-                start_seconds = (
-                    index
-                    * CHUNK_SECONDS
-                )
-
-                end_seconds = min(
-                    start_seconds
-                    + CHUNK_SECONDS,
-                    duration_seconds
-                )
-
-                progress = int(
-                    (
-                        part_number
-                        / total_parts
-                    )
-                    * 100
-                )
-
-                print("\n")
-                print(
-                    f"[{part_number}/{total_parts}] "
-                    f"{progress}%"
-                )
-
-                print(
-                    f"Time range: "
-                    f"{format_seconds(start_seconds)}"
-                    f" - "
-                    f"{format_seconds(end_seconds)}"
-                )
-
-                print(
-                    f"Audio file: "
-                    f"{chunk.name}"
-                )
-
-                # ------------------------------------------------
-                # Whisper transcription
-                # ------------------------------------------------
-
-                print(
-                    "Transcribing..."
-                )
-
-                result = transcribe(
-                    chunk
-                )
-
-                chunk_text = []
-
-                for segment in result:
-
-                    text = segment[
-                        "text"
-                    ].strip()
-
-                    if not text:
-                        continue
-
-                    transcript.append(
-                        {
-                            "start": round(
-                                segment["start"]
-                                + start_seconds,
-                                2
-                            ),
-
-                            "end": round(
-                                segment["end"]
-                                + start_seconds,
-                                2
-                            ),
-
-                            "text": text,
-                        }
-                    )
-
-                    chunk_text.append(
-                        text
-                    )
-
-                    complete_text.append(
-                        text
-                    )
-
-                part_text = " ".join(
-                    chunk_text
-                )
-
-                # ------------------------------------------------
-                # Qwen part summary
-                # ------------------------------------------------
-
-                print(
-                    f"Analyzing Part "
-                    f"{part_number}..."
-                )
-
-                # No recognisable speech: don't ask Qwen, it would invent feedback.
-                if not part_text.strip():
-                    print(
-                        "No recognisable speech in this part, "
-                        "skipping AI analysis."
-                    )
-                    part_summary = dict(NO_SPEECH_PART_SUMMARY)
-                else:
-                    part_summary = (
-                        summarize_chunk(
-                            part_text
-                        )
-                    )
+                part_summary = part.get("part_summary") or {}
 
                 # ------------------------------------------------
                 # Process feedback & ratings for this part
@@ -1092,11 +850,11 @@ async def upload_video(
 
                 chapters.append(
                     {
-                        "part": part_number,
+                        "part": part["part"],
 
-                        "start": start_seconds,
+                        "start": part["start"],
 
-                        "end": end_seconds,
+                        "end": part["end"],
 
                         "summary": part_summary.get(
                             "summary",
@@ -1113,63 +871,13 @@ async def upload_video(
                             "No key takeaway generated."
                         ),
 
-                        "transcript": part_text,
+                        "transcript": part["transcript"],
 
                         "feedback": processed_feedback,
                     }
                 )
-
-                part_elapsed = round(
-                    time.time()
-                    - part_start_time,
-                    2
-                )
-
-                print(
-                    f"Part {part_number} "
-                    f"completed in "
-                    f"{part_elapsed}s"
-                )
         finally:
             db_session.close()
-
-        # ====================================================
-        # OVERALL SUMMARY
-        # ====================================================
-
-        print("\n")
-        print(
-            "=" * 70
-        )
-
-        print(
-            "GENERATING OVERALL AI SUMMARY..."
-        )
-
-        print(
-            "=" * 70
-        )
-
-        complete_transcript = (
-            "\n".join(
-                complete_text
-            )
-        )
-
-        speech_detected = bool(complete_transcript.strip())
-
-        # No recognisable speech anywhere: report that honestly instead of
-        # letting Qwen invent a review from an empty transcript.
-        if not speech_detected:
-            print(
-                "No recognisable speech in the recording, "
-                "skipping AI summary."
-            )
-            summary = dict(NO_SPEECH_SUMMARY)
-        else:
-            summary = analyze_feedback(
-                complete_transcript
-            )
 
         # --------------------------------------------------------
         # Aggregate repeated feedback aspects
@@ -1213,43 +921,6 @@ async def upload_video(
             - total_start,
             2
         )
-
-        # ====================================================
-        # CLEAN TEMPORARY AUDIO
-        # ====================================================
-
-        print("\n")
-        print(
-            "Cleaning temporary audio..."
-        )
-
-        try:
-
-            audio_path.unlink(
-                missing_ok=True
-            )
-
-            for chunk in chunks:
-
-                chunk.unlink(
-                    missing_ok=True
-                )
-
-            chunk_folder = (
-                audio_path.parent
-                / f"{audio_path.stem}_parts"
-            )
-
-            if chunk_folder.exists():
-
-                chunk_folder.rmdir()
-
-        except Exception as cleanup_error:
-
-            print(
-                f"Cleanup warning: "
-                f"{cleanup_error}"
-            )
 
         # ====================================================
         # SAVE TO DATABASE
@@ -1302,7 +973,7 @@ async def upload_video(
 
         print(
             f"Part Size       : "
-            f"{CHUNK_SECONDS // 60} minutes"
+            f"{part_seconds // 60} minutes"
         )
 
         print(
@@ -1348,10 +1019,10 @@ async def upload_video(
                 duration_seconds,
 
             "part_duration_seconds":
-                CHUNK_SECONDS,
+                part_seconds,
 
             "part_duration":
-                f"{CHUNK_SECONDS // 60} minutes",
+                f"{part_seconds // 60} minutes",
 
             "parts_analyzed":
                 total_parts,

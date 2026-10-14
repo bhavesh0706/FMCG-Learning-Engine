@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import { addTeamMember, getMemberProducts, resetMemberPassword, saveMemberProducts } from "../services/teamApi";
 import { listProducts } from "../services/catalogAdminApi";
+import { API_BASE_URL } from "../config";
 
 /*
   Team: the admin creates each executive's login, then shares it with them.
@@ -26,7 +27,7 @@ function errorText(err, fallback) {
     const label = { name: "Name", mobile: "Mobile number", password: "Password", age: "Age" }[field];
     return `${label ? `${label}: ` : ""}${String(d[0].msg).replace("Value error, ", "")}`;
   }
-  if (err?.code === "ERR_NETWORK") return "Can't reach the backend on port 8000.";
+  if (err?.code === "ERR_NETWORK") return `Can't reach the backend at ${API_BASE_URL}.`;
   return fallback;
 }
 
