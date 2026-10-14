@@ -1,28 +1,18 @@
-import os
-
 from sqlalchemy import create_engine
 from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+# Settings come from app/config.py: real environment variables first (docker-compose,
+# PowerShell $env:...), then backend/.env. There is no password in the code: set
+# MYSQL_PASSWORD in backend/.env (see backend/.env.example).
+from app.config import MYSQL_DATABASE, MYSQL_HOST, MYSQL_PASSWORD, MYSQL_PORT, MYSQL_USER
 
 
 # ============================================================
 # MYSQL DATABASE CONFIGURATION
 # ============================================================
 
-# Read from environment variables (set by docker-compose, or in PowerShell
-# before starting uvicorn). The defaults are the values used so far, so a
-# local run without any variables behaves exactly as before.
-#   MYSQL_HOST=mysql   (the MySQL container's name inside Docker)
-
-MYSQL_HOST = os.environ.get("MYSQL_HOST", "127.0.0.1")
-MYSQL_PORT = int(os.environ.get("MYSQL_PORT", "3306"))
-MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "fmcg_learning")
-MYSQL_USERNAME = os.environ.get("MYSQL_USER", "root")
-
-# Use the root password you created during MySQL installation.
-# Do NOT send this password to anyone. Better: set MYSQL_PASSWORD in the
-# environment / .env and remove the default below.
-MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "bhaveshmishra@3109")
+MYSQL_USERNAME = MYSQL_USER  # name kept for any code that imports it
 
 
 # ============================================================

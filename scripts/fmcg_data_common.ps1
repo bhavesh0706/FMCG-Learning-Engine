@@ -38,41 +38,60 @@ function Read-DotEnv([string]$Path) {
 }
 
 function Get-DbSettings {
-    # Same rules as backend\app\database\database.py: environment variables first,
-    # then backend\.env, then the defaults.
+    # Exactly the rules of backend\app\config.py:
+    #   - a real environment variable wins over the same name in backend\.env;
+    #   - MYSQL_* names first, the older FMCG_DB_* names as fallback;
+    #   - no default password: if it's missing, stop (as the backend does).
     $envFile = Join-Path $script:BackendDir '.env'
     $file = Read-DotEnv $envFile
     $sources = [ordered]@{}
-    function Pick([string]$Name, [string]$Default) {
+    function Lookup([string]$Name) {
         $fromEnv = [Environment]::GetEnvironmentVariable($Name)
-        if ($fromEnv) { $sources[$Name] = "environment variable $Name"; return $fromEnv }
-        if ($file.ContainsKey($Name) -and $file[$Name] -ne '') { $sources[$Name] = 'backend\.env'; return $file[$Name] }
-        $sources[$Name] = 'default'
+        if ($fromEnv -and $fromEnv.Trim()) { return @{ Value = $fromEnv; Source = "environment variable $Name" } }
+        if ($file.ContainsKey($Name) -and $file[$Name].Trim()) { return @{ Value = $file[$Name]; Source = "backend\.env ($Name)" } }
+        return $null
+    }
+    function Pick([string]$Key, [string[]]$Names, [string]$Default) {
+        foreach ($n in $Names) {
+            $hit = Lookup $n
+            if ($hit) { $sources[$Key] = $hit.Source; return $hit.Value.Trim() }
+        }
+        $sources[$Key] = 'default'
         return $Default
     }
     $settings = [ordered]@{
-        Host     = Pick 'FMCG_DB_HOST' '127.0.0.1'
-        Port     = Pick 'FMCG_DB_PORT' '3306'
-        Database = Pick 'FMCG_DB_NAME' 'fmcg_learning'
-        User     = Pick 'FMCG_DB_USER' 'root'
-        Password = Pick 'FMCG_DB_PASSWORD' $null
+        Host     = Pick 'host' @('MYSQL_HOST', 'FMCG_DB_HOST') '127.0.0.1'
+        Port     = Pick 'port' @('MYSQL_PORT', 'FMCG_DB_PORT') '3306'
+        Database = Pick 'database' @('MYSQL_DATABASE', 'FMCG_DB_NAME') 'fmcg_learning'
+        User     = Pick 'user' @('MYSQL_USER', 'FMCG_DB_USER') 'root'
+        Password = $null
         EnvFile  = $envFile
         Sources  = $sources
     }
-    if (-not $settings.Password) {
-        $secure = Read-Host "MySQL password for user '$($settings.User)' (not found in backend\.env)" -AsSecureString
-        $settings.Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    foreach ($n in @('MYSQL_PASSWORD', 'FMCG_DB_PASSWORD')) {
+        $hit = Lookup $n
+        if ($hit) { $settings.Password = $hit.Value; $sources['password'] = $hit.Source; break }  # not trimmed, like config.py
     }
-    if ($settings.Database -notmatch '^[A-Za-z0-9_]+$') { throw "Unexpected database name '$($settings.Database)' in backend\.env." }
+    if (-not $settings.Password) {
+        throw "MYSQL_PASSWORD is not set. Add this line to $envFile (with your MySQL password):`n    MYSQL_PASSWORD=your-mysql-password"
+    }
+    $portNumber = 0
+    if (-not [int]::TryParse([string]$settings.Port, [ref]$portNumber) -or $portNumber -lt 1 -or $portNumber -gt 65535) {
+        throw ("MySQL port must be a number between 1 and 65535, got '{0}' (from {1})." -f $settings.Port, $sources['port'])
+    }
+    if ($settings.Database -notmatch '^[A-Za-z0-9_]+$') {
+        throw ("Database name may only contain letters, digits and _, got '{0}' (from {1})." -f $settings.Database, $sources['database'])
+    }
     return $settings
 }
 
 function Show-DbSettings($Db) {
-    # Where the connection settings came from: a leftover $env:FMCG_DB_* in this PowerShell
-    # window overrides backend\.env (just like for the backend itself).
+    # Where the connection settings came from. A leftover $env:MYSQL_* / $env:FMCG_DB_* in this
+    # PowerShell window overrides backend\.env (just like for the backend itself).
     Write-Note ("Database: {0} on {1}:{2} (user {3})" -f $Db.Database, $Db.Host, $Db.Port, $Db.User)
-    $fromEnvVars = @($Db.Sources.Keys | Where-Object { $Db.Sources[$_] -like 'environment variable*' -and $_ -ne 'FMCG_DB_PASSWORD' })
-    foreach ($k in @('FMCG_DB_NAME', 'FMCG_DB_HOST')) { Write-Note ("  {0} from {1}" -f $k, $Db.Sources[$k]) }
+    foreach ($k in @('database', 'host')) { Write-Note ("  {0} from {1}" -f $k, $Db.Sources[$k]) }
+    $fromEnvVars = @($Db.Sources.Keys | Where-Object { $_ -ne 'password' -and $Db.Sources[$_] -like 'environment variable*' } |
+        ForEach-Object { ($Db.Sources[$_] -split ' ')[-1] })
     if ($fromEnvVars.Count) {
         Write-Warn ("WARNING: {0} set in this PowerShell window override backend\.env." -f ($fromEnvVars -join ', '))
         Write-Warn ("If that's not intended, close this window (or run: Remove-Item Env:{0}) and start again." -f ($fromEnvVars -join ', Env:'))
