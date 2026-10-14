@@ -1,6 +1,6 @@
 // Must stay the first import: it adds the sign-in token to every API client.
 import { getSession, onSessionChange, refreshMe, signOut, withToken } from "./services/auth";
-import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import "./App.css";
 import {
@@ -38,6 +38,7 @@ import {
 import { getTeam, updateTeamMember } from "./services/teamApi";
 import CatalogPage from "./components/CatalogPage";
 import LoginPage from "./components/LoginPage";
+import NotificationBell from "./components/NotificationBell";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
 import axios from "axios";
 import { AddMemberDialog, AssignProductsDialog, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
@@ -1591,7 +1592,82 @@ function productState(p) {
 const STATE_LABEL = { feedback: "Has feedback", new: "No feedback yet", setup: "Needs questions" };
 const STATE_TONE = { feedback: "ok", new: "neutral", setup: "warn" };
 
-const PAGE_SIZE = 25;
+/* ---------- Table paging: "Rows per page" 10 / 20 / 50 / All ----------
+   Each table remembers its own choice on this device (localStorage), so a
+   person who picks 50 on Survey history keeps 50 there after a refresh. */
+const PAGE_SIZES = [10, 20, 50, 0]; // 0 = all rows on one page
+const DEFAULT_PAGE_SIZE = 20;
+
+function usePageSize(table) {
+  const key = `fmcg.pageSize.${table}`;
+  const [size, setSize] = useState(() => {
+    try {
+      const saved = localStorage.getItem(key);
+      return saved !== null && PAGE_SIZES.includes(Number(saved)) ? Number(saved) : DEFAULT_PAGE_SIZE;
+    } catch {
+      return DEFAULT_PAGE_SIZE;
+    }
+  });
+  const change = useCallback(
+    (next) => {
+      setSize(next);
+      try {
+        localStorage.setItem(key, String(next));
+      } catch {
+        // storage blocked: the choice lasts until the page is reloaded
+      }
+    },
+    [key]
+  );
+  return [size, change];
+}
+
+function paginate(rows, page, size) {
+  const per = size > 0 ? size : Math.max(rows.length, 1);
+  const pages = Math.max(1, Math.ceil(rows.length / per));
+  const current = Math.min(Math.max(page, 1), pages);
+  const start = (current - 1) * per;
+  return {
+    pages,
+    current,
+    pageRows: rows.slice(start, start + per),
+    from: rows.length ? start + 1 : 0,
+    to: Math.min(start + per, rows.length),
+  };
+}
+
+function Pager({ label, total, from, to, current, pages, pageSize, onPageSize, onPage, note = "" }) {
+  const sizeId = useId();
+  return (
+    <nav className="pager" aria-label={label}>
+      <span className="muted">
+        Showing {formatCount(from)}–{formatCount(to)} of {formatCount(total)}
+        {note}
+      </span>
+      <div className="pager-controls">
+        <div className="pager-size">
+          <label htmlFor={sizeId}>Rows per page</label>
+          <select id={sizeId} className="select select-sm" value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={n}>{n > 0 ? n : "All"}</option>
+            ))}
+          </select>
+        </div>
+        <div className="pager-buttons">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onPage(current - 1)} disabled={current <= 1}>
+            Previous
+          </button>
+          <span className="pager-page" aria-current="page">
+            Page {current} of {pages}
+          </span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onPage(current + 1)} disabled={current >= pages}>
+            Next
+          </button>
+        </div>
+      </div>
+    </nav>
+  );
+}
 
 const SORTS = {
   responses: { label: "Most responses", fn: (a, b) => b.responses_collected - a.responses_collected || a.name.localeCompare(b.name) },
@@ -1623,6 +1699,7 @@ function HomeDashboard({
   const [state, setState] = useState("all");
   const [sort, setSort] = useState("responses");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePageSize("home");
   const tableRef = useRef(null);
 
   const [productRatings, setProductRatings] = useState(() => pageCache.homeRatings || {});
@@ -1665,7 +1742,7 @@ function HomeDashboard({
   useAutoRefresh(load);
 
   // Any filter change goes back to page 1.
-  useEffect(() => setPage(1), [q, categoryId, state, sort]);
+  useEffect(() => setPage(1), [q, categoryId, state, sort, pageSize]);
 
   const { categories } = catalog;
   const categoryName = useCallback(
@@ -1704,9 +1781,7 @@ function HomeDashboard({
     [scoped, state, sort]
   );
 
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const current = Math.min(page, pages);
-  const pageRows = rows.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const { pages, current, pageRows, from, to } = paginate(rows, page, pageSize);
 
   const productCountByCategory = useMemo(() => {
     const m = {};
@@ -1937,23 +2012,17 @@ function HomeDashboard({
                 </table>
               </div>
 
-              <nav className="pager" aria-label="Product pages">
-                <span className="muted">
-                  Showing {formatCount((current - 1) * PAGE_SIZE + 1)}–{formatCount(Math.min(current * PAGE_SIZE, rows.length))} of{" "}
-                  {formatCount(rows.length)}
-                </span>
-                <div className="pager-buttons">
-                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => goToPage(current - 1)} disabled={current <= 1}>
-                    Previous
-                  </button>
-                  <span className="pager-page" aria-current="page">
-                    Page {current} of {pages}
-                  </span>
-                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => goToPage(current + 1)} disabled={current >= pages}>
-                    Next
-                  </button>
-                </div>
-              </nav>
+              <Pager
+                label="Product pages"
+                total={rows.length}
+                from={from}
+                to={to}
+                current={current}
+                pages={pages}
+                pageSize={pageSize}
+                onPageSize={setPageSize}
+                onPage={goToPage}
+              />
             </>
           )}
         </section>
@@ -2057,6 +2126,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
   const [filter, setFilter] = useState("feedback");
   const [sort, setSort] = useState("recent");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePageSize("history");
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setData((d) => ({ ...d, loading: true, error: "" }));
@@ -2076,7 +2146,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
     load({ silent: Boolean(pageCache.productHistory) });
   }, [load]);
   useAutoRefresh(load);
-  useEffect(() => setPage(1), [q, categoryId, filter, sort]);
+  useEffect(() => setPage(1), [q, categoryId, filter, sort, pageSize]);
 
   const products = useMemo(() => data.products.map((p) => ({ ...p, _report: reportState(p) })), [data.products]);
   const categories = useMemo(() => {
@@ -2102,9 +2172,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
   };
 
   const rows = useMemo(() => scoped.filter(FILTERS[filter].test).sort(HISTORY_SORTS[sort].fn), [scoped, filter, sort]); // eslint-disable-line react-hooks/exhaustive-deps
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const current = Math.min(page, pages);
-  const pageRows = rows.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const { pages, current, pageRows, from, to } = paginate(rows, page, pageSize);
 
   return (
     <section className="feedback-history" aria-labelledby="history-title">
@@ -2215,16 +2283,17 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
                 </tbody>
               </table>
             </div>
-            <nav className="pager" aria-label="Product pages">
-              <span className="muted">
-                Showing {formatCount((current - 1) * PAGE_SIZE + 1)}–{formatCount(Math.min(current * PAGE_SIZE, rows.length))} of {formatCount(rows.length)}
-              </span>
-              <div className="pager-buttons">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPage(current - 1)} disabled={current <= 1}>Previous</button>
-                <span className="pager-page">Page {current} of {pages}</span>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPage(current + 1)} disabled={current >= pages}>Next</button>
-              </div>
-            </nav>
+            <Pager
+              label="Product pages"
+              total={rows.length}
+              from={from}
+              to={to}
+              current={current}
+              pages={pages}
+              pageSize={pageSize}
+              onPageSize={setPageSize}
+              onPage={setPage}
+            />
           </>
         )}
       </section>
@@ -3202,6 +3271,7 @@ function AllSurveysList({ onOpenFeedback }) {
   const [tone, setTone] = useState("all");
   const [sort, setSort] = useState("newest");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePageSize("surveys");
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setData((d) => ({ ...d, loading: true, error: "" }));
@@ -3229,7 +3299,7 @@ function AllSurveysList({ onOpenFeedback }) {
     return () => clearInterval(t);
   }, [running, load]);
   useAutoRefresh(load);
-  useEffect(() => setPage(1), [q, product, tone, sort]);
+  useEffect(() => setPage(1), [q, product, tone, sort, pageSize]);
 
   const products = useMemo(
     () => [...new Set(data.items.map((s) => s.product_name).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
@@ -3247,9 +3317,7 @@ function AllSurveysList({ onOpenFeedback }) {
     );
   }, [data.items, q, product]);
   const rows = useMemo(() => scoped.filter(SURVEY_TONES[tone].test).sort(SURVEY_SORTS[sort].fn), [scoped, tone, sort]);
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const current = Math.min(page, pages);
-  const pageRows = rows.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const { pages, current, pageRows, from, to } = paginate(rows, page, pageSize);
 
   const removeSurvey = async (sv) => {
     const ok = await confirmDialog({
@@ -3394,17 +3462,18 @@ function AllSurveysList({ onOpenFeedback }) {
               </tbody>
             </table>
           </div>
-          <nav className="pager" aria-label="Survey pages">
-            <span className="muted">
-              Showing {formatCount((current - 1) * PAGE_SIZE + 1)}–{formatCount(Math.min(current * PAGE_SIZE, rows.length))} of {formatCount(rows.length)}
-              {data.total > data.items.length ? ` (latest ${formatCount(data.items.length)} of ${formatCount(data.total)})` : ""}
-            </span>
-            <div className="pager-buttons">
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPage(current - 1)} disabled={current <= 1}>Previous</button>
-              <span className="pager-page">Page {current} of {pages}</span>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPage(current + 1)} disabled={current >= pages}>Next</button>
-            </div>
-          </nav>
+          <Pager
+            label="Survey pages"
+            total={rows.length}
+            from={from}
+            to={to}
+            current={current}
+            pages={pages}
+            pageSize={pageSize}
+            onPageSize={setPageSize}
+            onPage={setPage}
+            note={data.total > data.items.length ? ` (latest ${formatCount(data.items.length)} of ${formatCount(data.total)})` : ""}
+          />
         </>
       )}
     </section>
@@ -4867,6 +4936,10 @@ function AppContent({ user }) {
                 </button>
               )}
             </nav>
+            <NotificationBell
+              onOpenHistory={isAdminUser ? goHistory : undefined}
+              onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
+            />
             <UserMenu user={user} />
           </div>
         </div>

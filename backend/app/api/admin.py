@@ -21,7 +21,7 @@ Register in app/main.py:
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,7 @@ from app.api.auth import (
 )
 from app.database.database import get_db
 from app.database.models import Product, ProductAssignment, User
+from app.services.notifications import notify_product_assigned
 from app.services.product_access import (
     assignees_for_product,
     assignments_for_user,
@@ -44,6 +45,12 @@ from app.services.product_access import (
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+
+
+def _admin_name(request: Request) -> str:
+    """Name of the signed-in admin (set by the access-control middleware)."""
+    account = getattr(request.state, "account", None) or {}
+    return account.get("name") or "Your admin"
 
 
 @router.get("/users")
@@ -84,14 +91,20 @@ def user_products(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/users/{user_id}/products")
-def save_user_products(user_id: int, body: ProductIds, db: Session = Depends(get_db)):
+def save_user_products(user_id: int, body: ProductIds, request: Request, db: Session = Depends(get_db)):
     if not db.get(User, user_id):
         raise HTTPException(status_code=404, detail="User not found.")
     known = {pid for (pid,) in db.query(Product.id).filter(Product.id.in_(body.product_ids)).all()} if body.product_ids else set()
     unknown = set(body.product_ids) - known
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown product id(s): {sorted(unknown)}")
-    return {"user_id": user_id, "product_ids": set_user_products(db, user_id, body.product_ids)}
+    before = set(assignments_for_user(db, user_id))
+    saved = set_user_products(db, user_id, body.product_ids)
+    # Tell the survey person about products they didn't have before.
+    added = set(saved) - before
+    if added:
+        notify_product_assigned(db, {user_id: added}, _admin_name(request))
+    return {"user_id": user_id, "product_ids": saved}
 
 
 @router.get("/products/{product_id}/executives")
@@ -102,14 +115,20 @@ def product_executives(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/products/{product_id}/executives")
-def save_product_executives(product_id: int, body: UserIds, db: Session = Depends(get_db)):
+def save_product_executives(product_id: int, body: UserIds, request: Request, db: Session = Depends(get_db)):
     if not db.get(Product, product_id):
         raise HTTPException(status_code=404, detail="Product not found.")
     known = {uid for (uid,) in db.query(User.id).filter(User.id.in_(body.user_ids)).all()} if body.user_ids else set()
     unknown = set(body.user_ids) - known
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown user id(s): {sorted(unknown)}")
-    return {"product_id": product_id, "user_ids": set_product_users(db, product_id, body.user_ids)}
+    before = set(assignees_for_product(db, product_id))
+    saved = set_product_users(db, product_id, body.user_ids)
+    # Tell each newly added survey person about this product.
+    added = set(saved) - before
+    if added:
+        notify_product_assigned(db, {uid: {product_id} for uid in added}, _admin_name(request))
+    return {"product_id": product_id, "user_ids": saved}
 
 
 GENDERS = {"Male", "Female", "Other", "Prefer not to say"}

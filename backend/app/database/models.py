@@ -365,3 +365,30 @@ class ConsolidatedReport(Base):
     overall_rating = Column(Float, nullable=True)
 
     generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================
+# NOTIFICATIONS: the bell in the web dashboard and the mobile app
+# One row per recipient, so every person has their own read / unread state.
+# ============================================================
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (UniqueConstraint("user_id", "dedupe_key", name="uq_notification_user_key"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Who sees it (users.id): admins for missing videos, the executive for new products.
+    user_id = Column(Integer, nullable=False, index=True)
+    # "survey_missing_video" | "product_assigned"
+    kind = Column(String(40), nullable=False, index=True)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    # Details shown when the notification is opened (survey, product, person, times).
+    data = Column(JSON, nullable=True)
+    # Stops the same event from being notified twice to the same person.
+    dedupe_key = Column(String(120), nullable=True)
+    is_read = Column(Integer, nullable=False, default=0, index=True)
+    read_at = Column(DateTime, nullable=True)
+    # Set when the reason went away (e.g. the missing video was uploaded later).
+    resolved_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

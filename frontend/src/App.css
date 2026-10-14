@@ -9176,3 +9176,421 @@ input[type="radio"] {
   font-size: 14px;
   line-height: 1.5;
 }
+
+/* ============================================================
+   Notification bell (top bar)
+   ============================================================ */
+
+.notif {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.notif-bell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  transition: background-color 0.15s;
+}
+
+.notif-bell:hover,
+.notif-bell[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.notif-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--neg);
+  color: #fff;
+  border: 2px solid var(--ink);
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 15px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.notif-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 60;
+  width: min(400px, calc(100vw - 24px));
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 18px 44px rgba(0, 29, 57, 0.2);
+  color: var(--ink);
+  overflow: hidden;
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notif-head strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+}
+
+.notif-empty,
+.notif-error {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.notif-error {
+  color: var(--neg);
+}
+
+.notif-list {
+  list-style: none;
+  overflow-y: auto;
+}
+
+.notif-item + .notif-item {
+  border-top: 1px solid var(--line);
+}
+
+.notif-item.is-unread {
+  background: var(--brand-soft);
+}
+
+.notif-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.notif-row:hover {
+  background: var(--hover-bg);
+}
+
+.notif-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--muted);
+}
+
+.notif-icon.kind-survey_missing_video {
+  background: var(--act-soft);
+  color: var(--act);
+}
+
+.notif-icon.kind-product_assigned {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.notif-item.is-unread .notif-icon.kind-product_assigned {
+  background: var(--surface);
+}
+
+.notif-item.is-resolved .notif-icon {
+  background: var(--pos-soft);
+  color: var(--pos);
+}
+
+.notif-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.notif-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.notif-item.is-unread .notif-title {
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.notif-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+.notif-message {
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+
+.notif-time {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.notif-details {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 14px 62px;
+}
+
+.notif-details .status-chip {
+  justify-self: start;
+}
+
+.notif-details dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.notif-details dt {
+  color: var(--muted);
+}
+
+.notif-details dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.notif-sub {
+  display: block;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.notif-details .btn {
+  justify-self: start;
+}
+
+.notif-resolved-note {
+  color: var(--pos);
+  font-weight: 600;
+}
+
+/* Narrow screens: the top bar wraps into two rows (brand, then menu). The bell
+   moves to the right end of the brand row, so the menu keeps its full width. */
+@media (max-width: 760px) {
+  .topbar-inner {
+    position: relative;
+  }
+
+  .notif {
+    position: absolute;
+    top: 8px;
+    right: 24px;
+  }
+
+  .notif-bell {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+@media (max-width: 600px) {
+  .notif {
+    right: 16px;
+  }
+
+  /* Full-width panel, opened just below the bell (top set when it opens). */
+  .notif-panel {
+    position: fixed;
+    top: var(--notif-top, 64px);
+    right: 12px;
+    left: 12px;
+    width: auto;
+    max-height: calc(100vh - var(--notif-top, 64px) - 12px);
+  }
+
+  .notif-details {
+    padding-left: 16px;
+  }
+}
+
+/* ============================================================
+   Spacing between boxes
+   ============================================================
+   Boxes that sit side by side never touch: there is always a
+   visible gap, so each one reads as its own option or card.
+     --gap-chip  between options in a group (tabs, filters, menu)
+     --gap-card  between cards in a row (stats, setup steps)
+   ============================================================ */
+
+:root {
+  --gap-chip: 6px;
+  --gap-card: 12px;
+}
+
+/* ---------- Option groups ----------
+   By product / All surveys, With feedback / Report up to date / ...,
+   All / History on / Active today / Disabled, transcript language,
+   Breakdown by, Upload / Record.
+   Each option is its own small box (white with a thin border), with
+   a gap between options; the chosen one stays navy. */
+
+.segmented,
+.input-tabs {
+  gap: var(--gap-chip);
+  padding: 4px;
+}
+
+.segmented {
+  flex-wrap: wrap;
+}
+
+.segmented button,
+.input-tabs button {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.segmented button.is-on,
+.segmented button[aria-selected="true"],
+.segmented button[aria-pressed="true"],
+.input-tabs button.is-on,
+.input-tabs button[aria-selected="true"] {
+  box-shadow: 0 1px 3px rgba(0, 29, 57, 0.25);
+}
+
+.segmented button:disabled,
+.input-tabs button:disabled {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+@media (hover: hover) {
+  /* Unselected options are already white, so hover tints them blue. */
+  .segmented button:not(.is-on):not([aria-selected="true"]):not(:disabled):hover,
+  .input-tabs button:not(.is-on):not([aria-selected="true"]):not(:disabled):hover {
+    background: var(--brand-soft);
+    color: var(--brand);
+    box-shadow: inset 0 0 0 1px var(--steel);
+  }
+}
+
+/* ---------- Top navigation (dark bar) ----------
+   Every menu item gets a faint box, so the gap between items shows. */
+
+.topnav {
+  gap: var(--gap-chip);
+  padding: 5px;
+}
+
+.topnav button:not(.is-active) {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* ---------- Card rows ----------
+   Home: Products / Feedback analyzed / Products surveyed
+   My surveys: Total / Today / Analyzed
+   Catalog: Categories / Products / Survey questions / Recipes
+   These were one box split by lines; now each is its own card. */
+
+.home-stats,
+.history-stats,
+.setup-guide {
+  gap: var(--gap-card);
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.home-stats > .h-stat:nth-child(n),
+.history-stats > .h-stat:nth-child(n),
+.setup-guide > .setup-step:nth-child(n) {
+  background: var(--surface);
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+
+/* My surveys has three cards in a four-column row: share the width. */
+.home-stats:not(.home-stats-3):has(> .h-stat:nth-child(3):last-child) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 600px) {
+  .home-stats:not(.home-stats-3):has(> .h-stat:nth-child(3):last-child) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ============================================================
+   Table pager: Showing x–y of z · Rows per page · Previous / Next
+   ============================================================ */
+
+.pager-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+}
+
+.pager-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.select.select-sm {
+  height: 32px;
+  min-width: 72px;
+  margin-left: 0;
+  padding: 0 30px 0 10px;
+  background-position: right 8px center;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Phones: the count on its own line, then rows-per-page and the buttons. */
+@media (max-width: 600px) {
+  .pager {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pager-controls {
+    justify-content: space-between;
+  }
+}

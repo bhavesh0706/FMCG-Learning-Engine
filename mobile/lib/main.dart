@@ -5,8 +5,10 @@ import 'package:file_picker/file_picker.dart';
 
 import 'screens/capture_screens.dart';
 import 'screens/home_screens.dart';
+import 'screens/notifications_screen.dart';
 import 'screens/onboarding_screens.dart';
 import 'services/api_service.dart';
+import 'services/notification_service.dart';
 import 'services/recording_store.dart';
 import 'services/session.dart';
 import 'services/survey_queue.dart';
@@ -256,11 +258,15 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Session.user.addListener(_onUserChanged);
+    Notifications.arrived.addListener(_onNotification);
+    Notifications.start(); // bell count, checked every 30 s while the app is open
     _refreshAccount();
   }
 
   @override
   void dispose() {
+    Notifications.arrived.removeListener(_onNotification);
+    Notifications.stop();
     Session.user.removeListener(_onUserChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -269,7 +275,32 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   // Back in the app: an admin may have changed this executive's permissions.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refreshAccount();
+    if (state == AppLifecycleState.resumed) {
+      _refreshAccount();
+      Notifications.start(); // checks at once, then every 30 s
+    } else if (state == AppLifecycleState.paused) {
+      Notifications.stop(); // no checks while the app is in the background
+    }
+  }
+
+  // A new notification arrived while the app is open: say so, with a shortcut.
+  void _onNotification() {
+    final n = Notifications.arrived.value;
+    if (n == null || !mounted) return;
+    if (n.kind == AppNotification.productAssigned) {
+      AppProfile.refreshRecentProducts(); // the new product appears in the survey list
+    }
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(n.title),
+        action: SnackBarAction(
+          label: 'View',
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const NotificationsPage()),
+          ),
+        ),
+      ));
   }
 
   Future<void> _refreshAccount() async {
@@ -284,6 +315,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   void _onUserChanged() {
     if (!mounted) return;
     if (Session.user.value == null) {
+      Notifications.clear(); // the next account starts with an empty bell
       // Signed out by the server (account disabled or login expired).
       final reason = Session.signedOutReason.value;
       goReplacingAll(context, const WelcomeScreen());
@@ -339,6 +371,10 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
             ),
           ],
         ),
+        actions: const [
+          NotificationBellButton(),
+          SizedBox(width: 6),
+        ],
       ),
       // IndexedStack keeps each tab's scroll position when switching.
       body: IndexedStack(

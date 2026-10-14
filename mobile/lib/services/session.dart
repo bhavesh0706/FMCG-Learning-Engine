@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'api_service.dart';
+import 'notification_service.dart';
 import 'survey_api.dart';
 import 'survey_queue.dart';
 
@@ -177,6 +178,7 @@ class Session {
   }
 
   static Future<void> logout() async {
+    Notifications.clear(); // the next account on this phone starts with an empty bell
     token = null;
     user.value = null;
     stats.value = null;
