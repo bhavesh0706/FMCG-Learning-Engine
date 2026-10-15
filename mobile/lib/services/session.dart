@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'api_service.dart';
@@ -91,6 +92,13 @@ class Session {
     headers: {'Accept': 'application/json'},
   ));
 
+  // The sign-in token lives in the phone's secure store (iOS Keychain, Android
+  // Keystore), never in a plain file: plain files in the app folder are included
+  // in device backups (MASVS-STORAGE). session.json keeps only the account's
+  // name, role and permissions, which are not secret.
+  static const FlutterSecureStorage _secure = FlutterSecureStorage();
+  static const String _tokenKey = 'fmcg.session.token';
+
   static Future<File> _file() async {
     final base = await getApplicationDocumentsDirectory();
     return File('${base.path}${Platform.pathSeparator}session.json');
@@ -99,12 +107,25 @@ class Session {
   static Future<void> load() async {
     try {
       final f = await _file();
+      Map? saved;
       if (await f.exists()) {
         final j = jsonDecode(await f.readAsString());
-        if (j is Map && j['token'] is String && j['user'] is Map) {
-          token = j['token'] as String;
-          user.value = SessionUser.fromJson(Map<String, dynamic>.from(j['user'] as Map));
-        }
+        if (j is Map) saved = j;
+      }
+      var stored = await _readToken();
+      // One-time move from older app versions, which kept the token in session.json.
+      final legacy = saved?['token'];
+      if (legacy is String && legacy.isNotEmpty) {
+        stored ??= legacy;
+        await _writeToken(stored);
+      }
+      if (stored != null && saved != null && saved['user'] is Map) {
+        token = stored;
+        user.value = SessionUser.fromJson(Map<String, dynamic>.from(saved['user'] as Map));
+        if (legacy != null) await _save(); // rewrite session.json without the token
+      } else if (stored != null && (saved == null || saved['user'] is! Map)) {
+        // A token without its account (e.g. app reinstalled: the Keychain survives): sign out cleanly.
+        await _deleteToken();
       }
     } catch (e) {
       debugPrint('Session: could not load ($e)');
@@ -115,9 +136,35 @@ class Session {
     final f = await _file();
     if (token == null || user.value == null) {
       if (await f.exists()) await f.delete();
+      await _deleteToken();
       return;
     }
-    await f.writeAsString(jsonEncode({'token': token, 'user': user.value!.toJson()}));
+    await _writeToken(token!);
+    await f.writeAsString(jsonEncode({'user': user.value!.toJson()}));
+  }
+
+  static Future<String?> _readToken() async {
+    try {
+      final v = await _secure.read(key: _tokenKey);
+      return (v == null || v.isEmpty) ? null : v;
+    } catch (e) {
+      debugPrint('Session: secure storage unavailable ($e)');
+      return null;
+    }
+  }
+
+  static Future<void> _writeToken(String value) async {
+    try {
+      await _secure.write(key: _tokenKey, value: value);
+    } catch (e) {
+      debugPrint('Session: could not store the token securely ($e)');
+    }
+  }
+
+  static Future<void> _deleteToken() async {
+    try {
+      await _secure.delete(key: _tokenKey);
+    } catch (_) {}
   }
 
   static Future<void> _signedIn(Map<String, dynamic> data) async {

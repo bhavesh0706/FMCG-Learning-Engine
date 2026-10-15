@@ -18,10 +18,11 @@ sent to Whisper/Qwen and is not used in consolidated product reports.
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
+from app.api.ownership import account, response_or_404, respondent_or_404, respondent_usable_or_404
 from app.database.database import get_db
 from app.database.models import (
     Product,
@@ -387,6 +388,7 @@ def _response_out(
 )
 def create_respondent(
     body: RespondentCreate,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -406,6 +408,8 @@ def create_respondent(
         location=body.location,
         consent_given=1,
         consent_at=now,
+        # The account that recorded this customer (record-level access, ownership.py).
+        created_by=account(request).get("id"),
     )
 
     db.add(respondent)
@@ -420,14 +424,11 @@ def create_respondent(
 )
 def get_respondent(
     respondent_id: int,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    respondent = _get_or_404(
-        db,
-        Respondent,
-        respondent_id,
-        "Respondent",
-    )
+    # Admins, the account that recorded the customer, or the owner of a survey with them.
+    respondent = respondent_or_404(db, request, respondent_id)
 
     return _respondent_out(respondent)
 
@@ -442,6 +443,7 @@ def get_respondent(
 )
 def create_survey_response(
     body: SurveyResponseCreate,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -453,12 +455,8 @@ def create_survey_response(
         body.product_id,
     )
 
-    respondent = _get_or_404(
-        db,
-        Respondent,
-        body.respondent_id,
-        "Respondent",
-    )
+    # Only a customer this account recorded (no one else's customer can be reused).
+    respondent = respondent_usable_or_404(db, request, body.respondent_id)
 
     if not respondent.consent_given:
         raise HTTPException(
@@ -468,10 +466,14 @@ def create_survey_response(
             ),
         )
 
+    me = account(request)
     response = SurveyResponse(
         product_id=product.id,
         respondent_id=respondent.id,
-        executive_name=body.executive_name,
+        # The survey belongs to the signed-in account from the start
+        # (before, the apps had to "claim" it in a second call).
+        user_id=me.get("id"),
+        executive_name=(body.executive_name or "").strip() or me.get("name"),
         usage_period=body.usage_period,
         location=body.location,
         latitude=body.latitude,
@@ -498,14 +500,10 @@ def create_survey_response(
 )
 def get_survey_response(
     response_id: int,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    response = _get_or_404(
-        db,
-        SurveyResponse,
-        response_id,
-        "Survey response",
-    )
+    response = response_or_404(db, request, response_id)
 
     return _response_out(
         db,
@@ -523,6 +521,7 @@ def get_survey_response(
 def save_answers(
     response_id: int,
     body: AnswersUpdate,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -532,12 +531,7 @@ def save_answers(
     later question edits do not change historical responses.
     """
 
-    response = _get_or_404(
-        db,
-        SurveyResponse,
-        response_id,
-        "Survey response",
-    )
+    response = response_or_404(db, request, response_id)
 
     if response.status == "analyzed":
         raise HTTPException(
@@ -692,6 +686,7 @@ def save_answers(
 )
 def submit_survey_response(
     response_id: int,
+    request: Request,
     db: Session = Depends(get_db),
 ):
     """
@@ -699,12 +694,7 @@ def submit_survey_response(
     for audio/video analysis.
     """
 
-    response = _get_or_404(
-        db,
-        SurveyResponse,
-        response_id,
-        "Survey response",
-    )
+    response = response_or_404(db, request, response_id)
 
     if response.status == "analyzed":
         raise HTTPException(

@@ -4,7 +4,6 @@ from app import config
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.upload import router as upload_router
 from app.api.video import router as video_router
 from app.api.feedback import router as feedback_router
 from app.api.catalog import router as catalog_router
@@ -17,9 +16,12 @@ from app.api.recipes import router as recipes_router
 from app.api.question_templates import router as question_templates_router
 from app.api.notifications import router as notifications_router
 from app.api.access import install_access_control
+from app.api.observability import install_observability
 from app.services import analysis_worker
 from app.services import ai_client
+from app.database.database import engine
 from app.database.migrations import run_migrations
+from sqlalchemy import text
 
 
 # ============================================================
@@ -34,13 +36,19 @@ run_migrations()
 # FASTAPI APPLICATION
 # ============================================================
 
+# Interactive API docs only outside production (they list every route and schema).
+_DOCS = config.APP_ENV != "production"
+
 app = FastAPI(
     title="FMCG Video Learning Engine API",
-    version="1.1.0",
+    version="1.2.0",
     description=(
         "AI-powered FMCG customer feedback "
         "video analysis platform."
-    )
+    ),
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
 )
 
 
@@ -51,6 +59,9 @@ app = FastAPI(
 # Sign-in and role checks for every endpoint (before CORS, so CORS stays outermost
 # and error responses still carry CORS headers for the browser).
 install_access_control(app)
+
+# Request IDs, one JSON access-log line per request, API security headers.
+install_observability(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -69,10 +80,6 @@ app.add_middleware(
 # ============================================================
 # API ROUTERS
 # ============================================================
-
-app.include_router(
-    upload_router
-)
 
 app.include_router(
     video_router
@@ -151,8 +158,27 @@ def root():
 
         "status": "healthy",
 
-        "version": "1.1.0"
+        "version": "1.2.0"
     }
+
+
+def _database_ok() -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/health/ready")
+def ready():
+    """Readiness for load balancers and Docker: 200 only when the database answers."""
+    from fastapi.responses import JSONResponse
+
+    if _database_ok():
+        return {"status": "ready", "database": "ok"}
+    return JSONResponse(status_code=503, content={"status": "not ready", "database": "unreachable"})
 
 
 # ============================================================
@@ -164,9 +190,13 @@ def health():
 
     # The AI Model Service runs on its own port; report whether it answers.
     ai = ai_client.health()
+    database = "ok" if _database_ok() else "unreachable"
+    ai_ok = ai.get("status") in ("ok", "healthy")
 
     return {
-        "status": "healthy",
+        "status": "healthy" if database == "ok" and ai_ok else "degraded",
+
+        "database": database,
 
         "service": "FastAPI",
 

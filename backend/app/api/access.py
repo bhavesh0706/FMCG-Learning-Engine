@@ -36,6 +36,7 @@ WRITE = {"POST", "PUT", "PATCH", "DELETE"}
 PUBLIC = [
     ({"GET"}, r"^/$"),
     ({"GET"}, r"^/health$"),
+    ({"GET"}, r"^/health/ready$"),
     (None, r"^/(docs|redoc|openapi\.json)"),
     ({"POST"}, r"^/auth/login$"),
     ({"POST"}, r"^/auth/signup$"),  # the endpoint itself refuses unless sign-up is enabled

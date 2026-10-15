@@ -303,6 +303,7 @@ const clean = (s) =>
     .replace(/[\u2022\u25CF]/g, "-")
     .replace(/\u2605/g, "*")
     .replace(/[\u20B9]/g, "Rs ")
+    // eslint-disable-next-line no-control-regex -- keeps tab/newline, drops characters the PDF font can't draw
     .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
 
 export function downloadConsolidatedPdf({ report, product, fileName }) {

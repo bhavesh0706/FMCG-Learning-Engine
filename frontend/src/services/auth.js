@@ -159,7 +159,7 @@ export async function signIn(base, identifier, password) {
     save({ token: res.data.token, user: res.data.user });
     return res.data.user;
   } catch (err) {
-    throw new Error(message(err, "Sign-in failed. Try again."));
+    throw new Error(message(err, "Sign-in failed. Try again."), { cause: err });
   }
 }
 
@@ -169,7 +169,7 @@ export async function createFirstAdmin(base, name, identifier, password) {
     save({ token: res.data.token, user: res.data.user });
     return res.data.user;
   } catch (err) {
-    throw new Error(message(err, "The admin account couldn't be created."));
+    throw new Error(message(err, "The admin account couldn't be created."), { cause: err });
   }
 }
 

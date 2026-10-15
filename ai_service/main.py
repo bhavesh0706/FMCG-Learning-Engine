@@ -30,6 +30,7 @@ Settings (environment variables)
 
 from __future__ import annotations
 
+import hmac
 import os
 import shutil
 import threading
@@ -52,6 +53,13 @@ for _d in (INCOMING_DIR, AUDIO_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 TOKEN = os.environ.get("AI_SERVICE_TOKEN", "").strip()
+# In production the shared token is required: without it anyone who can reach
+# port 8001 could run analyses or use /v1/llm/generate as a free LLM endpoint.
+if os.environ.get("APP_ENV", "development").strip().lower() == "production" and not TOKEN:
+    raise SystemExit(
+        "AI_SERVICE_TOKEN is required when APP_ENV=production. Set the same long random "
+        "value for the backend and the AI service (see .env.example)."
+    )
 MAX_CONCURRENT = max(1, int(os.environ.get("AI_MAX_CONCURRENT", "1") or 1))
 
 # Loading these imports loads Whisper once, at startup (not on the first upload).
@@ -77,7 +85,7 @@ app = FastAPI(
 
 
 def check_token(x_ai_token: Optional[str] = Header(default=None)):
-    if TOKEN and x_ai_token != TOKEN:
+    if TOKEN and not hmac.compare_digest((x_ai_token or "").encode(), TOKEN.encode()):
         raise HTTPException(status_code=401, detail="Invalid or missing AI service token.")
 
 

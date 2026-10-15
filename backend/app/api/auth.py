@@ -8,8 +8,12 @@ GET  /auth/me       Authorization: Bearer <token>  -> {user}
 identifier = a 10-digit mobile number or an email address.
 
 Only the Python standard library is used:
-  - passwords: PBKDF2-HMAC-SHA256 with a random salt (never stored in plain text)
+  - passwords: PBKDF2-HMAC-SHA256 with a random salt (never stored in plain text),
+    600,000 rounds as OWASP recommends; older, cheaper hashes are upgraded at the
+    next successful login
   - tokens: a signed, expiring token (HMAC-SHA256), valid for 30 days
+  - repeated wrong passwords are slowed down: after 5 failures for one account
+    (or 30 from one address) in 15 minutes, login waits (HTTP 429)
 
 The signing key comes from $env:FMCG_SECRET_KEY, or is generated once and kept
 in backend/.secret_key (keep that file private; deleting it signs everyone out).
@@ -31,13 +35,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
-from app.database.models import SurveyResponse, User
+from app.database.models import LoginFailure, SurveyResponse, User
 
 router = APIRouter(prefix="/auth", tags=["Accounts"])
 
@@ -46,7 +49,17 @@ TOKEN_DAYS = 30
 # Accounts are created by admins (Team page). Self sign-up only if enabled:
 #   $env:FMCG_ALLOW_SIGNUP = "1"
 ALLOW_SIGNUP = os.environ.get("FMCG_ALLOW_SIGNUP", "").strip().lower() in ("1", "true", "yes")
-PBKDF2_ROUNDS = 200_000
+# OWASP Password Storage Cheat Sheet: PBKDF2-HMAC-SHA256 with 600,000 iterations.
+DEFAULT_PBKDF2_ROUNDS = 600_000
+# Lower only for automated tests (FMCG_PBKDF2_ROUNDS); never lower in production.
+PBKDF2_ROUNDS = int(os.environ.get("FMCG_PBKDF2_ROUNDS", "") or DEFAULT_PBKDF2_ROUNDS)
+
+# Login throttling (counted in the login_failures table, so it holds across processes).
+FAILURE_WINDOW = timedelta(minutes=15)
+MAX_FAILURES_PER_ACCOUNT = 5
+MAX_FAILURES_PER_ADDRESS = 30
+# Behind the HTTPS proxy (Docker Compose) the client address arrives in X-Forwarded-For.
+TRUST_PROXY = os.environ.get("FMCG_TRUST_PROXY", "").strip().lower() in ("1", "true", "yes")
 
 # ============================================================
 # Secret key, passwords, tokens
@@ -77,6 +90,63 @@ def verify_password(password: str, stored: str) -> bool:
         return hmac.compare_digest(check, digest)
     except Exception:
         return False
+
+
+def needs_rehash(stored: str) -> bool:
+    """True for hashes made with fewer rounds than today's setting."""
+    try:
+        return int(stored.split("$")[1]) < PBKDF2_ROUNDS
+    except (IndexError, ValueError):
+        return True
+
+
+# Checked when the account doesn't exist, so a wrong mobile number takes as long
+# as a wrong password and response times don't reveal which accounts exist.
+_DUMMY_HASH = hash_password(secrets.token_hex(16))
+
+
+# ------------------------------------------------------------
+# Login throttling
+# ------------------------------------------------------------
+
+def client_address(request: Request) -> str:
+    if TRUST_PROXY:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:100]
+    return (request.client.host if request.client else "unknown")[:100]
+
+
+def _recent_failures(db: Session, key: str) -> tuple[int, Optional[datetime]]:
+    since = datetime.utcnow() - FAILURE_WINDOW
+    q = db.query(LoginFailure).filter(LoginFailure.key == key, LoginFailure.created_at >= since)
+    oldest = q.order_by(LoginFailure.created_at.asc()).with_entities(LoginFailure.created_at).first()
+    return q.count(), (oldest[0] if oldest else None)
+
+
+def check_login_allowed(db: Session, identifier_key: str, address: str):
+    """Refuse (429) while too many recent failures exist for this account or address."""
+    for key, limit in ((identifier_key, MAX_FAILURES_PER_ACCOUNT), (f"ip:{address}", MAX_FAILURES_PER_ADDRESS)):
+        count, oldest = _recent_failures(db, key)
+        if count >= limit:
+            wait = int(((oldest + FAILURE_WINDOW) - datetime.utcnow()).total_seconds()) + 1 if oldest else 60
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many wrong attempts. Try again in {max(1, round(wait / 60))} minute(s).",
+                headers={"Retry-After": str(max(1, wait))},
+            )
+
+
+def record_login_failure(db: Session, identifier_key: str, address: str):
+    now = datetime.utcnow()
+    db.add_all([LoginFailure(key=identifier_key, created_at=now), LoginFailure(key=f"ip:{address}", created_at=now)])
+    # Housekeeping: keep the table small.
+    db.query(LoginFailure).filter(LoginFailure.created_at < now - timedelta(days=1)).delete(synchronize_session=False)
+    db.commit()
+
+
+def clear_login_failures(db: Session, identifier_key: str):
+    db.query(LoginFailure).filter(LoginFailure.key == identifier_key).delete(synchronize_session=False)
 
 
 def _b64(data: bytes) -> str:
@@ -188,14 +258,14 @@ def _user_out(user: User) -> dict:
 
 
 def surveys_of(user: User):
-    """SQL condition for this user's surveys: linked to the account, or (older surveys) done under their name."""
-    return or_(
-        SurveyResponse.user_id == user.id,
-        and_(
-            SurveyResponse.user_id.is_(None),
-            func.lower(func.trim(SurveyResponse.executive_name)) == " ".join(user.name.split()).lower(),
-        ),
-    )
+    """
+    SQL condition for this user's surveys: the surveys linked to the account.
+
+    Surveys are no longer matched by executive name (two people with the same
+    name would see each other's surveys). Older unlinked surveys are linked once,
+    only when the name is unique (database/migrations.py, link_earlier_surveys).
+    """
+    return SurveyResponse.user_id == user.id
 
 
 def survey_counts(db: Session, condition, tz_offset_minutes: int = 330) -> dict:
@@ -235,13 +305,28 @@ def check_password(password: str):
 
 
 def link_earlier_surveys(db: Session, user: User) -> int:
-    """Surveys done under this name before the account existed become this account's."""
+    """
+    Surveys done under this name before the account existed become this account's,
+    but only when no other account has the same name (otherwise an admin decides).
+    """
+    wanted = " ".join(user.name.split()).lower()
+    same_name = [
+        uid for uid, name in db.query(User.id, User.name).all() if " ".join((name or "").split()).lower() == wanted
+    ]
+    if same_name != [user.id]:
+        return 0
+    candidates = [
+        sid
+        for sid, name in db.query(SurveyResponse.id, SurveyResponse.executive_name)
+        .filter(SurveyResponse.user_id.is_(None), SurveyResponse.executive_name.isnot(None))
+        .all()
+        if " ".join(name.split()).lower() == wanted
+    ]
+    if not candidates:
+        return 0
     linked = (
         db.query(SurveyResponse)
-        .filter(
-            SurveyResponse.user_id.is_(None),
-            func.lower(func.trim(SurveyResponse.executive_name)) == " ".join(user.name.split()).lower(),
-        )
+        .filter(SurveyResponse.id.in_(candidates), SurveyResponse.user_id.is_(None))
         .update({SurveyResponse.user_id: user.id}, synchronize_session=False)
     )
     db.commit()
@@ -256,7 +341,7 @@ def setup_status(db: Session = Depends(get_db)):
 
 
 @router.post("/setup")
-def first_admin(body: SignupIn, db: Session = Depends(get_db)):
+def first_admin(body: SignupIn, request: Request, db: Session = Depends(get_db)):
     """Create the first admin account. Refused once any admin exists."""
     if db.query(User).filter(User.role == "admin").first():
         raise HTTPException(status_code=403, detail="An admin account already exists. Sign in instead.")
@@ -265,7 +350,10 @@ def first_admin(body: SignupIn, db: Session = Depends(get_db)):
     existing = db.query(User).filter((User.mobile if kind == "mobile" else User.email) == value).first()
     if existing:
         # An existing executive becomes the admin (they already know their password).
+        key, address = f"id:{value}", client_address(request)
+        check_login_allowed(db, key, address)
         if not verify_password(body.password, existing.password_hash):
+            record_login_failure(db, key, address)
             raise HTTPException(status_code=409, detail="This mobile/email already has an account with a different password.")
         user = existing
         user.role = "admin"
@@ -312,15 +400,22 @@ def signup(body: SignupIn, db: Session = Depends(get_db)):
 
 
 @router.post("/login")
-def login(body: LoginIn, db: Session = Depends(get_db)):
+def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     kind, value = _parse_identifier(body.identifier)
+    key, address = f"id:{value}", client_address(request)
+    check_login_allowed(db, key, address)
     column = User.mobile if kind == "mobile" else User.email
     user = db.query(User).filter(column == value).first()
-    # Same message whether the account exists or not.
-    if not user or not verify_password(body.password, user.password_hash):
+    # Same message (and about the same time) whether the account exists or not.
+    valid = verify_password(body.password, user.password_hash if user else _DUMMY_HASH)
+    if not user or not valid:
+        record_login_failure(db, key, address)
         raise HTTPException(status_code=401, detail="The mobile/email or password is incorrect.")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="This account has been disabled. Contact your admin.")
+    if needs_rehash(user.password_hash):
+        user.password_hash = hash_password(body.password)  # upgrade to today's hashing cost
+    clear_login_failures(db, key)
     user.last_login_at = datetime.utcnow()
     db.commit()
     return {"token": make_token(user), "user": _user_out(user)}

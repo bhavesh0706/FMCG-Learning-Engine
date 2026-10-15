@@ -21,17 +21,20 @@ Register in app/main.py:
     analysis_worker.start()
 """
 
+import os
 import shutil
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 from app.api.auth import optional_user
+from app.api.ownership import job_or_404, response_or_404
+from app.api.uploads_limit import safe_name, save_upload
 from app.database.database import get_db
 from app.database.models import AnalysisJob, FeedbackRecord, User
 from app.services import analysis_worker
@@ -40,7 +43,7 @@ router = APIRouter(prefix="/analysis", tags=["Analysis queue"])
 # Re-analysis also lives under /feedback/{id}/ (no prefix on this router).
 reanalyze_router = APIRouter(tags=["Analysis queue"])
 
-QUEUE_DIR = Path(__file__).resolve().parents[2] / "uploads" / "queue"
+QUEUE_DIR = Path(os.environ.get("FMCG_QUEUE_DIR") or Path(__file__).resolve().parents[2] / "uploads" / "queue")
 QUEUE_DIR.mkdir(parents=True, exist_ok=True)
 
 ALLOWED = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".ogg", ".weba", ".aac"}
@@ -78,12 +81,13 @@ def _job_out(db: Session, job: AnalysisJob, include_result: bool = True, positio
 # A plain "def": the file is saved in a worker thread, never blocking the server.
 @router.post("/jobs", status_code=202)
 def queue_analysis(
+    request: Request,
     file: UploadFile = File(...),
     response_id: Optional[int] = Form(default=None),
     user: Optional[User] = Depends(optional_user),
     db: Session = Depends(get_db),
 ):
-    name = Path(file.filename or "recording").name
+    name = safe_name(file.filename)
     if Path(name).suffix.lower() not in ALLOWED:
         raise HTTPException(
             status_code=400,
@@ -92,6 +96,7 @@ def queue_analysis(
 
     # The same survey shouldn't be analyzed twice at once (e.g. a retry after a dropped connection).
     if response_id is not None:
+        response_or_404(db, request, response_id)  # only the survey's owner (or an admin)
         running = (
             db.query(AnalysisJob)
             .filter(AnalysisJob.response_id == response_id, AnalysisJob.status.in_(("queued", "processing")))
@@ -100,12 +105,8 @@ def queue_analysis(
         if running:
             return JSONResponse(status_code=202, content=_job_out(db, running, include_result=False))
 
-    stored = QUEUE_DIR / f"{int(time.time() * 1000)}_{name}"
-    with open(stored, "wb") as out:
-        shutil.copyfileobj(file.file, out, length=1024 * 1024)
-    if stored.stat().st_size == 0:
-        stored.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="The file is empty. Record or choose the file again.")
+    # Size-capped copy (FMCG_MAX_UPLOAD_MB); 413 above the cap, 400 when empty.
+    stored = save_upload(file, QUEUE_DIR, name)
 
     job = AnalysisJob(
         status="queued",
@@ -122,10 +123,9 @@ def queue_analysis(
 
 
 @router.get("/jobs/{job_id}")
-def job_status(job_id: int, include_result: bool = True, db: Session = Depends(get_db)):
-    job = db.get(AnalysisJob, job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Analysis job not found.")
+def job_status(job_id: int, request: Request, include_result: bool = True, db: Session = Depends(get_db)):
+    # Admins, the account that queued it, or the owner of its survey; others get 404.
+    job = job_or_404(db, request, job_id)
     return _job_out(db, job, include_result=include_result)
 
 

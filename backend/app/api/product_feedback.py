@@ -20,7 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.database.database import get_db
 from app.database.models import (
@@ -86,6 +86,66 @@ def _analyzed_pairs(db: Session, product_ids=None):
     return list(latest.values())
 
 
+def _analyzed_rows(db: Session, product_ids=None) -> list:
+    """
+    The same surveys as _analyzed_pairs, but only the few columns the lists need
+    (no transcripts, chapters or summaries): (response_id, product_id, rating,
+    tone, uploaded_at). Report pages and the worker's staleness check use this,
+    so their cost no longer grows with the size of every stored result.
+    """
+    q = (
+        db.query(
+            SurveyResponse.id,
+            SurveyResponse.product_id,
+            FeedbackRecord.overall_rating,
+            FeedbackRecord.tone,
+            FeedbackRecord.uploaded_at,
+            FeedbackRecord.overall_sentiment,
+        )
+        .join(FeedbackRecord, FeedbackRecord.response_id == SurveyResponse.id)
+        .filter(SurveyResponse.status == "analyzed")
+    )
+    if product_ids is not None:
+        q = q.filter(SurveyResponse.product_id.in_(product_ids))
+    latest = {}
+    for rid, pid, rating, tone, uploaded, sentiment in q.all():
+        current = latest.get(rid)
+        if current is None or (uploaded or datetime.min) > (current[4] or datetime.min):
+            latest[rid] = (rid, pid, rating, tone or response_tone(sentiment, None, rating), uploaded)
+    return list(latest.values())
+
+
+def _latest_reports(db: Session, product_ids=None) -> dict:
+    """{product_id: newest ConsolidatedReport}, loading only the columns the lists show."""
+    newest = db.query(ConsolidatedReport.product_id, func.max(ConsolidatedReport.version).label("version"))
+    if product_ids is not None:
+        newest = newest.filter(ConsolidatedReport.product_id.in_(product_ids))
+    newest = newest.group_by(ConsolidatedReport.product_id).subquery()
+    rows = (
+        db.query(ConsolidatedReport)
+        .options(load_only(
+            ConsolidatedReport.id, ConsolidatedReport.product_id, ConsolidatedReport.version,
+            ConsolidatedReport.generated_at, ConsolidatedReport.response_count,
+            ConsolidatedReport.overall_rating, ConsolidatedReport.response_ids,
+        ))
+        .join(newest, (newest.c.product_id == ConsolidatedReport.product_id) & (newest.c.version == ConsolidatedReport.version))
+        .all()
+    )
+    return {r.product_id: r for r in rows}
+
+
+# Feedback columns the survey lists show (everything except transcript and chapters).
+_LIST_COLUMNS = load_only(
+    FeedbackRecord.id, FeedbackRecord.response_id, FeedbackRecord.original_filename,
+    FeedbackRecord.uploaded_at, FeedbackRecord.duration_seconds, FeedbackRecord.overall_rating,
+    FeedbackRecord.overall_sentiment, FeedbackRecord.overall_summary, FeedbackRecord.tone,
+)
+
+
+def _tone(rec: FeedbackRecord) -> str:
+    return rec.tone or response_tone(rec.overall_sentiment, None, rec.overall_rating)
+
+
 def _report_out(r: ConsolidatedReport) -> dict:
     return {
         "id": r.id,
@@ -122,10 +182,9 @@ def products_with_feedback(db: Session = Depends(get_db)):
         .filter(Product.is_active == 1, Category.is_active == 1)
         .all()
     )
-    pairs = _analyzed_pairs(db)
     by_product = defaultdict(list)
-    for resp, rec in pairs:
-        by_product[resp.product_id].append((resp, rec))
+    for row in _analyzed_rows(db):  # (response_id, product_id, rating, tone, uploaded_at)
+        by_product[row[1]].append(row)
 
     pending = dict(
         db.query(SurveyResponse.product_id, func.count(SurveyResponse.id))
@@ -143,17 +202,15 @@ def products_with_feedback(db: Session = Depends(get_db)):
         .all()
     )
 
-    # Latest report per product (one query).
-    reports = {}
-    for r in db.query(ConsolidatedReport).order_by(ConsolidatedReport.product_id, ConsolidatedReport.version.desc()).all():
-        reports.setdefault(r.product_id, r)
+    # Latest report per product (one query, light columns).
+    reports = _latest_reports(db)
 
     products = []
     for p, c in rows:
         items = by_product.get(p.id, [])
-        ratings = [rec.overall_rating for _, rec in items if rec.overall_rating]
-        tones = Counter(response_tone(rec.overall_sentiment, rec.chapters, rec.overall_rating) for _, rec in items)
-        last = max((rec.uploaded_at for _, rec in items if rec.uploaded_at), default=None)
+        ratings = [rating for _, _, rating, _, _ in items if rating]
+        tones = Counter(tone for _, _, _, tone, _ in items)
+        last = max((uploaded for _, _, _, _, uploaded in items if uploaded), default=None)
         report = reports.get(p.id)
         products.append({
             "id": p.id,
@@ -176,7 +233,7 @@ def products_with_feedback(db: Session = Depends(get_db)):
                 "overall_rating": report.overall_rating,
                 # New feedback arrived after the report was made.
                 # New or deleted surveys since: the worker is updating it.
-                "outdated": sorted(report.response_ids or []) != sorted(resp.id for resp, _ in items),
+                "outdated": sorted(report.response_ids or []) != sorted(rid for rid, _, _, _, _ in items),
             },
         })
 
@@ -286,7 +343,7 @@ def recent_surveys(
     people = {p.id: p for p in db.query(Respondent).filter(Respondent.id.in_({r.respondent_id for r in rows})).all()} if rows else {}
     records = {}
     if ids:
-        for rec in db.query(FeedbackRecord).filter(FeedbackRecord.response_id.in_(ids)).all():
+        for rec in db.query(FeedbackRecord).options(_LIST_COLUMNS).filter(FeedbackRecord.response_id.in_(ids)).all():
             if rec.response_id not in records or (rec.uploaded_at or datetime.min) > (records[rec.response_id].uploaded_at or datetime.min):
                 records[rec.response_id] = rec
 
@@ -313,7 +370,7 @@ def recent_surveys(
                 "id": rec.id,
                 "overall_rating": rec.overall_rating,
                 "sentiment": rec.overall_sentiment,
-                "tone": response_tone(rec.overall_sentiment, rec.chapters, rec.overall_rating),
+                "tone": _tone(rec),
                 "summary": _summary_text(rec),
                 "uploaded_at": _iso(rec.uploaded_at),
             },
@@ -386,7 +443,7 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
     } if responses else {}
     records = {}
     if ids:
-        for rec in db.query(FeedbackRecord).filter(FeedbackRecord.response_id.in_(ids)).all():
+        for rec in db.query(FeedbackRecord).options(_LIST_COLUMNS).filter(FeedbackRecord.response_id.in_(ids)).all():
             if rec.response_id not in records or (rec.uploaded_at or datetime.min) > (records[rec.response_id].uploaded_at or datetime.min):
                 records[rec.response_id] = rec
     answer_counts = dict(
@@ -422,7 +479,7 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
                 "duration_seconds": rec.duration_seconds,
                 "overall_rating": rec.overall_rating,
                 "sentiment": rec.overall_sentiment,
-                "tone": response_tone(rec.overall_sentiment, rec.chapters, rec.overall_rating),
+                "tone": _tone(rec),
                 "summary": _summary_text(rec),
             },
         })
@@ -486,11 +543,9 @@ def consolidate(product_id: int, db: Session = Depends(get_db)):
 def stale_report_products(db: Session) -> list:
     """Products whose report doesn't match their analyzed surveys (or that have none yet)."""
     ids_by_product = defaultdict(list)
-    for resp, _ in _analyzed_pairs(db):
-        ids_by_product[resp.product_id].append(resp.id)
-    reports = {}
-    for r in db.query(ConsolidatedReport).order_by(ConsolidatedReport.product_id, ConsolidatedReport.version.desc()).all():
-        reports.setdefault(r.product_id, r)
+    for rid, pid, _, _, _ in _analyzed_rows(db):
+        ids_by_product[pid].append(rid)
+    reports = _latest_reports(db)
     stale = []
     for pid in set(ids_by_product) | set(reports):
         current = sorted(ids_by_product.get(pid, []))
@@ -502,7 +557,7 @@ def stale_report_products(db: Session) -> list:
 
 def report_is_stale(db: Session, product_id: int, report=None) -> bool:
     """True when the report doesn't match the product's analyzed surveys (new, or deleted)."""
-    ids = sorted(resp.id for resp, _ in _analyzed_pairs(db, [product_id]))
+    ids = sorted(rid for rid, _, _, _, _ in _analyzed_rows(db, [product_id]))
     report = report if report is not None else _latest_report(db, product_id)
     if not ids:
         return report is not None  # every survey was deleted: the report must go

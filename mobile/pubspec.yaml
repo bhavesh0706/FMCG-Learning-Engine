@@ -39,6 +39,8 @@ dependencies:
   camera: ^0.12.1
   file_picker: ^13.1.0
   just_audio: ^0.10.6
+  audio_session: ^0.2.1   # iOS: play recordings even when the silent switch is on
+  flutter_secure_storage: 11.2.0   # sign-in token in the iOS Keychain / Android Keystore
   video_player: ^2.14.0
   path_provider: ^2.1.6
   permission_handler: ^13.0.2

@@ -11,5 +11,8 @@ ai_service/noise_test
 frontend
 data
 data_exports
+backups
+evidence
+**/tests
 flutter
 docs

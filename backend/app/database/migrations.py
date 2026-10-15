@@ -72,6 +72,87 @@ def run_migrations():
     _add_column("analysis_jobs", "kind", "VARCHAR(20) NOT NULL DEFAULT 'analyze'")
     _add_column("analysis_jobs", "target_feedback_id", "INT NULL", index=True)
     _add_column("survey_questions", "report_role", "VARCHAR(30) NULL")
+    # R&D phase 1: record ownership of customers, stored tone of each result.
+    _add_column("respondents", "created_by", "INT NULL", index=True)
+    _add_column("feedback_records", "tone", "VARCHAR(20) NULL", index=True)
+
+    # 3. Data steps (each one does nothing once done).
+    backfill_feedback_tone()
+    link_unclaimed_surveys()
+
+
+def backfill_feedback_tone(batch: int = 500) -> int:
+    """Fill feedback_records.tone for results saved before the column existed."""
+    from sqlalchemy.orm import Session
+
+    from app.services.consolidation import response_tone
+
+    done = 0
+    with Session(engine) as db:
+        while True:
+            rows = (
+                db.query(models.FeedbackRecord.id, models.FeedbackRecord.overall_sentiment,
+                         models.FeedbackRecord.chapters, models.FeedbackRecord.overall_rating)
+                .filter(models.FeedbackRecord.tone.is_(None))
+                .limit(batch)
+                .all()
+            )
+            if not rows:
+                break
+            for rid, sentiment, chapters, rating in rows:
+                db.query(models.FeedbackRecord).filter(models.FeedbackRecord.id == rid).update(
+                    {models.FeedbackRecord.tone: response_tone(sentiment, chapters, rating)},
+                    synchronize_session=False,
+                )
+            db.commit()
+            done += len(rows)
+    if done:
+        print(f"Database updated: stored the tone of {done} existing results")
+    return done
+
+
+def _normal_name(name) -> str:
+    return " ".join(str(name or "").split()).lower()
+
+
+def link_unclaimed_surveys() -> int:
+    """
+    Surveys from before accounts existed (user_id empty) are linked to an account
+    ONLY when exactly one account has that executive's name. Ambiguous names
+    (two people called the same) stay unlinked for an admin to sort out, so
+    nobody ever sees another person's surveys because of a shared name.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy.orm import Session
+
+    linked = 0
+    with Session(engine) as db:
+        unclaimed = (
+            db.query(models.SurveyResponse.id, models.SurveyResponse.executive_name)
+            .filter(models.SurveyResponse.user_id.is_(None), models.SurveyResponse.executive_name.isnot(None))
+            .all()
+        )
+        if not unclaimed:
+            return 0
+        accounts = defaultdict(list)
+        for uid, name in db.query(models.User.id, models.User.name).all():
+            accounts[_normal_name(name)].append(uid)
+        by_owner = defaultdict(list)
+        for sid, name in unclaimed:
+            owners = accounts.get(_normal_name(name), [])
+            if len(owners) == 1:
+                by_owner[owners[0]].append(sid)
+        for uid, ids in by_owner.items():
+            linked += (
+                db.query(models.SurveyResponse)
+                .filter(models.SurveyResponse.id.in_(ids), models.SurveyResponse.user_id.is_(None))
+                .update({models.SurveyResponse.user_id: uid}, synchronize_session=False)
+            )
+        db.commit()
+    if linked:
+        print(f"Database updated: linked {linked} older surveys to the only account with that name")
+    return linked
 
 
 if __name__ == "__main__":

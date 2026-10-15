@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
 )
 
 from app.database.database import Base
@@ -52,6 +53,12 @@ class FeedbackRecord(Base):
     # NEW: the survey this recording belongs to (NULL for older uploads made
     # before surveys existed). Added to existing databases by migrations.py.
     response_id = Column(Integer, ForeignKey("survey_responses.id"), nullable=True, index=True)
+
+    # positive | mixed | negative | neutral, computed from the rating, sentiment
+    # and feedback items whenever the result is saved (see the listener at the
+    # end of this file). Lets report pages count tones without loading the
+    # chapters and transcript of every recording.
+    tone = Column(String(20), nullable=True, index=True)
 
 
 class FeedbackAspect(Base):
@@ -183,6 +190,11 @@ class Respondent(Base):
     # Consent to collect and use the data, recorded before the survey.
     consent_given = Column(Integer, nullable=False, default=0)
     consent_at = Column(DateTime, nullable=True)
+
+    # The account (users.id) that recorded this customer. Only that account,
+    # the owner of a survey with them, and admins may read the record.
+    # NULL for customers recorded before this column existed.
+    created_by = Column(Integer, nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
@@ -392,3 +404,32 @@ class Notification(Base):
     # Set when the reason went away (e.g. the missing video was uploaded later).
     resolved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+# ============================================================
+# SIGN-IN PROTECTION: failed login attempts (auth.py)
+# Kept in the database so the limit holds across several API processes.
+# Rows older than a day are removed automatically.
+# ============================================================
+
+class LoginFailure(Base):
+    __tablename__ = "login_failures"
+
+    id = Column(Integer, primary_key=True)
+    # "id:<mobile or email>" or "ip:<client address>"
+    key = Column(String(200), nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+# ============================================================
+# Keep FeedbackRecord.tone in step with the result it summarizes
+# (new analyses, re-analyses and manual edits all pass through here).
+# ============================================================
+
+def _set_feedback_tone(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy event signature)
+    from app.services.consolidation import response_tone
+
+    target.tone = response_tone(target.overall_sentiment, target.chapters, target.overall_rating)
+
+
+event.listen(FeedbackRecord, "before_insert", _set_feedback_tone)
+event.listen(FeedbackRecord, "before_update", _set_feedback_tone)

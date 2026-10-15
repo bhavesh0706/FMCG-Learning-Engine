@@ -1681,7 +1681,6 @@ const SORTS = {
 const formatCount = (n) => Number(n || 0).toLocaleString();
 
 function HomeDashboard({
-  history,
   surveyDraft,
   surveyInProgress,
   onNewSurvey,
@@ -1769,12 +1768,6 @@ function HomeDashboard({
         (!query || `${p.name} ${p._category} ${p.sku || ""}`.toLowerCase().includes(query))
     );
   }, [products, q, categoryId]);
-
-  const stateCounts = useMemo(() => {
-    const c = { all: scoped.length, feedback: 0, new: 0, setup: 0 };
-    scoped.forEach((p) => (c[p._state] += 1));
-    return c;
-  }, [scoped]);
 
   const rows = useMemo(
     () => scoped.filter((p) => state === "all" || p._state === state).sort(SORTS[sort].fn),
@@ -2393,7 +2386,7 @@ function TeamPage() {
       const res = await updateTeamMember(user.id, changes);
       setData((d) => ({ ...d, users: d.users.map((u) => (u.id === user.id ? { ...u, ...res.user } : u)) }));
       setNotice(message);
-    } catch (err) {
+    } catch {
       setData((d) => ({ ...d, users: d.users.map((u) => (u.id === user.id ? user : u)) }));
       setNotice(`Couldn't update ${user.name}. Try again.`);
     } finally {
@@ -2634,7 +2627,7 @@ function MySurveys({ user, onTakeSurvey }) {
       const next = { loading: false, error: "", items: listOf(res.data, "surveys"), canView: Boolean(res.data?.can_view_history) };
       pageCache.mySurveys = next;
       setData(next);
-    } catch (err) {
+    } catch {
       if (silent) return;
       setData((d) => ({ ...d, loading: false, error: "Your surveys couldn't be loaded. Check your connection and try again." }));
     }
@@ -3665,7 +3658,6 @@ function ConsolidatedReportView({ report, product }) {
   // Saved narratives come in a few shapes (see normalizeNarrative); display them all safely.
   const nv = normalizeNarrative(report.narrative);
   const n = st.response_count || report.response_count || 0;
-  const sd = st.sentiment_distribution || {};
   const ratingDist = st.rating_distribution || {};
 
   return (
@@ -4207,8 +4199,8 @@ function AppContent({ user }) {
 
   // Feedback history
   const [feedbackHistory, setFeedbackHistory] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
+  const [, setHistoryLoading] = useState(false);
+  const [, setHistoryError] = useState("");
   const [selectedFeedback, setSelectedFeedback] = useState(null);
   const [historyProductId, setHistoryProductId] = useState(null); // product page in Feedback history
   const [historyMode, setHistoryMode] = useState("products"); // products | unlinked
@@ -4488,12 +4480,6 @@ function AppContent({ user }) {
   useEffect(() => {
     if (view === "analyze" && !surveyDraft && stage === "idle" && allowedPages.includes("mine")) setView("mine");
   }, [view, surveyDraft, stage, allowedPages]);
-
-  const goAnalyze = () => {
-    setView("analyze");
-    setSelectedFeedback(null);
-    window.scrollTo({ top: 0 });
-  };
 
   // Survey steps 1-3 done (or re-confirmed after editing): continue on the Analyze page.
   const handleSurveyReady = (draft) => {

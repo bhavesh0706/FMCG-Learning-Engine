@@ -1,0 +1,5 @@
+# Test and lint tools (not needed to run the backend).
+-r requirements-backend.txt
+pytest==9.1.1
+ruff==0.17.0
+pip-audit==2.10.1

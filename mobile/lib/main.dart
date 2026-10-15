@@ -73,7 +73,7 @@ class AppColors {
   // ---- Status ----
   static Color get pos => _m(const Color(0xFF1E8A5A), const Color(0xFF4CC38A));
   static Color get posSoft => _m(const Color(0xFFE4F3EB), const Color(0xFF0E3326));
-  static Color get warn => _m(const Color(0xFFA86A12), const Color(0xFFE9B04D));
+  static Color get warn => _m(const Color(0xFF8A560C), const Color(0xFFE9B04D));
   static Color get warnDeep => _m(const Color(0xFF7A4E0E), const Color(0xFFF2C77A));
   static Color get warnSoft => _m(const Color(0xFFFBF1E1), const Color(0xFF33260E));
   static Color get warnLine => _m(const Color(0xFFE7C88E), const Color(0xFF5C4419));

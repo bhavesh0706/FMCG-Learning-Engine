@@ -35,5 +35,5 @@ RUN chmod +x /usr/local/bin/start.sh && mkdir -p /srv/uploads /srv/backend/uploa
 
 EXPOSE 8000 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
-  CMD curl -fs http://127.0.0.1:8000/health || exit 1
+  CMD curl -fs http://127.0.0.1:8000/health/ready || exit 1
 CMD ["start.sh"]

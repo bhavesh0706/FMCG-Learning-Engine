@@ -39,6 +39,7 @@ const clean = (s) =>
     .replace(/[\u201C\u201D]/g, '"')
     .replace(/\u2026/g, "...")
     .replace(/[\u2022\u25CF]/g, "-")
+    // eslint-disable-next-line no-control-regex -- keeps tab/newline, drops characters the PDF font can't draw
     .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
 
 export function downloadFeedbackPdf(report, fileName) {

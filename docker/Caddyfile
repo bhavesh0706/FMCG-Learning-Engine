@@ -1,0 +1,51 @@
+# HTTPS entry point for the whole application (SEC-03).
+#
+#   https://<DOMAIN>/         -> web app (frontend container)
+#   https://<DOMAIN>/api/...  -> backend API (the /api prefix is removed before
+#                                the request reaches FastAPI, so routes are unchanged)
+#
+# Caddy obtains and renews a Let's Encrypt certificate for DOMAIN automatically
+# (ports 80 and 443 must be reachable from the internet, and DOMAIN's DNS must
+# point at this server). With DOMAIN=localhost it uses its own local certificate
+# for testing. Plain http:// requests are redirected to https://.
+#
+# Settings (from .env next to docker-compose.yml): DOMAIN, ACME_EMAIL.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		# Browsers only ever use HTTPS for this site from now on (1 year).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	handle_path /api/* {
+		# Recordings up to the API's own limit (FMCG_MAX_UPLOAD_MB, default 500 MB) plus form overhead.
+		request_body {
+			max_size 520MB
+		}
+		reverse_proxy backend:8000 {
+			# Long uploads and the legacy wait-for-analysis call.
+			transport http {
+				read_timeout 15m
+				write_timeout 15m
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

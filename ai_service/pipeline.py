@@ -116,7 +116,7 @@ def analyze_media(media_path: Path, audio_dir: Path) -> dict:
     if duration_seconds < MIN_VIDEO_SECONDS:
         raise MediaError(
             "too_short",
-            "Video is shorter than the minimum supported duration of 30 seconds.",
+            f"Video is shorter than the minimum supported duration of {MIN_VIDEO_SECONDS} seconds.",
         )
     if duration_seconds > MAX_VIDEO_SECONDS:
         raise MediaError(

@@ -1,0 +1,14 @@
+# Lint settings for the Python code (backend and ai_service).
+# CI blocks on real errors only: syntax errors, undefined names, unused or
+# redefined imports, and mistakes that change behaviour. Style is not enforced
+# on the existing code.
+target-version = "py312"
+line-length = 140
+extend-exclude = ["**/seed_data/**"]
+
+[lint]
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841", "B006", "B008"]
+ignore = ["B008"]  # FastAPI's Depends(...) in defaults is intended
+
+[lint.per-file-ignores]
+"backend/tests/*" = ["F401"]

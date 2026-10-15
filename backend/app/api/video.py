@@ -1,7 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 import json
-import shutil
+import os
 import time
 import re
 
@@ -11,7 +11,11 @@ from fastapi import (
     UploadFile,
     HTTPException,
     Form,
+    Request,
 )
+
+from app.api.ownership import owns_response
+from app.api.uploads_limit import safe_name, save_upload
 from sqlalchemy.orm import Session
 
 from app.database.database import SessionLocal, init_db
@@ -52,10 +56,10 @@ PROJECT_ROOT = (
     Path(__file__).resolve().parents[3]
 )
 
-VIDEO_DIR = (
-    PROJECT_ROOT
-    / "uploads"
-    / "videos"
+# FMCG_RECORDINGS_DIR moves the stored recordings (e.g. to a mounted disk).
+VIDEO_DIR = Path(
+    os.environ.get("FMCG_RECORDINGS_DIR")
+    or PROJECT_ROOT / "uploads" / "videos"
 )
 
 VIDEO_DIR.mkdir(
@@ -660,6 +664,7 @@ def save_feedback_record(
 
 @router.post("/upload")
 async def upload_video(
+    request: Request,
     file: UploadFile = File(...),
     response_id: int | None = Form(None),
 ):
@@ -680,7 +685,10 @@ async def upload_video(
                 .first()
             )
 
-            if survey_response is None:
+            # Only the survey's owner (or an admin); others get the same 404.
+            # request is None only when the analysis worker calls this function
+            # directly for a job that was already checked when it was queued.
+            if survey_response is None or (request is not None and not owns_response(request, survey_response)):
                 raise HTTPException(
                     status_code=404,
                     detail=(
@@ -751,31 +759,10 @@ async def upload_video(
     # Save uploaded video
     # --------------------------------------------------------
 
-    safe_filename = Path(
-        file.filename
-    ).name
-
-    unique_filename = (
-        f"{int(time.time() * 1000)}_"
-        f"{safe_filename}"
-    )
-
-    video_path = (
-        VIDEO_DIR
-        / unique_filename
-    )
+    # Size-capped copy (FMCG_MAX_UPLOAD_MB); 413 above the cap, 400 when empty.
+    video_path = save_upload(file, VIDEO_DIR, safe_name(file.filename))
 
     try:
-
-        with open(
-            video_path,
-            "wb"
-        ) as buffer:
-
-            shutil.copyfileobj(
-                file.file,
-                buffer
-            )
 
         print(
             "Video saved successfully."
