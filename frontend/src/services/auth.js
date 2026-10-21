@@ -65,7 +65,8 @@ export function recentAccounts() {
 function rememberAccount(user) {
   const identifier = user.mobile || user.email;
   if (!identifier) return;
-  const entry = { identifier, name: user.name, role: user.role === "admin" ? "Admin" : "Survey person" };
+  const role = user.role === "admin" ? "Admin" : user.role === "client" ? "Organization" : "Survey person";
+  const entry = { identifier, name: user.name, role };
   try {
     const rest = recentAccounts().filter((a) => a.identifier !== identifier);
     localStorage.setItem(RECENT_KEY, JSON.stringify([entry, ...rest].slice(0, 6)));
@@ -189,5 +190,28 @@ export async function refreshMe(base) {
     return res.data.user;
   } catch {
     return session?.user || null; // offline: keep what we have; 401 already signs out
+  }
+}
+
+/**
+ * Choose a new password (the organization's first sign-in, or its Account page).
+ * Every other sign-in of the account ends; this browser gets a new token.
+ */
+export async function changePassword(base, currentPassword, newPassword) {
+  try {
+    const res = await axios.post(`${base}/auth/change-password`, { current_password: currentPassword, new_password: newPassword });
+    save({ token: res.data.token, user: res.data.user });
+    return res.data.user;
+  } catch (err) {
+    throw new Error(message(err, "The password couldn't be changed. Try again."), { cause: err });
+  }
+}
+
+/** Sign out on every device (this browser too). */
+export async function signOutEverywhere(base) {
+  try {
+    await axios.post(`${base}/auth/logout-all`);
+  } finally {
+    signOut("You were signed out on every device. Please sign in again.");
   }
 }

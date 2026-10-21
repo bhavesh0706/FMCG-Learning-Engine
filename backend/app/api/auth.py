@@ -326,6 +326,8 @@ def _user_out(user: User) -> dict:
         "age": user.age,
         "gender": user.gender,
         "can_view_history": can_view_history(user),
+        # True until the person chooses their own password (organization's first sign-in).
+        "must_change_password": bool(getattr(user, "must_change_password", 0)),
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
     }
@@ -383,9 +385,12 @@ def link_earlier_surveys(db: Session, user: User) -> int:
     Surveys done under this name before the account existed become this account's,
     but only when no other account has the same name (otherwise an admin decides).
     """
+    if user.role == "client":
+        return 0  # client logins (brands) never take surveys
     wanted = " ".join(user.name.split()).lower()
     same_name = [
-        uid for uid, name in db.query(User.id, User.name).all() if " ".join((name or "").split()).lower() == wanted
+        uid for uid, name in db.query(User.id, User.name).filter(User.role != "client").all()
+        if " ".join((name or "").split()).lower() == wanted
     ]
     if same_name != [user.id]:
         return 0
@@ -540,6 +545,33 @@ def logout_all(request: Request, user: User = Depends(current_user), db: Session
     return {"ok": True}
 
 
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordIn, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """
+    Choose a new password (8+ characters with letters and numbers). Every other
+    sign-in of this account ends; this device gets a new token and stays signed in.
+    Used by the organization at its first sign-in and on its Account page.
+    """
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="The current password is incorrect.")
+    check_password(body.new_password)
+    if verify_password(body.new_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Choose a password different from the current one.")
+    user.password_hash = hash_password(body.new_password)
+    user.must_change_password = 0
+    sign_out_everywhere(user)  # other devices (and anyone with the old password) are signed out
+    db.commit()
+    db.refresh(user)
+    audit.record_from_request(request, action="auth.password_changed", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Changed own password (signed out of other devices)")
+    return {"token": make_token(user), "user": _user_out(user)}
+
+
 @router.get("/me")
 def me(authorization: Optional[str] = Header(default=None), user: User = Depends(current_user)):
     """
@@ -658,8 +690,14 @@ def my_survey(response_id: int, user: User = Depends(current_user), db: Session 
         if allowed:
             feedback.update(_analysis_payload(record, response_tone))
 
+    from app.database.models import SurveyRound
+
+    survey_round = db.get(SurveyRound, survey.round_id) if getattr(survey, "round_id", None) else None
     return {
         "response_id": survey.id,
+        # Which round and recipe version this survey tested ("Round 2 · recipe v2").
+        "round": survey_round.number if survey_round else None,
+        "recipe_version": survey_round.recipe_version if survey_round else None,
         "status": survey.status,
         "created_at": survey.created_at.isoformat() if survey.created_at else None,
         "product_name": product.name if product else None,

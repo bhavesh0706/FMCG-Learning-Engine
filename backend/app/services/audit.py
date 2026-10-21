@@ -57,6 +57,8 @@ RULES: list[tuple[set, str, str, Optional[str], str]] = [
     ({"DELETE"}, r"^/categories/(\d+)$", "category.deactivate", "category", "Deactivated category #{id}"),
     ({"POST"}, r"^/products$", "product.create", "product", "Added a product"),
     ({"PUT"}, r"^/products/(\d+)/recipe$", "recipe.update", "product", "Changed the recipe of product #{id}"),
+    ({"POST"}, r"^/(?:org/)?products/(\d+)/rounds$", "round.start", "product", "Started a survey round of product #{id}"),
+    ({"POST"}, r"^/(?:org/)?products/(\d+)/rounds/\d+/end$", "round.end", "product", "Ended a survey round of product #{id}"),
     ({"PUT"}, r"^/products/(\d+)/questions/order$", "question.reorder", "product", "Reordered the questions of product #{id}"),
     ({"POST"}, r"^/products/(\d+)/questions$", "question.create", "product", "Added a question to product #{id}"),
     ({"PUT"}, r"^/products/(\d+)$", "product.update", "product", "Changed product #{id}"),
@@ -88,7 +90,8 @@ _RULES = [(m, re.compile(p), a, t, s) for m, p, a, t, s in RULES]
 SKIP = [
     re.compile(r"^/notifications(/|$)"),       # marking the bell read
     re.compile(r"^/auth/me/surveys/existing$"),  # a lookup sent as POST
-    re.compile(r"^/auth/(login|logout|logout-all|setup|signup)$"),  # recorded by auth.py itself
+    re.compile(r"^/auth/(login|logout|logout-all|setup|signup|change-password)$"),  # recorded by auth.py itself
+    re.compile(r"^/org/updates/seen$"),  # opening the Updates page
 ]
 
 # Fields that must never reach the log, even if an endpoint passes them by mistake.

@@ -1,7 +1,7 @@
 """
 Notifications for the bell in the web dashboard and the mobile app.
 
-Two kinds:
+The kinds:
 
   survey_missing_video   to every active admin
       A survey person submitted a survey (answers saved, status "submitted") but no
@@ -13,6 +13,18 @@ Two kinds:
 
   product_assigned       to the survey person
       An admin gave them a product to survey (Team page or Catalog page).
+
+  client_recipe_updated  to every active admin
+      The organization changed the recipe of a product in its portal
+      (created by services/recipe_versions.py, with the version and what changed).
+
+  client_round_started   to every active admin
+  client_round_ended     to every active admin
+      The organization started a survey round (recipe version, target, wanted-by
+      date, note) or ended one early (services/rounds.py).
+
+  round_started          to the survey persons who may survey the product
+      "New round: <product>": shown in the mobile app's bell like any notification.
 
 Clients poll GET /notifications/unread-count (every ~30 s) and open
 GET /notifications when the bell is clicked. Missing-video checks run during those

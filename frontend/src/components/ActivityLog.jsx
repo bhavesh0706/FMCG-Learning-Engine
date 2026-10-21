@@ -11,6 +11,7 @@ const AREAS = [
   ["", "Everything"],
   ["auth.", "Sign-ins and sign-outs"],
   ["user.", "Team changes"],
+  ["round.", "Survey rounds"],
   ["product.", "Products"],
   ["category.", "Categories"],
   ["question.", "Survey questions"],
@@ -79,6 +80,7 @@ function when(iso) {
 function roleLabel(role) {
   if (role === "admin") return "Admin";
   if (role === "executive") return "Survey person";
+  if (role === "client") return "Organization";
   return "";
 }
 

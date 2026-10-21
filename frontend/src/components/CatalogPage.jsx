@@ -11,8 +11,11 @@ import {
   deleteProductPermanently,
   listQuestionTemplates,
   removeQuestionTemplate,
+  endProductRound,
   getProductExecutives,
+  getProductRounds,
   getRecipe,
+  getRecipeVersions,
   listTeam,
   saveProductExecutives,
   listCategories,
@@ -29,11 +32,38 @@ import {
 /*
   Catalog (admin)
     Overview: setup guide, category sidebar, products table
-    Product page: Details · Survey questions · Recipe
+    Product page: Details · Recipe · Survey questions · Who can survey · Rounds
   Everything saves to the database and reaches the web survey and the mobile app at once.
 */
 
 const listOf = (d, key) => (Array.isArray(d) ? d : Array.isArray(d?.[key]) ? d[key] : []);
+
+// "3 hours ago" from an ISO time (UTC times end in Z).
+function ago(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const diff = (d.getTime() - Date.now()) / 1000;
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, secs] of [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]]) {
+    if (Math.abs(diff) >= secs) return rtf.format(Math.round(diff / secs), unit);
+  }
+  return "just now";
+}
+
+const when = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime())
+    ? d.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })
+    : "—";
+};
+
+// The recipe was last changed by the organization (its portal) within the last 14 days.
+const CLIENT_BADGE_DAYS = 14;
+function clientRecipeChange(p) {
+  const c = p?.recipe_change;
+  if (!c || c.by_role !== "client" || !c.at) return null;
+  return Date.now() - new Date(c.at).getTime() <= CLIENT_BADGE_DAYS * 86400000 ? c : null;
+}
 
 const TYPES = {
   rating: "Rating 1–5",
@@ -423,7 +453,17 @@ function DeleteForeverDialog({ kind, name, details, onClose, onConfirm }) {
    Page
    ================================================================ */
 
-export default function CatalogPage() {
+// "Round 2 · 6 of 30": the survey round collecting surveys now.
+function LiveRoundChip({ round }) {
+  if (!round) return null;
+  return (
+    <span className="round-chip is-live" title={`Round ${round.number} is collecting surveys (recipe v${round.recipe_version ?? "—"})`}>
+      Round {round.number} · {round.done} of {round.target}
+    </span>
+  );
+}
+
+export default function CatalogPage({ openRequest = null, onOpenRound = null }) {
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -431,6 +471,7 @@ export default function CatalogPage() {
   const [categoryId, setCategoryId] = useState("all");
   const [productId, setProductId] = useState(null);
   const [startTab, setStartTab] = useState("details");
+  const [openCount, setOpenCount] = useState(0); // new value = product page reopens on startTab
   const [query, setQuery] = useState("");
   const [showInactive, setShowInactive] = useState(false);
   const [dialog, setDialog] = useState(null); // { type: "category" | "product", category? }
@@ -473,11 +514,17 @@ export default function CatalogPage() {
 
   const countIn = (cid) => products.filter((p) => p.category_id === cid && p.is_active).length;
 
-  const openProduct = (id, tab = "details") => {
+  const openProduct = useCallback((id, tab = "details") => {
     setStartTab(tab);
     setProductId(id);
+    setOpenCount((n) => n + 1);
     window.scrollTo({ top: 0 });
-  };
+  }, []);
+
+  // Opened from elsewhere (e.g. the bell: "Recipe updated by a client" -> Recipe tab).
+  useEffect(() => {
+    if (openRequest?.productId) openProduct(openRequest.productId, openRequest.tab || "details");
+  }, [openRequest, openProduct]);
 
   const toggleCategory = async (c) => {
     if (c.is_active) {
@@ -606,11 +653,18 @@ export default function CatalogPage() {
             <span className={`status-chip ${product.has_recipe ? "is-ok" : "is-neutral"}`}>
               {product.has_recipe ? `Recipe · ${product.recipe_steps} steps` : "No recipe"}
             </span>
+            {clientRecipeChange(product) && (
+              <span className="status-chip is-act client-change-chip">
+                Recipe updated by {clientRecipeChange(product).by_name || "the organization"} · {ago(clientRecipeChange(product).at)}
+              </span>
+            )}
+            <LiveRoundChip round={product.live_round} />
           </div>
           <button type="button" className="btn btn-secondary" onClick={() => setProductId(null)}>Back to catalog</button>
         </header>
         <Notice notice={notice} onClose={() => setNotice(null)} />
-        <ProductPage key={product.id} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify}
+        <ProductPage key={`${product.id}-${openCount}`} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify}
+          onOpenRound={onOpenRound}
           onDeleted={async (name) => {
             setProductId(null);
             await load();
@@ -783,14 +837,27 @@ export default function CatalogPage() {
                         </td>
                         <td>
                           {p.has_recipe ? (
-                            <span className="recipe-yes">✓ {p.recipe_steps} steps</span>
+                            <span className="recipe-cell">
+                              <span className="recipe-yes">✓ {p.recipe_steps} steps</span>
+                              {clientRecipeChange(p) && (
+                                <button type="button" className="client-change-badge" title="Open the recipe and its version history"
+                                  onClick={(e) => { e.stopPropagation(); openProduct(p.id, "recipe"); }}>
+                                  Updated by {clientRecipeChange(p).by_name || "the organization"} · {ago(clientRecipeChange(p).at)}
+                                </button>
+                              )}
+                            </span>
                           ) : (
                             <button type="button" className="link-btn" onClick={(e) => { e.stopPropagation(); openProduct(p.id, "recipe"); }}>
                               + Add recipe
                             </button>
                           )}
                         </td>
-                        <td><span className={`status-chip is-${st.tone}`}>{st.label}</span></td>
+                        <td>
+                          <span className="status-stack">
+                            <span className={`status-chip is-${st.tone}`}>{st.label}</span>
+                            <LiveRoundChip round={p.live_round} />
+                          </span>
+                        </td>
                         <td className="cell-action"><span className="row-chevron" aria-hidden="true">›</span></td>
                       </tr>
                     );
@@ -810,7 +877,7 @@ export default function CatalogPage() {
    Product page: Details · Survey questions · Recipe
    ================================================================ */
 
-function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted }) {
+function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted, onOpenRound }) {
   const [tab, setTab] = useState(startTab || "details");
   const onNotice = useCallback((n) => notify(n.tone, n.text), [notify]);
   const tabs = [
@@ -818,6 +885,7 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
     ["recipe", product.has_recipe ? "Recipe" : "Recipe · not added"],
     ["questions", `Survey questions (${product.question_count})`],
     ["access", "Who can survey"],
+    ["rounds", product.live_round ? `Rounds · Round ${product.live_round.number} live` : "Rounds"],
   ];
   return (
     <>
@@ -833,6 +901,7 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
         {tab === "access" && <SurveyAccess product={product} notify={notify} />}
         {tab === "questions" && <QuestionsTab product={product} onChanged={onChanged} onNotice={onNotice} />}
         {tab === "recipe" && <RecipeTab product={product} onNotice={onNotice} onSaved={onChanged} />}
+        {tab === "rounds" && <RoundsTab product={product} notify={notify} onChanged={onChanged} onOpenRound={onOpenRound} />}
       </section>
     </>
   );
@@ -849,7 +918,7 @@ function SurveyAccess({ product, notify }) {
     Promise.all([listTeam(), getProductExecutives(product.id)])
       .then(([team, assigned]) => {
         if (!alive) return;
-        const people = listOf(team, "users").filter((u) => u.role !== "admin");
+        const people = listOf(team, "users").filter((u) => u.role === "executive"); // survey persons only (not admins or clients)
         const ids = assigned?.user_ids || [];
         setState({ loading: false, team: people, selected: new Set(ids), saved: JSON.stringify([...ids].sort()) });
         setMode(ids.length ? "selected" : "all");
@@ -1345,7 +1414,8 @@ function minutesOf(text) {
 }
 const fmtMinutes = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${Math.round(m % 60)} min` : ""}` : `${Math.round(m)} min`);
 
-function RecipeTab({ product, onNotice, onSaved }) {
+export function RecipeTab({ product, onNotice, onSaved }) {
+  const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
   const [recipe, setRecipe] = useState(null);
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1407,6 +1477,7 @@ function RecipeTab({ product, onNotice, onSaved }) {
       setRecipe(next);
       setSaved(JSON.stringify(next));
       setEditing({ batch: false, ingredients: false, steps: false });
+      setHistoryKey((k) => k + 1);
       onNotice({
         tone: "ok",
         text: `Recipe saved: ${res?.recipe?.ingredients?.length || 0} ingredients, ${res?.recipe?.steps?.length || 0} steps. The next report refresh uses it.`,
@@ -1648,6 +1719,289 @@ function RecipeTab({ product, onNotice, onSaved }) {
               {busy ? "Saving…" : "Save recipe"}
             </button>
           </span>
+        </div>
+      )}
+
+      <RecipeHistory key={historyKey} productId={product.id} />
+    </div>
+  );
+}
+/* ================================================================
+   Recipe version history (Catalog -> product -> Recipe, and the organization portal)
+   Every save is a version: who saved it, when, and what changed. Any two
+   versions can be compared side by side.
+   ================================================================ */
+
+const ROLE_NAMES = { admin: "Admin", client: "Organization", executive: "Survey person" };
+const keyOf = (text) => String(text || "").trim().toLowerCase();
+const qty = (i) => [i?.quantity, i?.unit].filter((x) => String(x || "").trim()).join(" ") || "—";
+
+function compareRecipes(a, b) {
+  const ra = a?.recipe || {};
+  const rb = b?.recipe || {};
+  const names = [];
+  [...(ra.ingredients || []), ...(rb.ingredients || [])].forEach((i) => {
+    if (i?.name && !names.some((n) => keyOf(n) === keyOf(i.name))) names.push(i.name);
+  });
+  const find = (list, name) => (list || []).find((i) => keyOf(i.name) === keyOf(name));
+  const ingredients = names.map((name) => {
+    const x = find(ra.ingredients, name);
+    const y = find(rb.ingredients, name);
+    return { name, a: x ? qty(x) : null, b: y ? qty(y) : null, changed: (x ? qty(x) : null) !== (y ? qty(y) : null) };
+  });
+  const stepText = (s) => [s.title, s.temperature, s.duration].filter(Boolean).join(" · ");
+  const rows = Math.max((ra.steps || []).length, (rb.steps || []).length);
+  const steps = Array.from({ length: rows }, (_, k) => {
+    const x = ra.steps?.[k];
+    const y = rb.steps?.[k];
+    return { n: k + 1, a: x ? stepText(x) : null, b: y ? stepText(y) : null, changed: (x ? stepText(x) : null) !== (y ? stepText(y) : null) };
+  });
+  return { ingredients, steps, batch: { a: ra.batch_size || "—", b: rb.batch_size || "—" } };
+}
+
+function RecipeHistory({ productId }) {
+  const [state, setState] = useState({ loading: true, error: "", versions: [] });
+  const [open, setOpen] = useState(false);
+  const [pair, setPair] = useState(null); // [older, newer] version numbers being compared
+
+  useEffect(() => {
+    let alive = true;
+    getRecipeVersions(productId)
+      .then((d) => alive && setState({ loading: false, error: "", versions: d?.versions || [] }))
+      .catch(() => alive && setState({ loading: false, error: "The version history couldn't be loaded.", versions: [] }));
+    return () => {
+      alive = false;
+    };
+  }, [productId]);
+
+  const { versions } = state;
+  if (state.loading || (!versions.length && !state.error)) return null;
+  const byNumber = (n) => versions.find((v) => v.version === n);
+  const startCompare = (v) => {
+    const previous = versions.find((x) => x.version < v.version);
+    setPair([previous ? previous.version : v.version, v.version]);
+  };
+  const cmp = pair ? compareRecipes(byNumber(pair[0]), byNumber(pair[1])) : null;
+
+  return (
+    <section className="recipe-history" aria-labelledby={`history-${productId}`}>
+      <div className="recipe-history-head">
+        <div>
+          <h3 id={`history-${productId}`}>Version history</h3>
+          <p className="muted">
+            {versions.length} {versions.length === 1 ? "version" : "versions"} · latest v{versions[0].version} by{" "}
+            {versions[0].changed_by_name || "—"} {versions[0].changed_at ? `· ${ago(versions[0].changed_at)}` : ""}
+          </p>
+        </div>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? "Hide history" : "Show history"}
+        </button>
+      </div>
+      {state.error && <p className="form-error" role="alert">{state.error}</p>}
+
+      {open && (
+        <>
+          <ol className="version-list">
+            {versions.map((v) => (
+              <li key={v.version} className={`version-item${v.changed_by_role === "client" ? " is-client" : ""}`}>
+                <div className="version-meta">
+                  <span className="version-no">v{v.version}</span>
+                  <span>
+                    <strong>{v.changed_by_name || "Earlier recipe"}</strong>
+                    {v.changed_by_role && <span className={`status-chip ${v.changed_by_role === "client" ? "is-act" : "is-neutral"}`}>{ROLE_NAMES[v.changed_by_role] || v.changed_by_role}</span>}
+                    <span className="muted"> · {when(v.changed_at)}</span>
+                  </span>
+                  {v.version !== versions[versions.length - 1].version && (
+                    <button type="button" className="link-btn" onClick={() => startCompare(v)}>Compare with previous</button>
+                  )}
+                </div>
+                {v.changes?.length > 0 && (
+                  <ul className="version-changes">
+                    {v.changes.map((c) => <li key={c}>{c}</li>)}
+                  </ul>
+                )}
+                {v.rounds?.length > 0 && (
+                  <div className="version-rounds">
+                    <span className="muted">Tested in</span>
+                    {v.rounds.map((r) => (
+                      <span key={r.number} className={`round-chip${r.status === "live" ? " is-live" : ""}`}>Round {r.number}</span>
+                    ))}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+
+          {cmp && (
+            <div className="version-compare" role="region" aria-label="Compare recipe versions">
+              <div className="version-compare-head">
+                <strong>Compare</strong>
+                <select className="select select-sm" value={pair[0]} onChange={(e) => setPair([Number(e.target.value), pair[1]])} aria-label="Older version">
+                  {versions.map((v) => <option key={v.version} value={v.version}>v{v.version}</option>)}
+                </select>
+                <span aria-hidden="true">→</span>
+                <select className="select select-sm" value={pair[1]} onChange={(e) => setPair([pair[0], Number(e.target.value)])} aria-label="Newer version">
+                  {versions.map((v) => <option key={v.version} value={v.version}>v{v.version}</option>)}
+                </select>
+                <button type="button" className="link-btn" onClick={() => setPair(null)}>Close</button>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table version-table">
+                  <thead>
+                    <tr><th scope="col">Ingredient</th><th scope="col">v{pair[0]}</th><th scope="col">v{pair[1]}</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr className={cmp.batch.a !== cmp.batch.b ? "is-changed" : ""}>
+                      <td><em>Batch size</em></td><td>{cmp.batch.a}</td><td>{cmp.batch.b}</td>
+                    </tr>
+                    {cmp.ingredients.map((r) => (
+                      <tr key={r.name} className={r.changed ? "is-changed" : ""}>
+                        <td>{r.name}</td>
+                        <td>{r.a ?? <span className="muted">not used</span>}</td>
+                        <td>{r.b ?? <span className="muted">removed</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="table-wrap">
+                <table className="data-table version-table">
+                  <thead>
+                    <tr><th scope="col">Step</th><th scope="col">v{pair[0]}</th><th scope="col">v{pair[1]}</th></tr>
+                  </thead>
+                  <tbody>
+                    {cmp.steps.map((r) => (
+                      <tr key={r.n} className={r.changed ? "is-changed" : ""}>
+                        <td>{r.n}</td>
+                        <td>{r.a ?? <span className="muted">—</span>}</td>
+                        <td>{r.b ?? <span className="muted">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/* ================================================================
+   Rounds (Catalog -> product): read-only for admins. The organization starts
+   rounds in its portal; surveys from the field app join the live round by
+   themselves. A live round can be ended early (e.g. the field work stopped).
+   ================================================================ */
+
+const shortDate = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "";
+};
+
+function RoundsTab({ product, notify, onChanged, onOpenRound }) {
+  const [state, setState] = useState({ loading: true, error: "", rounds: [] });
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const d = await getProductRounds(product.id);
+      setState({ loading: false, error: "", rounds: d?.rounds || [] });
+    } catch (err) {
+      setState({ loading: false, error: catalogError(err, "The rounds couldn't be loaded."), rounds: [] });
+    }
+  }, [product.id]);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const end = async (r) => {
+    const ok = await confirmDialog({
+      title: `End Round ${r.number} now?`,
+      message: `${r.done} of ${r.target} consumers have been surveyed. New surveys of ${product.name} will still be filed under this round until the organization starts the next one.`,
+      confirmLabel: `End Round ${r.number}`,
+      cancelLabel: "Keep collecting",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await endProductRound(product.id, r.number);
+      notify("ok", `Round ${r.number} of ${product.name} has ended.`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify("error", catalogError(err, "The round couldn't be ended."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.loading) return <p className="muted">Loading rounds…</p>;
+  if (state.error) return <p className="form-error" role="alert">{state.error}</p>;
+  const rounds = [...state.rounds].reverse();
+  return (
+    <div className="rounds-tab">
+      <header className="tab-head">
+        <div>
+          <h3>Survey rounds</h3>
+          <p className="muted">
+            Rounds are started by the organization in its portal. Surveys from the field app go into the live round automatically.
+          </p>
+        </div>
+      </header>
+      {rounds.length === 0 ? (
+        <p className="muted">No rounds yet. The first survey of {product.name} opens Round 1.</p>
+      ) : (
+        <div className="table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Round</th>
+                <th scope="col">Status</th>
+                <th scope="col">Recipe</th>
+                <th scope="col">Progress</th>
+                <th scope="col">Started by</th>
+                <th scope="col">Rating</th>
+                <th scope="col"><span className="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rounds.map((r) => (
+                <tr key={r.number}>
+                  <td><strong>Round {r.number}</strong><div className="muted small">{shortDate(r.started_at)}{r.closed_at ? ` – ${shortDate(r.closed_at)}` : " – now"}</div></td>
+                  <td>
+                    <span className={`round-chip${r.status === "live" ? " is-live" : ""}`}>
+                      {r.status === "live" ? "Collecting" : r.closed_reason === "ended" ? "Ended early" : "Completed"}
+                    </span>
+                  </td>
+                  <td>{r.recipe_version ? `v${r.recipe_version}` : "—"}</td>
+                  <td>
+                    <div className="cell-progress">
+                      <div className="mini-progress" aria-hidden="true">
+                        <span style={{ width: `${Math.min(100, (r.done / Math.max(1, r.target)) * 100)}%` }} />
+                      </div>
+                      <span className="cell-progress-text">{r.done} of {r.target}</span>
+                    </div>
+                  </td>
+                  <td>
+                    {r.started_by_name}
+                    {r.started_by_role === "client" && <span className="status-chip is-act">Organization</span>}
+                    {r.note && <div className="muted small">“{r.note}”</div>}
+                    {r.due_date && <div className="muted small">Wanted by {shortDate(r.due_date)}</div>}
+                  </td>
+                  <td>{r.rating != null ? `${r.rating.toFixed(1)} ★` : "—"}</td>
+                  <td className="cell-actions">
+                    {onOpenRound && (
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => onOpenRound(product.id, r.number)}>Open report</button>
+                    )}
+                    {r.status === "live" && (
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => end(r)} disabled={busy}>End round</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

@@ -38,6 +38,7 @@ import {
 import { getTeam, signOutMember, updateTeamMember } from "./services/teamApi";
 import ActivityLog from "./components/ActivityLog";
 import CatalogPage from "./components/CatalogPage";
+import OrgPortal from "./components/OrgPortal";
 import LoginPage from "./components/LoginPage";
 import NotificationBell from "./components/NotificationBell";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
@@ -1681,6 +1682,21 @@ const SORTS = {
 
 const formatCount = (n) => Number(n || 0).toLocaleString();
 
+// Admin badges: the round collecting surveys now, and a recipe changed by the organization.
+const ORG_BADGE_DAYS = 14;
+function ProductBadges({ product }) {
+  const r = product?.live_round;
+  const c = product?.recipe_change;
+  const orgRecipe = c && c.by_role === "client" && c.at && Date.now() - new Date(c.at).getTime() <= ORG_BADGE_DAYS * 86400000;
+  if (!r && !orgRecipe) return null;
+  return (
+    <span className="product-badges">
+      {r && <span className="round-chip is-live">Round {r.number} · {r.done} of {r.target}</span>}
+      {orgRecipe && <span className="status-chip is-act">Recipe v{c.version} by {c.by_name || "the organization"} · {timeAgo(c.at)}</span>}
+    </span>
+  );
+}
+
 function HomeDashboard({
   surveyDraft,
   surveyInProgress,
@@ -1968,6 +1984,7 @@ function HomeDashboard({
                             <strong title={p.name}>{p.name}</strong>
                             <span>{p.sku || `${p.question_count} questions`}</span>
                             <span className="cell-category-inline">{p._category}</span>
+                            <ProductBadges product={p} />
                           </div>
                         </td>
                         <td className="col-category">{p._category}</td>
@@ -2259,7 +2276,8 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
                           <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); onOpenProduct(p.id); }}>
                             {p.name}
                           </button>
-                          <span>{p.category_name}</span>
+                          <span>{p.category_name}{p.rounds > 1 ? ` · ${p.rounds} rounds` : ""}</span>
+                          <ProductBadges product={p} />
                         </div>
                       </td>
                       <td>
@@ -2353,7 +2371,7 @@ function TeamPage() {
   // a product given to someone is shown only to the people it's given to.
   const allProductIds = Object.keys(productNames).map(Number);
   const owners = {};
-  data.users.forEach((u) => (u.role === "admin" ? [] : u.assigned_products || []).forEach((pid) => (owners[pid] ||= new Set()).add(u.id)));
+  data.users.forEach((u) => (u.role === "executive" ? u.assigned_products || [] : []).forEach((pid) => (owners[pid] ||= new Set()).add(u.id)));
   const visibleTo = (u) => allProductIds.filter((pid) => !owners[pid] || owners[pid].has(u.id));
 
   const load = useCallback(async ({ silent = false } = {}) => {
@@ -2417,9 +2435,9 @@ function TeamPage() {
   };
 
   const query = q.trim().toLowerCase();
-  // Team members only: admins manage the team and aren't part of it here.
+  // Team members only: admins manage the team and the organization has its own portal.
   const scoped = data.users.filter(
-    (u) => u.role !== "admin" && (!query || `${u.name} ${u.mobile || ""} ${u.email || ""}`.toLowerCase().includes(query))
+    (u) => u.role === "executive" && (!query || `${u.name} ${u.mobile || ""} ${u.email || ""}`.toLowerCase().includes(query))
   );
   const rows = scoped.filter(TEAM_FILTERS[filter].test);
 
@@ -2769,6 +2787,7 @@ function MySurveys({ user, onTakeSurvey }) {
                 <tr>
                   <th scope="col">Customer</th>
                   <th scope="col">Product</th>
+                  <th scope="col">Version</th>
                   <th scope="col">Date</th>
                   <th scope="col">Status</th>
                   {data.canView && <th scope="col">Rating</th>}
@@ -2798,6 +2817,16 @@ function MySurveys({ user, onTakeSurvey }) {
                           <strong>{sv.product_name}</strong>
                           <span>{sv.category_name}</span>
                         </div>
+                      </td>
+                      <td>
+                        {sv.round ? (
+                          <span className="version-stack">
+                            {sv.recipe_version && <span className="version-chip">v{sv.recipe_version}</span>}
+                            <span className="round-chip">Round {sv.round}</span>
+                          </span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
                       </td>
                       <td>
                         <div className="cell-product">
@@ -3114,6 +3143,8 @@ function MySurveyDetail({ responseId, onBack }) {
           {sv.area && <span>{sv.area}</span>}
           {sv.survey_location && <span>Surveyed at {sv.survey_location}</span>}
           {sv.usage_period && <span>{USAGE_LABEL[sv.usage_period] || sv.usage_period}</span>}
+          {sv.recipe_version && <span className="version-chip">Recipe v{sv.recipe_version}</span>}
+          {sv.round && <span className="round-chip">Round {sv.round}</span>}
           <span className={`status-chip is-${st.tone}`}>{st.label}</span>
         </div>
       </header>
@@ -3609,7 +3640,7 @@ function SummaryTable({ head, rows }) {
   );
 }
 
-function ClientSummary({ stats, narrative, n, report, product }) {
+function ClientSummary({ stats, narrative, n, report, product, forClient = false }) {
   const cs = stats.client_summary || {};
   // Same sections as the downloaded PDF (services/consolidatedReportPdf.js).
   const sections = buildClientSections(stats, narrative, n);
@@ -3642,7 +3673,7 @@ function ClientSummary({ stats, narrative, n, report, product }) {
           {busy ? "Preparing…" : "Download PDF"}
         </button>
       </div>
-      {!tagged && (
+      {!tagged && !forClient && (
         <p className="client-tip no-print">
           Tip: in <strong>Catalog → product → Survey questions</strong>, set "Use in the client report as" (preference, price,
           score, improvement…) to get preference by location, the ideal price and the other client tables here.
@@ -3700,7 +3731,7 @@ function ClientSummary({ stats, narrative, n, report, product }) {
   );
 }
 
-function ConsolidatedReportView({ report, product }) {
+function ConsolidatedReportView({ report, product, forClient = false }) {
   const [breakdown, setBreakdown] = useState("gender");
   const st = report.stats || {};
   // Saved narratives come in a few shapes (see normalizeNarrative); display them all safely.
@@ -3710,7 +3741,7 @@ function ConsolidatedReportView({ report, product }) {
 
   return (
     <div className="report">
-      <ClientSummary stats={st} narrative={nv} n={n} report={report} product={product} />
+      <ClientSummary stats={st} narrative={nv} n={n} report={report} product={product} forClient={forClient} />
 
       {/* Rating and sentiment are in the page header; positives, issues, conclusion,
           actions, suggestions and recipe changes are in the client summary above. */}
@@ -3872,23 +3903,24 @@ function ConsolidatedReportView({ report, product }) {
 
 /* ---------- One product: report + every customer's feedback ---------- */
 
-function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
+function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFeedback }) {
   const [state, setState] = useState({ loading: true, error: "", data: null });
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [tab, setTab] = useState("report");
+  const [round, setRound] = useState(initialRound); // null = every survey of the product
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setState((s) => ({ ...s, loading: true, error: "" }));
     try {
-      setState({ loading: false, error: "", data: await getProductFeedback(productId) });
+      setState({ loading: false, error: "", data: await getProductFeedback(productId, round) });
     } catch (err) {
       if (silent) return; // background refresh: keep what is on screen
       console.error(err);
       setState({ loading: false, error: "This product's feedback couldn't be loaded.", data: null });
     }
-  }, [productId]);
+  }, [productId, round]);
 
   useEffect(() => {
     load();
@@ -3915,7 +3947,7 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
     setGenerating(true);
     setGenError("");
     try {
-      const report = await generateConsolidatedReport(productId);
+      const report = await generateConsolidatedReport(productId, round);
       setState((s) => ({ ...s, data: { ...s.data, report } }));
       setTab("report");
     } catch (err) {
@@ -3947,6 +3979,9 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
   }
 
   const { product, summary, responses, report } = state.data;
+  const rounds = state.data.rounds || [];
+  const shown = round != null ? rounds.find((r) => r.number === round) : null;
+  const live = rounds.find((r) => r.status === "live");
   const analyzed = responses.filter((r) => r.status === "analyzed" && r.feedback);
   const pending = responses.filter((r) => !(r.status === "analyzed" && r.feedback));
   const updating = Boolean(summary.report_updating); // the worker is refreshing it
@@ -3961,9 +3996,21 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
           <h1 id="pf-title">{product.name}</h1>
           <p className="home-sub">
             {formatCount(summary.responses)} customer {summary.responses === 1 ? "response" : "responses"} analyzed
+            {shown ? ` in Round ${shown.number}` : rounds.length > 1 ? ` in ${rounds.length} rounds` : ""}
             {product.sku ? ` · ${product.sku}` : ""}
           </p>
+          {live && <span className="product-badges"><span className="round-chip is-live">Round {live.number} · {live.done} of {live.target}</span></span>}
         </div>
+        {rounds.length > 0 && (
+          <div className="segmented round-picker" role="group" aria-label="Survey round">
+            <button type="button" aria-pressed={round == null} className={round == null ? "is-on" : ""} onClick={() => setRound(null)}>All rounds</button>
+            {rounds.map((r) => (
+              <button key={r.number} type="button" aria-pressed={round === r.number} className={round === r.number ? "is-on" : ""} onClick={() => setRound(r.number)}>
+                Round {r.number}{r.status === "live" ? " · live" : ""}
+              </button>
+            ))}
+          </div>
+        )}
       </header>
 
       <div className="home-stats">
@@ -4012,10 +4059,13 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
               ) : report ? (
                 <>
                   <strong>
-                    Consolidated report
+                    {shown ? `Round ${shown.number} report` : "Consolidated report"}
                     {updating && <span className="status-chip is-act report-updating-chip">Updating with the latest analyses…</span>}
                   </strong>
                   <span>
+                    {shown
+                      ? `Recipe v${shown.recipe_version ?? "—"} · ${shown.done} of ${shown.target} consumers · started by ${shown.started_by_name}${shown.note ? ` · “${shown.note}”` : ""} · `
+                      : ""}
                     Based on {formatCount(report.response_count)} {report.response_count === 1 ? "survey" : "surveys"} · updated{" "}
                     {timeAgo(report.generated_at)}. It updates by itself after every new analysis.
                   </span>
@@ -4041,14 +4091,16 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
             ) : null}
           </div>
           {genError && <p className="alert alert-error report-error" role="alert">{genError}</p>}
-          {report && !generating && <ConsolidatedReportView report={report} product={product} />}
+          {report && !generating && (
+            <ConsolidatedReportView report={report} product={shown ? { ...product, name: `${product.name} · Round ${shown.number}` } : product} />
+          )}
         </>
       )}
 
       {tab === "responses" && (
         <section className="panel home-products">
           {responses.length === 0 ? (
-            <p className="muted table-empty">No surveys for {product.name} yet.</p>
+            <p className="muted table-empty">No surveys for {product.name}{shown ? ` in Round ${shown.number}` : ""} yet.</p>
           ) : (
             <div className="table-wrap">
               <table className="data-table">
@@ -4057,6 +4109,7 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
                   <tr>
                     <th scope="col">Customer</th>
                     <th scope="col" className="col-category">City</th>
+                    {rounds.length > 0 && <th scope="col">Round</th>}
                     <th scope="col">Rating</th>
                     <th scope="col">Sentiment</th>
                     <th scope="col" className="col-summary">Summary</th>
@@ -4084,6 +4137,7 @@ function ProductFeedbackPage({ productId, onBack, onOpenFeedback }) {
                           </div>
                         </td>
                         <td className="col-category">{who?.location || "—"}</td>
+                        {rounds.length > 0 && <td>{r.round ? <span className="round-chip">{r.round}</span> : "—"}</td>}
                         <td>{fb && toRating(fb.overall_rating) ? <RatingStars rating={fb.overall_rating} compact /> : <span className="muted">—</span>}</td>
                         <td>
                           {fb ? (
@@ -4167,7 +4221,8 @@ const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine
 const SLUG_PAGE = Object.fromEntries(Object.entries(PAGE_SLUG).map(([k, v]) => [v, k]));
 const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", catalog: "Catalog", team: "Team" };
 
-const roleOf = (user) => (user?.role === "admin" ? "admin" : "executive");
+const roleOf = (user) => (user?.role === "admin" ? "admin" : user?.role === "client" ? "client" : "executive");
+const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Organization" };
 const pageFromHash = () => SLUG_PAGE[(window.location.hash || "").replace(/^#\/?/, "").split(/[/?]/)[0]] || null;
 
 function UserMenu({ user }) {
@@ -4185,7 +4240,7 @@ function UserMenu({ user }) {
     };
   }, [open]);
   const initial = (user?.name || "?").trim()[0]?.toUpperCase();
-  const role = user?.role === "admin" ? "Admin" : "Survey person";
+  const role = ROLE_LABEL[roleOf(user)];
   return (
     <div className="user-menu" ref={ref}>
       <button type="button" className="user-chip" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}
@@ -4472,7 +4527,18 @@ function AppContent({ user }) {
     }
   };
 
+  const [catalogRequest, setCatalogRequest] = useState(null); // open a product in Catalog (from the bell)
   const goCatalog = () => {
+    setCatalogRequest(null);
+    setView("catalog");
+    setSelectedFeedback(null);
+    window.scrollTo({ top: 0 });
+  };
+
+  // Bell: "Recipe updated by the organization" -> Catalog, that product, Recipe tab
+  // (with its history); "Round started" -> the Rounds tab.
+  const openCatalogProduct = (productId, tab = "details") => {
+    setCatalogRequest({ productId, tab, at: Date.now() });
     setView("catalog");
     setSelectedFeedback(null);
     window.scrollTo({ top: 0 });
@@ -4493,10 +4559,19 @@ function AppContent({ user }) {
     window.scrollTo({ top: 0 });
   };
 
-  const openHistoryProduct = (productId) => {
+  const [historyRound, setHistoryRound] = useState(null); // round shown on the product page (null = all)
+  const openHistoryProduct = (productId, round = null) => {
+    setHistoryRound(round);
     setHistoryProductId(productId);
     setSelectedFeedback(null);
     window.scrollTo({ top: 0 });
+  };
+
+  // Catalog -> Rounds -> "Open report": Survey history, that product, that round.
+  const openProductRound = (productId, round) => {
+    setView("history");
+    setHistoryMode("products");
+    openHistoryProduct(productId, round);
   };
 
   const openUnlinked = async () => {
@@ -4973,6 +5048,8 @@ function AppContent({ user }) {
             <NotificationBell
               onOpenHistory={isAdminUser ? goHistory : undefined}
               onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
+              onOpenRecipe={isAdminUser ? (pid) => openCatalogProduct(pid, "recipe") : undefined}
+              onOpenRounds={isAdminUser ? (pid) => openCatalogProduct(pid, "rounds") : undefined}
             />
             <UserMenu user={user} />
           </div>
@@ -5026,7 +5103,7 @@ function AppContent({ user }) {
           </ResultsBoundary>
         ) : view === "catalog" ? (
           <ResultsBoundary resetKey="catalog" onRetry={goCatalog}>
-            <CatalogPage />
+            <CatalogPage openRequest={catalogRequest} onOpenRound={openProductRound} />
           </ResultsBoundary>
         ) : view === "team" ? (
           <ResultsBoundary resetKey="team" onRetry={goTeam}>
@@ -5061,8 +5138,9 @@ function AppContent({ user }) {
           ) : historyProductId != null ? (
             <ResultsBoundary resetKey={`product-${historyProductId}`} onRetry={goHistory}>
               <ProductFeedbackPage
-                key={historyProductId}
+                key={`${historyProductId}-${historyRound ?? "all"}`}
                 productId={historyProductId}
+                initialRound={historyRound}
                 onBack={() => {
                   setHistoryProductId(null);
                   window.scrollTo({ top: 0 });
@@ -5114,6 +5192,12 @@ function AppContent({ user }) {
                           <dt>Product</dt>
                           <dd>{surveyDraft.productName}</dd>
                         </div>
+                        {surveyDraft.round && (
+                          <div>
+                            <dt>Version</dt>
+                            <dd>{surveyDraft.recipeVersion ? `Recipe v${surveyDraft.recipeVersion} · ` : ""}Round {surveyDraft.round}</dd>
+                          </div>
+                        )}
                         <div>
                           <dt>Respondent</dt>
                           <dd>{surveyDraft.respondentName}</dd>
@@ -5594,6 +5678,14 @@ export default function App() {
   }, [token]);
 
   if (!session) return <LoginPage apiBase={API_BASE_URL} onSignedIn={() => {}} />;
+  // The organization (users.role = "client") has its own portal: components/OrgPortal.jsx.
+  if (roleOf(session.user) === "client") {
+    return (
+      <ResultsBoundary resetKey="org-root" onRetry={() => window.location.reload()}>
+        <OrgPortal key={session.user.id} user={session.user} ReportView={ConsolidatedReportView} />
+      </ResultsBoundary>
+    );
+  }
   return (
     <ResultsBoundary resetKey="root" onRetry={() => window.location.reload()}>
       {/* A different user gets a fresh app (no leftover pages or drafts). */}

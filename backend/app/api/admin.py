@@ -15,6 +15,11 @@ GET  /admin/audit                     the activity log (who changed what, when),
 A password reset, disabling an account or changing its role also signs that
 person out of every device.
 
+The Team is only the research team's own people (admins and survey persons).
+The organization's login is NOT managed here: it is created and its password
+reset on the server (python -m app.tools.organization), and it never appears
+in these lists.
+
 Note: the web app has no login yet, so these are open to anyone who can reach
 the backend, like the rest of the web API. Admin login for the web is the next step.
 
@@ -54,6 +59,14 @@ from app.services.product_access import (
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
+def _member_or_404(db: Session, user_id: int) -> User:
+    """A team member (admin or survey person). The organization's login answers 404 here."""
+    user = db.get(User, user_id)
+    if not user or user.role == "client":
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user
+
+
 def _admin_name(request: Request) -> str:
     """Name of the signed-in admin (set by the access-control middleware)."""
     account = getattr(request.state, "account", None) or {}
@@ -66,7 +79,7 @@ def list_users(
     tz_offset: int = Query(default=330, ge=-720, le=840),
     db: Session = Depends(get_db),
 ):
-    query = db.query(User)
+    query = db.query(User).filter(User.role != "client")  # the organization is not a team member
     if q and q.strip():
         like = f"%{q.strip().lower()}%"
         query = query.filter((User.name.ilike(like)) | (User.mobile.ilike(like)) | (User.email.ilike(like)))
@@ -76,7 +89,11 @@ def list_users(
         assigned.setdefault(uid, []).append(pid)
     return {
         "users": [
-            {**_user_out(u), "stats": survey_counts(db, surveys_of(u), tz_offset), "assigned_products": sorted(assigned.get(u.id, []))}
+            {
+                **_user_out(u),
+                "stats": survey_counts(db, surveys_of(u), tz_offset),
+                "assigned_products": sorted(assigned.get(u.id, [])),
+            }
             for u in users
         ]
     }
@@ -105,15 +122,13 @@ def _user_names(db: Session, ids) -> list:
 
 @router.get("/users/{user_id}/products")
 def user_products(user_id: int, db: Session = Depends(get_db)):
-    if not db.get(User, user_id):
-        raise HTTPException(status_code=404, detail="User not found.")
+    _member_or_404(db, user_id)
     return {"user_id": user_id, "product_ids": assignments_for_user(db, user_id)}
 
 
 @router.put("/users/{user_id}/products")
 def save_user_products(user_id: int, body: ProductIds, request: Request, db: Session = Depends(get_db)):
-    if not db.get(User, user_id):
-        raise HTTPException(status_code=404, detail="User not found.")
+    _member_or_404(db, user_id)
     known = {pid for (pid,) in db.query(Product.id).filter(Product.id.in_(body.product_ids)).all()} if body.product_ids else set()
     unknown = set(body.product_ids) - known
     if unknown:
@@ -140,7 +155,7 @@ def product_executives(product_id: int, db: Session = Depends(get_db)):
 def save_product_executives(product_id: int, body: UserIds, request: Request, db: Session = Depends(get_db)):
     if not db.get(Product, product_id):
         raise HTTPException(status_code=404, detail="Product not found.")
-    known = {uid for (uid,) in db.query(User.id).filter(User.id.in_(body.user_ids)).all()} if body.user_ids else set()
+    known = {uid for (uid,) in db.query(User.id).filter(User.id.in_(body.user_ids), User.role != "client").all()} if body.user_ids else set()
     unknown = set(body.user_ids) - known
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown user id(s): {sorted(unknown)}")
@@ -186,6 +201,7 @@ def add_member(body: NewMember, request: Request, db: Session = Depends(get_db))
     if body.gender and body.gender not in GENDERS:
         raise HTTPException(status_code=400, detail="Choose a gender from the list.")
     if body.role not in ("executive", "admin"):
+        # The organization's login is created on the server: python -m app.tools.organization create
         raise HTTPException(status_code=400, detail="Role must be 'executive' or 'admin'.")
     if db.query(U).filter(U.mobile == mobile).first():
         raise HTTPException(status_code=409, detail="Someone in the team already uses this mobile number.")
@@ -218,9 +234,7 @@ class NewPassword(BaseModel):
 
 @router.put("/users/{user_id}/password")
 def reset_password(user_id: int, body: NewPassword, request: Request, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+    user = _member_or_404(db, user_id)
     check_password(body.password)
     user.password_hash = hash_password(body.password)
     sign_out_everywhere(user)  # the old password's sign-ins end too
@@ -232,9 +246,7 @@ def reset_password(user_id: int, body: NewPassword, request: Request, db: Sessio
 @router.post("/users/{user_id}/sign-out")
 def sign_out_member(user_id: int, request: Request, db: Session = Depends(get_db)):
     """Sign a team member out of every device, e.g. when a phone is lost. Their password stays the same."""
-    user = db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+    user = _member_or_404(db, user_id)
     sign_out_everywhere(user)
     db.commit()
     audit.note(request, summary=f"Signed {user.name} (#{user.id}) out of every device")
@@ -252,12 +264,10 @@ class UserUpdate(BaseModel):
 
 @router.put("/users/{user_id}")
 def update_user(user_id: int, body: UserUpdate, request: Request, db: Session = Depends(get_db)):
-    user = db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found.")
+    user = _member_or_404(db, user_id)
     tracked = ("name", "role", "is_active", "can_view_history", "age", "gender")
     before = {k: getattr(user, k) for k in tracked}
-    if body.role is not None:
+    if body.role is not None and body.role != user.role:
         if body.role not in ("executive", "admin"):
             raise HTTPException(status_code=400, detail="Role must be 'executive' or 'admin'.")
         user.role = body.role

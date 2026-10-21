@@ -213,6 +213,10 @@ class SurveyResponse(Base):
     # The signed-in account that did the survey (mobile app). NULL for older surveys.
     user_id = Column(Integer, nullable=True, index=True)
 
+    # The survey round this survey belongs to (survey_rounds.id). Set when the
+    # survey is started: the product's live round (see services/rounds.py).
+    round_id = Column(Integer, nullable=True, index=True)
+
     # How long the customer has used the product: "last_week", "last_month", ...
     usage_period = Column(String(50), nullable=True)
 
@@ -295,6 +299,61 @@ class ProductAssignment(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
+class SurveyRound(Base):
+    """
+    A survey round of one product: consumers taste the product made with one
+    recipe version, until the target number of surveys is reached. The
+    organization starts rounds in its portal (after changing the recipe), so
+    every round has its own report and two rounds can be compared.
+
+    Round 1 of a product that already had surveys is created automatically and
+    holds those surveys (migrations.py). Surveys are filed under the live round.
+    """
+
+    __tablename__ = "survey_rounds"
+    __table_args__ = (UniqueConstraint("product_id", "number", name="uq_round_number"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    number = Column(Integer, nullable=False)  # 1, 2, 3 ... per product
+    recipe_version = Column(Integer, nullable=True)  # recipe_versions.version used in this round
+    target = Column(Integer, nullable=False, default=30)  # consumers to survey
+    due_date = Column(Date, nullable=True)  # "wanted by"
+    note = Column(Text, nullable=True)  # what changed, for the research team
+    status = Column(String(20), nullable=False, default="live", index=True)  # live | closed
+    # Who started it: the organization login, an admin, or "system" (Round 1 of older surveys).
+    started_by = Column(Integer, nullable=True)
+    started_by_name = Column(String(150), nullable=True)
+    started_by_role = Column(String(20), nullable=True)
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    closed_at = Column(DateTime, nullable=True)
+    # "target" (enough surveys) or "ended" (ended early by the organization or an admin)
+    closed_reason = Column(String(20), nullable=True)
+
+
+class RecipeVersion(Base):
+    """
+    Every saved version of a product's recipe (by an admin or the brand's client
+    login), so changes can be compared and nothing is lost when a recipe is edited.
+    products.recipe always holds the latest version.
+    """
+
+    __tablename__ = "recipe_versions"
+    __table_args__ = (UniqueConstraint("product_id", "version", name="uq_recipe_version"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    recipe = Column(JSON, nullable=True)  # None = the recipe was cleared
+    # Who saved it (name and role copied, so history still reads correctly later).
+    changed_by = Column(Integer, nullable=True)
+    changed_by_name = Column(String(150), nullable=True)
+    changed_by_role = Column(String(20), nullable=True)
+    # Short human-readable list of what changed compared with the previous version.
+    changes = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
 # ============================================================
 # ANALYSIS JOBS: uploads waiting for / going through analysis
 # ============================================================
@@ -338,7 +397,8 @@ class User(Base):
     mobile = Column(String(20), unique=True, nullable=True, index=True)
     email = Column(String(190), unique=True, nullable=True, index=True)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(20), nullable=False, default="executive")  # executive | admin
+    # executive | admin | client (the organization: created with python -m app.tools.organization)
+    role = Column(String(20), nullable=False, default="executive")
     is_active = Column(Integer, nullable=False, default=1)
     # Set by an admin: may this executive see feedback content (history, reports)?
     can_view_history = Column(Integer, nullable=False, default=0)
@@ -350,6 +410,11 @@ class User(Base):
     # account disabled, role changed, "sign out everywhere"). Every sign-in
     # token carries the number it was issued with; an older number is refused.
     token_version = Column(Integer, nullable=False, default=0)
+    # 1 = must choose a new password before doing anything else (the organization
+    # login after its starting password was created or reset by the server command).
+    must_change_password = Column(Integer, nullable=False, default=0)
+    # Organization portal: when the Updates page was last opened (for the unread count).
+    updates_seen_at = Column(DateTime, nullable=True)
 
 
 # ============================================================
@@ -365,6 +430,9 @@ class ConsolidatedReport(Base):
 
     product_id = Column(Integer, ForeignKey("products.id"), nullable=False, index=True)
     version = Column(Integer, nullable=False, default=1)
+    # NULL: the report of all the product's surveys (admin dashboard).
+    # Set: the report of one survey round (organization portal, round reports).
+    round_id = Column(Integer, nullable=True, index=True)
 
     # Filters used (date range, location, executive) and the exact responses
     # included, so any report can be reproduced later.

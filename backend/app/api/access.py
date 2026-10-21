@@ -7,6 +7,11 @@ check permissions themselves (feedback.py, surveys.py, video.py, catalog.py).
   public  anyone: sign-in, first-time setup, health check, API docs
   user    any signed-in, active account (admin or survey person)
   admin   admins only: team, survey history, reports, catalog changes, deleting
+  client  the organization's login: ONLY the routes in CLIENT_ALLOWED (its portal)
+
+An account that must choose a new password (the organization's first sign-in,
+or after its password was reset on the server) may only read /auth/me, change
+its password and sign out, until it has done so.
 
 Anything not listed is "user", so a new endpoint is never accidentally public.
 
@@ -46,11 +51,15 @@ PUBLIC = [
 
 ADMIN = [
     (None, r"^/admin(/|$)"),
+    # Organization portal: admins (preview) and the organization (CLIENT_ALLOWED), never survey persons
+    (None, r"^/org(/|$)"),
+    # Survey rounds of a product (admin view; the organization uses /org/...)
+    ({"GET"}, r"^/products/\d+/rounds$"),
     # Survey history and reports: everything except an executive's own survey list
     (None, r"^/product-feedback(?!/surveys/?$)(/|$)"),
     # Catalog changes (reading the catalog is needed to take surveys)
     (WRITE, r"^/(categories|products|questions)(/|$)"),
-    ({"GET"}, r"^/products/\d+/recipe$"),
+    ({"GET"}, r"^/products/\d+/recipe(/versions)?$"),
     # Question templates (starting questions for new products): Catalog admins only
     (None, r"^/question-templates(/|$)"),
     # The full list of recordings, and changing or deleting them
@@ -63,10 +72,39 @@ ADMIN = [
     ({"POST"}, r"^/analysis/reanalyze/\d+$"),
 ]
 
+# The organization's login may use ONLY these routes; every other route answers
+# 403 for it. It sees every active product (ownership.check_product_access), but
+# only aggregated results: no customer details, survey persons or recordings.
+CLIENT_ALLOWED = [
+    ({"GET"}, r"^/auth/me$"),
+    ({"POST"}, r"^/auth/(logout-all|change-password)$"),
+    (None, r"^/org(/|$)"),
+    ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
+    ({"GET"}, r"^/products/\d+/recipe/versions$"),
+]
+
+# While an account must choose a new password, only these work.
+PASSWORD_CHANGE_ALLOWED = [
+    ({"GET"}, r"^/auth/me$"),
+    ({"POST"}, r"^/auth/change-password$"),
+]
+
 MEDIA = re.compile(r"^/feedback/\d+/(video|audio|media)")
 
 _PUBLIC = [(m, re.compile(p)) for m, p in PUBLIC]
 _ADMIN = [(m, re.compile(p)) for m, p in ADMIN]
+_CLIENT = [(m, re.compile(p)) for m, p in CLIENT_ALLOWED]
+_PASSWORD_CHANGE = [(m, re.compile(p)) for m, p in PASSWORD_CHANGE_ALLOWED]
+
+
+def _matches(rules, method: str, path: str) -> bool:
+    method = method.upper()
+    path = path.rstrip("/") or "/"
+    return any((methods is None or method in methods) and rx.search(path) for methods, rx in rules)
+
+
+def client_may(method: str, path: str) -> bool:
+    return _matches(_CLIENT, method, path)
 
 
 def required_role(method: str, path: str) -> str:
@@ -91,7 +129,8 @@ def _account(token: Optional[str]) -> Optional[dict]:
         user = user_for_token(db, token)
         if user is None:
             return None
-        return {"id": user.id, "role": user.role, "name": user.name}
+        return {"id": user.id, "role": user.role, "name": user.name,
+                "must_change_password": bool(getattr(user, "must_change_password", 0))}
     finally:
         db.close()
 
@@ -173,7 +212,13 @@ def install_access_control(app):
         account = await run_in_threadpool(_account, token)
         if account is None:
             return JSONResponse(status_code=401, content={"detail": "Please sign in again."})
-        if need == "admin" and account["role"] != "admin":
+        if account.get("must_change_password") and not _matches(_PASSWORD_CHANGE, request.method, request.url.path):
+            return JSONResponse(status_code=403, content={"detail": "Please choose your own password first.",
+                                                          "code": "password_change_required"})
+        if account["role"] == "client":
+            if not client_may(request.method, request.url.path):
+                return JSONResponse(status_code=403, content={"detail": "The organization portal can't open this page."})
+        elif need == "admin" and account["role"] != "admin":
             return JSONResponse(status_code=403, content={"detail": "This is only available to admins."})
         request.state.account = account
         return await call_next(request)

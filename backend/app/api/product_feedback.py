@@ -4,6 +4,7 @@ Product-wise feedback history and consolidated reports.
 GET  /product-feedback                       every product with its feedback totals
 GET  /product-feedback/unlinked              recordings not linked to any survey
 GET  /product-feedback/{product_id}          one product: its responses + latest report
+                                             (?round=N: only that survey round, with the round's report)
 POST /product-feedback/{product_id}/consolidate   generate a new consolidated report
 GET  /product-feedback/{product_id}/reports  every report version (newest first)
 
@@ -32,6 +33,7 @@ from app.database.models import (
     SurveyAnswer,
     SurveyQuestion,
     SurveyResponse,
+    SurveyRound,
 )
 from app.api.auth import admin_guard, history_guard, optional_user, surveys_of
 from app.database.models import User
@@ -115,9 +117,47 @@ def _analyzed_rows(db: Session, product_ids=None) -> list:
     return list(latest.values())
 
 
+def _analyzed_round_ids(db: Session, product_ids=None) -> dict:
+    """{round_id: [analyzed survey ids]} (surveys with a linked recording, like the reports use)."""
+    q = (
+        db.query(SurveyResponse.round_id, SurveyResponse.id)
+        .join(FeedbackRecord, FeedbackRecord.response_id == SurveyResponse.id)
+        .filter(SurveyResponse.status == "analyzed", SurveyResponse.round_id.isnot(None))
+    )
+    if product_ids is not None:
+        q = q.filter(SurveyResponse.product_id.in_(product_ids))
+    out = defaultdict(set)
+    for round_id, rid in q.all():
+        out[round_id].add(rid)
+    return {k: sorted(v) for k, v in out.items()}
+
+
+_LIGHT_REPORT = load_only(
+    ConsolidatedReport.id, ConsolidatedReport.product_id, ConsolidatedReport.round_id, ConsolidatedReport.version,
+    ConsolidatedReport.generated_at, ConsolidatedReport.response_count, ConsolidatedReport.overall_rating,
+    ConsolidatedReport.response_ids,
+)
+
+
+def round_reports(db: Session, round_ids) -> dict:
+    """{round_id: its report} with light columns (no stats or narrative)."""
+    ids = [i for i in round_ids if i is not None]
+    if not ids:
+        return {}
+    rows = db.query(ConsolidatedReport).options(_LIGHT_REPORT).filter(ConsolidatedReport.round_id.in_(ids)).all()
+    return {r.round_id: r for r in rows}
+
+
+def round_report(db: Session, round_id: int):
+    """The full report of one survey round (or None)."""
+    return db.query(ConsolidatedReport).filter(ConsolidatedReport.round_id == round_id).order_by(ConsolidatedReport.id.desc()).first()
+
+
 def _latest_reports(db: Session, product_ids=None) -> dict:
     """{product_id: newest ConsolidatedReport}, loading only the columns the lists show."""
-    newest = db.query(ConsolidatedReport.product_id, func.max(ConsolidatedReport.version).label("version"))
+    newest = db.query(ConsolidatedReport.product_id, func.max(ConsolidatedReport.version).label("version")).filter(
+        ConsolidatedReport.round_id.is_(None)
+    )
     if product_ids is not None:
         newest = newest.filter(ConsolidatedReport.product_id.in_(product_ids))
     newest = newest.group_by(ConsolidatedReport.product_id).subquery()
@@ -129,6 +169,7 @@ def _latest_reports(db: Session, product_ids=None) -> dict:
             ConsolidatedReport.overall_rating, ConsolidatedReport.response_ids,
         ))
         .join(newest, (newest.c.product_id == ConsolidatedReport.product_id) & (newest.c.version == ConsolidatedReport.version))
+        .filter(ConsolidatedReport.round_id.is_(None))
         .all()
     )
     return {r.product_id: r for r in rows}
@@ -162,9 +203,10 @@ def _report_out(r: ConsolidatedReport) -> dict:
 
 
 def _latest_report(db: Session, product_id: int):
+    """The product's report of all its surveys (round reports are separate)."""
     return (
         db.query(ConsolidatedReport)
-        .filter(ConsolidatedReport.product_id == product_id)
+        .filter(ConsolidatedReport.product_id == product_id, ConsolidatedReport.round_id.is_(None))
         .order_by(ConsolidatedReport.version.desc())
         .first()
     )
@@ -204,6 +246,11 @@ def products_with_feedback(db: Session = Depends(get_db)):
 
     # Latest report per product (one query, light columns).
     reports = _latest_reports(db)
+    from app.services.rounds import done_counts, rounds_by_product
+
+    rounds = rounds_by_product(db)
+    live = {pid: next((r for r in rs if r.status == "live"), None) for pid, rs in rounds.items()}
+    live_done = done_counts(db, [r.id for r in live.values() if r is not None])
 
     products = []
     for p, c in rows:
@@ -226,6 +273,12 @@ def products_with_feedback(db: Session = Depends(get_db)):
             "sentiment": {k: tones.get(k, 0) for k in ("positive", "mixed", "negative", "neutral")},
             "last_feedback_at": _iso(last),
             "can_consolidate": len(items) >= 1,
+            "rounds": len(rounds.get(p.id, [])),
+            "live_round": None if not live.get(p.id) else {
+                "number": live[p.id].number, "done": live_done.get(live[p.id].id, 0), "target": live[p.id].target,
+                "recipe_version": live[p.id].recipe_version, "started_by_role": live[p.id].started_by_role,
+                "started_by_name": live[p.id].started_by_name,
+            },
             "report": None if not report else {
                 "version": report.version,
                 "generated_at": _iso(report.generated_at),
@@ -348,14 +401,24 @@ def recent_surveys(
                 records[rec.response_id] = rec
 
     analysis = _analysis_status(db, [r.id for r in rows if r.id not in records])
+    # Round and recipe version of each survey ("Round 2 · v2"), so people see which version it tested.
+    round_rows = {
+        rid: (num, ver)
+        for rid, num, ver in db.query(SurveyRound.id, SurveyRound.number, SurveyRound.recipe_version)
+        .filter(SurveyRound.id.in_({r.round_id for r in rows if r.round_id}))
+        .all()
+    } if rows else {}
     surveys = []
     for r in rows:
         product = products.get(r.product_id)
         category = categories.get(product.category_id) if product else None
         person = people.get(r.respondent_id)
         rec = records.get(r.id)
+        rnd = round_rows.get(r.round_id)
         surveys.append({
             "response_id": r.id,
+            "round": rnd[0] if rnd else None,
+            "recipe_version": rnd[1] if rnd else None,
             "created_at": _iso(r.created_at),
             "status": r.status,
             "executive_name": r.executive_name,
@@ -424,18 +487,40 @@ def delete_survey(response_id: int, db: Session = Depends(get_db)):
 # One product
 # ============================================================
 
+def rounds_summary(db: Session, product_id: int, viewer_role: Optional[str] = None) -> list:
+    """Every survey round of the product (oldest first) with its progress and report rating."""
+    from app.services.rounds import done_counts, round_out, rounds_of
+
+    rounds = rounds_of(db, product_id)
+    done = done_counts(db, [r.id for r in rounds])
+    reports = round_reports(db, [r.id for r in rounds])
+    return [round_out(r, done.get(r.id, 0), viewer_role, reports.get(r.id)) for r in rounds]
+
+
 @router.get("/{product_id}", dependencies=[Depends(admin_guard)])
-def product_feedback(product_id: int, db: Session = Depends(get_db)):
+def product_feedback(
+    product_id: int,
+    round_number: Optional[int] = Query(default=None, ge=1, alias="round", description="Only this survey round (number)"),
+    db: Session = Depends(get_db),
+):
+    from app.services.rounds import round_by_number
+
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
     category = db.get(Category, product.category_id)
+    selected = None
+    if round_number is not None:
+        selected = round_by_number(db, product_id, round_number)
+        if selected is None:
+            raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
 
-    responses = (
-        db.query(SurveyResponse)
-        .filter(SurveyResponse.product_id == product_id)
-        .order_by(SurveyResponse.created_at.desc())
-        .all()
+    query = db.query(SurveyResponse).filter(SurveyResponse.product_id == product_id)
+    if selected is not None:
+        query = query.filter(SurveyResponse.round_id == selected.id)
+    responses = query.order_by(SurveyResponse.created_at.desc()).all()
+    round_numbers = dict(
+        db.query(SurveyRound.id, SurveyRound.number).filter(SurveyRound.product_id == product_id).all()
     )
     ids = [r.id for r in responses]
     respondents = {
@@ -459,6 +544,7 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
         rec = records.get(r.id)
         out.append({
             "response_id": r.id,
+            "round": round_numbers.get(r.round_id),
             "status": r.status,
             "created_at": _iso(r.created_at),
             "usage_period": r.usage_period,
@@ -487,7 +573,12 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
     analyzed = [x for x in out if x["status"] == "analyzed" and x["feedback"]]
     ratings = [x["feedback"]["overall_rating"] for x in analyzed if x["feedback"]["overall_rating"]]
     tones = Counter(x["feedback"]["tone"] for x in analyzed)
-    report = _latest_report(db, product_id)
+    if selected is not None:
+        report = round_report(db, selected.id)
+        updating = round_report_is_stale(db, selected.id, report)
+    else:
+        report = _latest_report(db, product_id)
+        updating = report_is_stale(db, product_id, report)
 
     return {
         "product": {
@@ -506,10 +597,13 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
             "sentiment": {k: tones.get(k, 0) for k in ("positive", "mixed", "negative", "neutral")},
             "can_consolidate": len(analyzed) >= 1,
             # True while the worker refreshes the report after new or deleted surveys.
-            "report_updating": report_is_stale(db, product_id, report),
+            "report_updating": updating,
         },
         "responses": out,
         "report": _report_out(report) if report else None,
+        # Survey rounds (oldest first) and the one shown (None = all surveys).
+        "rounds": rounds_summary(db, product_id),
+        "round": selected.number if selected is not None else None,
     }
 
 
@@ -517,7 +611,7 @@ def product_feedback(product_id: int, db: Session = Depends(get_db)):
 def report_versions(product_id: int, db: Session = Depends(get_db)):
     reports = (
         db.query(ConsolidatedReport)
-        .filter(ConsolidatedReport.product_id == product_id)
+        .filter(ConsolidatedReport.product_id == product_id, ConsolidatedReport.round_id.is_(None))
         .order_by(ConsolidatedReport.version.desc())
         .all()
     )
@@ -529,11 +623,25 @@ def report_versions(product_id: int, db: Session = Depends(get_db)):
 # ============================================================
 
 @router.post("/{product_id}/consolidate", dependencies=[Depends(admin_guard)])
-def consolidate(product_id: int, db: Session = Depends(get_db)):
-    """Refresh the product's report now (it also refreshes by itself after each new analysis)."""
+def consolidate(
+    product_id: int,
+    round_number: Optional[int] = Query(default=None, ge=1, alias="round"),
+    db: Session = Depends(get_db),
+):
+    """Refresh the product's report (or one round's) now; it also refreshes by itself after each new analysis."""
+    from app.services.rounds import round_by_number
+
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    if round_number is not None:
+        selected = round_by_number(db, product_id, round_number)
+        if selected is None:
+            raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
+        report = build_round_report(db, selected.id)
+        if report is None:
+            raise HTTPException(status_code=400, detail=f"Round {round_number} has no analyzed surveys yet.")
+        return _report_out(report)
     report = build_product_report(db, product_id)
     if report is None:
         raise HTTPException(status_code=400, detail=f"{product.name} has no analyzed surveys yet.")
@@ -566,21 +674,9 @@ def report_is_stale(db: Session, product_id: int, report=None) -> bool:
     return sorted(report.response_ids or []) != ids
 
 
-def build_product_report(db: Session, product_id: int):
-    """
-    Build (or rebuild) THE consolidated report of one product from all of its analyzed
-    surveys. Exactly one report per product: an existing one is replaced, never copied.
-    Returns the report, or None when the product has no analyzed surveys (any old report is removed).
-    """
-    product = db.get(Product, product_id)
-    if not product:
-        return None
-    pairs = _analyzed_pairs(db, [product_id])
-    if not pairs:
-        db.query(ConsolidatedReport).filter(ConsolidatedReport.product_id == product_id).delete(synchronize_session=False)
-        db.commit()
-        return None
-
+def _compose(db: Session, product: Product, pairs) -> tuple:
+    """(response_ids, stats, narrative) of a report built from these analyzed surveys."""
+    product_id = product.id
     started = time.time()
     response_ids = [resp.id for resp, _ in pairs]
 
@@ -647,6 +743,28 @@ def build_product_report(db: Session, product_id: int):
     stats = build_stats(items)
     narrative = write_narrative(product.name, stats, summaries, translations, recipe=product.recipe)
 
+    return response_ids, stats, narrative, started
+
+
+def build_product_report(db: Session, product_id: int):
+    """
+    Build (or rebuild) THE consolidated report of one product from all of its analyzed
+    surveys. Exactly one report per product: an existing one is replaced, never copied.
+    Returns the report, or None when the product has no analyzed surveys (any old report is removed).
+    """
+    product = db.get(Product, product_id)
+    if not product:
+        return None
+    pairs = _analyzed_pairs(db, [product_id])
+    if not pairs:
+        db.query(ConsolidatedReport).filter(
+            ConsolidatedReport.product_id == product_id, ConsolidatedReport.round_id.is_(None)
+        ).delete(synchronize_session=False)
+        db.commit()
+        return None
+
+    response_ids, stats, narrative, started = _compose(db, product, pairs)
+
     # One report per product: update it in place, remove any older copies.
     report = _latest_report(db, product_id)
     if report is None:
@@ -654,17 +772,94 @@ def build_product_report(db: Session, product_id: int):
         db.add(report)
     else:
         db.query(ConsolidatedReport).filter(
-            ConsolidatedReport.product_id == product_id, ConsolidatedReport.id != report.id
+            ConsolidatedReport.product_id == product_id, ConsolidatedReport.round_id.is_(None),
+            ConsolidatedReport.id != report.id,
         ).delete(synchronize_session=False)
+    _fill(report, response_ids, stats, narrative)
+    db.commit()
+    db.refresh(report)
+    print(f"Consolidated report for {product.name} updated ({len(response_ids)} surveys, {time.time() - started:.0f}s).")
+    return report
+
+
+def _fill(report: ConsolidatedReport, response_ids, stats, narrative, filters=None) -> None:
     report.version = (report.version or 0) + 1  # how many times it has been updated
-    report.filters = {}
+    report.filters = filters or {}
     report.response_ids = response_ids
     report.response_count = len(response_ids)
     report.stats = stats
     report.narrative = narrative
     report.overall_rating = stats["overall_rating"]
     report.generated_at = datetime.utcnow()
+
+
+# ============================================================
+# Round reports: one per survey round (organization portal, round history)
+# ============================================================
+
+def stale_round_ids(db: Session, product_ids=None) -> list:
+    """Rounds whose report doesn't match their analyzed surveys (or that have none yet)."""
+    from app.database.models import SurveyRound
+
+    current = _analyzed_round_ids(db, product_ids)
+    q = db.query(SurveyRound.id)
+    if product_ids is not None:
+        q = q.filter(SurveyRound.product_id.in_(product_ids))
+    all_rounds = [rid for (rid,) in q.all()]
+    reports = round_reports(db, all_rounds)
+    stale = []
+    for rid in all_rounds:
+        ids = current.get(rid, [])
+        report = reports.get(rid)
+        if (report is None and ids) or (report is not None and sorted(report.response_ids or []) != ids):
+            stale.append(rid)
+    return stale
+
+
+def round_report_is_stale(db: Session, round_id: int, report=None) -> bool:
+    ids = _analyzed_round_ids(db).get(round_id, []) if round_id else []
+    report = report if report is not None else round_report(db, round_id)
+    if not ids:
+        return report is not None
+    return report is None or sorted(report.response_ids or []) != ids
+
+
+def build_round_report(db: Session, round_id: int):
+    """
+    Build (or rebuild) the report of one survey round. When the round has exactly
+    the same surveys as the product's whole report (e.g. Round 1 of older surveys),
+    that report's results are copied instead of asking the AI again.
+    """
+    from app.database.models import SurveyRound
+
+    survey_round = db.get(SurveyRound, round_id)
+    product = db.get(Product, survey_round.product_id) if survey_round else None
+    if product is None:
+        return None
+    pairs = [(resp, rec) for resp, rec in _analyzed_pairs(db, [product.id]) if resp.round_id == round_id]
+    existing = round_report(db, round_id)
+    if not pairs:
+        if existing is not None:
+            db.query(ConsolidatedReport).filter(ConsolidatedReport.round_id == round_id).delete(synchronize_session=False)
+            db.commit()
+        return None
+    response_ids = sorted(resp.id for resp, _ in pairs)
+    whole = _latest_report(db, product.id)
+    started = time.time()
+    if whole is not None and sorted(whole.response_ids or []) == response_ids and whole.stats:
+        stats, narrative = whole.stats, whole.narrative
+    else:
+        response_ids, stats, narrative, started = _compose(db, product, pairs)
+    report = existing
+    if report is None:
+        report = ConsolidatedReport(product_id=product.id, round_id=round_id, version=0)
+        db.add(report)
+    else:
+        db.query(ConsolidatedReport).filter(
+            ConsolidatedReport.round_id == round_id, ConsolidatedReport.id != report.id
+        ).delete(synchronize_session=False)
+    _fill(report, response_ids, stats, narrative, filters={"round": survey_round.number})
     db.commit()
     db.refresh(report)
-    print(f"Consolidated report for {product.name} updated ({len(response_ids)} surveys, {time.time() - started:.0f}s).")
+    print(f"Round {survey_round.number} report for {product.name} updated ({len(response_ids)} surveys, {time.time() - started:.0f}s).")
     return report

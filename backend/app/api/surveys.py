@@ -24,12 +24,14 @@ from sqlalchemy.orm import Session
 
 from app.api.ownership import account, response_or_404, respondent_or_404, respondent_usable_or_404
 from app.database.database import get_db
+from app.services.rounds import close_if_complete, round_for_new_survey
 from app.database.models import (
     Product,
     Respondent,
     SurveyAnswer,
     SurveyQuestion,
     SurveyResponse,
+    SurveyRound,
 )
 
 
@@ -340,8 +342,13 @@ def _response_out(
         .all()
     )
 
+    survey_round = db.get(SurveyRound, response.round_id) if response.round_id else None
+
     return {
         "id": response.id,
+        # The survey round it is filed under ("Round 2"), for the apps to show.
+        "round": survey_round.number if survey_round else None,
+        "recipe_version": survey_round.recipe_version if survey_round else None,
 
         "product": {
             "id": product.id if product else None,
@@ -467,8 +474,11 @@ def create_survey_response(
         )
 
     me = account(request)
+    # Filed under the product's live survey round automatically (services/rounds.py).
+    survey_round = round_for_new_survey(db, product.id)
     response = SurveyResponse(
         product_id=product.id,
+        round_id=survey_round.id if survey_round else None,
         respondent_id=respondent.id,
         # The survey belongs to the signed-in account from the start
         # (before, the apps had to "claim" it in a second call).
@@ -754,6 +764,8 @@ def submit_survey_response(
     response.submitted_at = datetime.utcnow()
 
     db.commit()
+    # The round closes by itself once enough surveys are submitted.
+    close_if_complete(db, response.round_id)
     db.refresh(response)
 
     return _response_out(

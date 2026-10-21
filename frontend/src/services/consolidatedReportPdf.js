@@ -278,7 +278,7 @@ export function buildClientSections(stats, narrative, n) {
    PDF
    ================================================================ */
 
-const C = {
+export const C = {
   ink: [16, 32, 48],
   ink2: [52, 68, 84],
   muted: [96, 110, 124],
@@ -294,7 +294,7 @@ const C = {
 };
 
 // Built-in PDF fonts only cover Latin-1, so swap typographic characters for safe ones.
-const clean = (s) =>
+export const clean = (s) =>
   String(s ?? "")
     .replace(/[\u2013\u2014\u2212]/g, "-")
     .replace(/[\u2018\u2019]/g, "'")

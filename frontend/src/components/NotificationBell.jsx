@@ -11,7 +11,9 @@ import {
 /*
   Bell in the top bar, for every signed-in person.
     Admins:          "Survey submitted without a video" (survey person, product, times)
-    Survey persons:  "New product: <name>" when an admin assigns them a product
+                     "Recipe updated by <organization>", "<organization> started / ended Round N"
+    Survey persons:  "New product: <name>" when an admin assigns them a product,
+                     "New round: <product>" when the organization starts a round
 
   Stays current without a page reload: the unread count is checked every 30 s,
   when the browser tab comes back into view, and right after the panel opens.
@@ -19,12 +21,20 @@ import {
   Props:
     onOpenHistory()  optional, admins: open Survey history from a missing-video notice
     onOpenSurvey()   optional, survey persons: start a survey from a new-product notice
+    onOpenRecipe(id) optional, admins: open a product's recipe (and its version history)
+                     from a "Recipe updated by the organization" notice
+    onOpenRounds(id) optional, admins: open a product's survey rounds from a round notice
 */
 
 const POLL_MS = 30000;
 
 const MISSING_VIDEO = "survey_missing_video";
 const PRODUCT_ASSIGNED = "product_assigned";
+const CLIENT_RECIPE = "client_recipe_updated";
+const ROUND_STARTED_BY_ORG = "client_round_started";
+const ROUND_ENDED_BY_ORG = "client_round_ended";
+const ROUND_STARTED = "round_started";
+const ROUND_KINDS = [ROUND_STARTED_BY_ORG, ROUND_ENDED_BY_ORG, ROUND_STARTED];
 
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -57,6 +67,25 @@ function BellIcon() {
 }
 
 function KindIcon({ kind }) {
+  if (ROUND_KINDS.includes(kind)) {
+    return (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 1 1-3-6.7" />
+        <path d="M21 4v5h-5" />
+      </svg>
+    );
+  }
+  if (kind === CLIENT_RECIPE) {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+        <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2Z" />
+        <path d="M9 13h6M9 17h4" />
+      </svg>
+    );
+  }
   if (kind === MISSING_VIDEO) {
     return (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -77,8 +106,90 @@ function KindIcon({ kind }) {
   );
 }
 
-function Details({ item, onOpenHistory, onOpenSurvey, onClose }) {
+const dayOnly = (iso) => {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "—";
+};
+
+function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onClose }) {
   const d = item.data || {};
+  if (ROUND_KINDS.includes(item.kind)) {
+    const ended = item.kind === ROUND_ENDED_BY_ORG;
+    return (
+      <div className="notif-details">
+        <dl>
+          <dt>Product</dt>
+          <dd>
+            {d.product_name || "—"}
+            {d.category_name && <span className="notif-sub">{d.category_name}</span>}
+          </dd>
+          <dt>Round</dt>
+          <dd>Round {d.round}</dd>
+          {ended ? (
+            <>
+              <dt>Surveyed</dt>
+              <dd>{d.done} of {d.target} consumers</dd>
+            </>
+          ) : (
+            <>
+              <dt>Recipe</dt>
+              <dd>v{d.recipe_version ?? "—"}</dd>
+              <dt>Consumers to survey</dt>
+              <dd>{d.target}</dd>
+              {d.due_date && (
+                <>
+                  <dt>Wanted by</dt>
+                  <dd>{dayOnly(d.due_date)}</dd>
+                </>
+              )}
+              <dt>Started</dt>
+              <dd>{formatDate(d.started_at || item.created_at)}</dd>
+            </>
+          )}
+        </dl>
+        {d.note && <p className="notif-note">“{d.note}”</p>}
+        {onOpenRounds && d.product_id && item.kind !== ROUND_STARTED && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { onClose(); onOpenRounds(d.product_id); }}>
+            Open rounds
+          </button>
+        )}
+        {onOpenSurvey && item.kind === ROUND_STARTED && (
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => { onClose(); onOpenSurvey(); }}>
+            Take a survey
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (item.kind === CLIENT_RECIPE) {
+    return (
+      <div className="notif-details">
+        <dl>
+          <dt>Product</dt>
+          <dd>
+            {d.product_name || "—"}
+            {d.category_name && <span className="notif-sub">{d.category_name}</span>}
+          </dd>
+          <dt>Changed by</dt>
+          <dd>{d.client_name || "—"} <span className="notif-sub">Organization</span></dd>
+          <dt>Recipe version</dt>
+          <dd>v{d.version}</dd>
+          <dt>Changed</dt>
+          <dd>{formatDate(d.changed_at || item.created_at)}</dd>
+        </dl>
+        {(d.changes || []).length > 0 && (
+          <ul className="notif-changes">
+            {d.changes.map((c) => <li key={c}>{c}</li>)}
+          </ul>
+        )}
+        {onOpenRecipe && d.product_id && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { onClose(); onOpenRecipe(d.product_id); }}>
+            Open recipe and history
+          </button>
+        )}
+      </div>
+    );
+  }
   if (item.kind === MISSING_VIDEO) {
     const person = d.survey_person || {};
     const received = d.resolution === "video_received";
@@ -146,7 +257,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onClose }) {
   return null;
 }
 
-export default function NotificationBell({ onOpenHistory, onOpenSurvey }) {
+export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [items, setItems] = useState([]);
@@ -296,7 +407,7 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey }) {
                       </span>
                     </button>
                     {isOpen && (
-                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onClose={() => setOpen(false)} />
+                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onOpenRecipe={onOpenRecipe} onOpenRounds={onOpenRounds} onClose={() => setOpen(false)} />
                     )}
                   </li>
                 );

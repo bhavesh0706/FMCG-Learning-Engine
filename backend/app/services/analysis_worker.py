@@ -394,7 +394,8 @@ def _refresh_one_report() -> bool:
     queued recordings always come first. Returns True if a report was refreshed.
     """
     try:
-        from app.api.product_feedback import build_product_report, stale_report_products
+        from app.api.product_feedback import build_product_report, build_round_report, stale_report_products, stale_round_ids
+        from app.database.models import SurveyRound
 
         db = SessionLocal()
         try:
@@ -417,6 +418,20 @@ def _refresh_one_report() -> bool:
                 report = build_product_report(db, pid)
                 print(
                     f"Analysis worker: report for product {pid} "
+                    + ("refreshed" if report else "removed (no analyzed surveys)")
+                    + f" in {time.time() - started:.0f}s.",
+                    flush=True,
+                )
+                return True
+            # Then the report of each survey round (organization portal, round history).
+            for round_id in stale_round_ids(db):
+                survey_round = db.get(SurveyRound, round_id)
+                if survey_round is None or survey_round.product_id in busy:
+                    continue
+                started = time.time()
+                report = build_round_report(db, round_id)
+                print(
+                    f"Analysis worker: Round {survey_round.number} report of product {survey_round.product_id} "
                     + ("refreshed" if report else "removed (no analyzed surveys)")
                     + f" in {time.time() - started:.0f}s.",
                     flush=True,

@@ -168,6 +168,11 @@ class Session {
   }
 
   static Future<void> _signedIn(Map<String, dynamic> data) async {
+    // The organization's login uses its web portal only; the app is for survey persons and admins.
+    final role = (data['user'] is Map) ? '${(data['user'] as Map)['role']}' : '';
+    if (role == 'client') {
+      throw 'This is the organization login. Open the organization portal in a web browser.';
+    }
     token = '${data['token']}';
     user.value = SessionUser.fromJson(Map<String, dynamic>.from(data['user'] as Map));
     await _save();
@@ -182,6 +187,7 @@ class Session {
       final r = await _dio.post('/auth/login', data: {'identifier': identifier.trim(), 'password': password});
       await _signedIn(Map<String, dynamic>.from(r.data as Map));
     } catch (e) {
+      if (e is String) rethrow; // already a readable message
       throw _message(e);
     }
   }
@@ -191,6 +197,7 @@ class Session {
       final r = await _dio.post('/auth/signup', data: {'name': name.trim(), 'identifier': identifier.trim(), 'password': password});
       await _signedIn(Map<String, dynamic>.from(r.data as Map));
     } catch (e) {
+      if (e is String) rethrow; // already a readable message
       throw _message(e);
     }
   }

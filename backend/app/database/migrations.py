@@ -10,7 +10,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.database import models  # noqa: F401  (registers every table on Base)
-from app.database.database import Base, engine
+from app.database.database import Base, SessionLocal, engine
 
 
 def _has_column(table: str, column: str) -> bool:
@@ -77,10 +77,30 @@ def run_migrations():
     _add_column("feedback_records", "tone", "VARCHAR(20) NULL", index=True)
     # Phase 2: sign every device out at once (password reset, account disabled, ...)
     _add_column("users", "token_version", "INT NOT NULL DEFAULT 0")
+    # Organization portal: survey rounds, forced password change, Updates page.
+    _add_column("survey_responses", "round_id", "INT NULL", index=True)
+    _add_column("consolidated_reports", "round_id", "INT NULL", index=True)
+    _add_column("users", "must_change_password", "INT NOT NULL DEFAULT 0")
+    _add_column("users", "updates_seen_at", "DATETIME NULL")
 
     # 3. Data steps (each one does nothing once done).
     backfill_feedback_tone()
     link_unclaimed_surveys()
+    create_first_rounds()
+
+
+def create_first_rounds() -> int:
+    """
+    Products that already have surveys get Round 1 holding them (once). See
+    services/rounds.py. Returns how many rounds were created.
+    """
+    from app.services.rounds import create_first_rounds as create
+
+    db = SessionLocal()
+    try:
+        return create(db)
+    finally:
+        db.close()
 
 
 def backfill_feedback_tone(batch: int = 500) -> int:
@@ -138,7 +158,8 @@ def link_unclaimed_surveys() -> int:
         if not unclaimed:
             return 0
         accounts = defaultdict(list)
-        for uid, name in db.query(models.User.id, models.User.name).all():
+        # Client logins (brands) never take surveys, so surveys are never linked to them.
+        for uid, name in db.query(models.User.id, models.User.name).filter(models.User.role != "client").all():
             accounts[_normal_name(name)].append(uid)
         by_owner = defaultdict(list)
         for sid, name in unclaimed:

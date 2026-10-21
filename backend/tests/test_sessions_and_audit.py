@@ -191,7 +191,8 @@ def test_recipe_change_is_logged(client, db, admin, product):
               "steps": [{"title": "Mix"}, {"title": "Bake"}]}
     assert client.put(f"/products/{product.id}/recipe", json=recipe, headers=auth(admin)).status_code == 200
     entry = _entries(db, action="recipe.update", target_id=product.id)[-1]
-    assert entry.details["ingredients"] == [0, 1] and entry.details["steps"] == [0, 2]
+    assert entry.details["version"] == 1
+    assert entry.details["changes"] == ["Recipe added: 1 ingredients, 2 steps"]
 
 
 def test_survey_steps_are_logged_without_customer_details(client, db, alice, product):

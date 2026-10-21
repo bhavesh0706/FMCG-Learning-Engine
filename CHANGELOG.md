@@ -1,6 +1,51 @@
 # Changelog
 
-## Unreleased - button and icon size standard
+## 1.4.0 — Organization portal and survey rounds (19 Oct 2026)
+
+The client is the organization (the company whose products are surveyed). It now has
+its own portal. The admin dashboard has no client options: it updates by itself when
+the organization changes a recipe or starts a new survey round.
+
+### The organization's login (made on the server, not on the dashboard)
+- `python -m app.tools.organization create --name "..." --email ...` prints a starting password once.
+  Also `reset-password`, `list`, `rename`, `disable`, `enable`.
+- **First sign-in:** the organization must choose its own password before anything else
+  (`POST /auth/change-password`; every other sign-in then ends). After that only the organization knows it.
+- The organization sees **every active product**, but only aggregated results: no customer names,
+  phone numbers or addresses, no survey persons, no recordings, no single surveys. Admins appear as "Research team".
+- The mobile app refuses the organization's login (it is for survey persons).
+
+### Organization portal (web, same address, its own pages)
+- **Overview:** products, consumer responses, average rating, open rounds; products with their current
+  round, progress and rating change; latest updates.
+- **Products:** cards with round status; filters Collecting / Report ready / Not started; search.
+- **Product:** Consumer report (per round, with the PDF) · Recipe (edit, version history, compare
+  versions, "tested in Round N") · Rounds (timeline, start a round, end a round early) · Compare rounds
+  (key numbers, what consumers said, recipe changes, Comparison PDF).
+- **Start new round** dialog: recipe version, consumers to survey, wanted-by date, note for the research team.
+- **Updates:** everything that happened, newest first, with an unread count in the menu.
+- **Account:** organization details, change password, sign out everywhere.
+
+### Survey rounds
+- New `survey_rounds` table; every survey and every report belongs to a round (`round_id`).
+- One live round per product. New surveys from the field app are filed under it automatically; the round
+  closes by itself when its target is reached. Products that already had surveys get **Round 1** holding them.
+- Every round has its own report (rebuilt by the worker like the product report; a round with the same
+  surveys as the product report reuses it, so the AI is not asked twice).
+
+### Admin dashboard (no client options; it updates by itself)
+- **Bell:** "Recipe updated by ‹organization›", "‹organization› started Round N", "‹organization› ended Round N".
+- **Badges:** live round ("Round 2 · 6 of 30") and recipe changed by the organization, on Home, Survey history and Catalog.
+- **Catalog → product → Rounds** tab: every round (recipe, progress, who started it, note, rating), Open report, End round.
+- **Survey history → product:** All rounds / Round 1 / Round 2 picker; the report and the customer list follow it.
+- Survey persons get "New round: ‹product›" in the mobile app's bell (no app update needed).
+- Activity log: round starts and ends, password changes.
+
+### Settings (backend `.env`, optional)
+- `FMCG_ROUND_TARGET` (default 30): consumers per round when none is given.
+- `FMCG_ORG_CONTACT`: the contact shown on the organization's Account page.
+
+## 1.3.1 — Button and icon size standard (19 Oct 2026)
 
 - Buttons have three sizes: small 32 px, medium 40 px, large 48 px. Large is defined but not used anywhere.
 - Medium: page-header actions, dialog footers, form submits, empty-state actions, top bar. Small: actions inside cards, panels, table rows and toolbars.
@@ -8,29 +53,6 @@
 - Icon-only buttons are 32 px (small) or 40 px (medium); icon tiles are 32, 40 or 48 px.
 - Removed a duplicate `.btn-sm` rule and conflicting per-screen button heights (36, 42, 46 px).
 - Android app: buttons 40 px (the touch area stays 48), icons 16 / 20 / 24.
-
-## 1.4.0 — Client role: brand logins with their own reports and recipes (16 Oct 2026)
-
-### Client portal (proposal section 2, "Client" role)
-- **New account type `client`** for the brand that owns products. Admins create client logins on **Team → Clients** and choose each client's products (new `client_products` table; `GET/PUT /admin/users/{id}/client-products`).
-- **What a client sees.** A client signs in on the web and gets a separate, simple portal (**Product reports**):
-  - its products as cards (rating, number of responses, when the report was updated);
-  - each product's consolidated consumer report, with the same client summary and **Download PDF** as admins;
-  - a **Recipe** tab to read and update the recipe (ingredients, batch shares, production steps) that the report's recommendations refer to.
-- **What a client never sees.** Customer names, phone numbers or addresses, survey person names, individual surveys, recordings, the team, the catalog, or other brands' products. Only aggregated results are sent (`GET /client/products`, `GET /client/products/{id}`); internal survey ids are removed from the report.
-- **Enforced on the server.** A client may call only the routes in `CLIENT_ALLOWED` (`access.py`); everything else answers 403. Another brand's product answers 404 (`ownership.check_product_access`). Survey persons can't open the client portal.
-- **Separate from the team.** Clients are never linked to old surveys by name, can't be given products to survey, and can't be switched to or from a team role. Client logins have the same 7-day sign-in, sign-out, **Sign out everywhere** and **Active** switch as everyone else. Recipe changes by clients appear in the Activity log as "Client".
-- **Mobile.** The app refuses client logins with a clear message ("This is a client account. Open the web portal…").
-
-### Not in this update
-- **Starting a new survey round after a recipe change (re-release).** This needs recipe versions and survey rounds, which come in the next update; the client portal will then get a "Start new round" button and a round-by-round comparison.
-
-### Fixes
-- **Survey persons only.** The survey assignment lists (Team → Members, Catalog → product → who can survey) now show survey persons only, never clients.
-
-### Upgrade notes
-1. Restart the backend. It creates the `client_products` table by itself.
-2. Add a client: **Team → Clients → Add client**, share the login, then **Manage** to pick their products.
 
 ## 1.3.0 — Phase 2 quick wins: sign-out, activity log, Play Store app ID (16 Oct 2026)
 

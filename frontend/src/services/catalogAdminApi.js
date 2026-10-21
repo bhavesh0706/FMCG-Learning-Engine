@@ -63,3 +63,9 @@ export const removeQuestionTemplate = (id) => change(api.delete(`/question-templ
 // Permanent deletion (only for deactivated items with no surveys / no products)
 export const deleteProductPermanently = (id) => change(api.delete(`/products/${id}/permanent`));
 export const deleteCategoryPermanently = (id) => change(api.delete(`/categories/${id}/permanent`));
+// Recipe version history: every saved version, who saved it and what changed
+export const getRecipeVersions = (productId) => data(api.get(`/products/${productId}/recipe/versions`));
+
+// Survey rounds (the organization starts them in its portal; admins see them and may end one early)
+export const getProductRounds = (productId) => data(api.get(`/products/${productId}/rounds`));
+export const endProductRound = (productId, number) => change(api.post(`/products/${productId}/rounds/${number}/end`));

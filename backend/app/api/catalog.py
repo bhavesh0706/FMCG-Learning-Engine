@@ -20,6 +20,7 @@ from app.database.database import get_db
 from app.services.product_access import hidden_product_ids
 from app.database.models import Category, Product, SurveyQuestion, SurveyResponse
 from app.services import audit
+from app.services.recipe_versions import latest_changes
 
 router = APIRouter(tags=["Catalog"])
 
@@ -216,12 +217,37 @@ def _batch_counts(db: Session, product_ids: List[int]) -> tuple:
     return question_counts, response_counts
 
 
+def live_rounds(db: Session, product_ids) -> dict:
+    """{product_id: the live survey round, with its progress} (badges, field app)."""
+    from app.database.models import SurveyRound
+    from app.services.rounds import done_counts
+
+    ids = list(product_ids)
+    if not ids:
+        return {}
+    rows = db.query(SurveyRound).filter(SurveyRound.product_id.in_(ids), SurveyRound.status == "live").all()
+    done = done_counts(db, [r.id for r in rows])
+    return {
+        r.product_id: {
+            "number": r.number, "done": done.get(r.id, 0), "target": r.target, "recipe_version": r.recipe_version,
+            "started_by_role": r.started_by_role, "started_by_name": r.started_by_name,
+            "started_at": r.started_at.isoformat(timespec="seconds") + "Z" if r.started_at else None,
+            # Shown to survey persons: a new recipe version is being tested, and the organization's short note.
+            "new_version": bool(r.number > 1 and r.recipe_version and r.recipe_version > 1),
+            "note": r.note or "",
+        }
+        for r in rows
+    }
+
+
 def _product_out(
     db: Session,
     p: Product,
     category: Optional[Category] = None,
     with_questions: bool = False,
     counts: Optional[tuple] = None,
+    recipe_changes: Optional[dict] = None,
+    rounds: Optional[dict] = None,
 ) -> dict:
     category = category or db.get(Category, p.category_id)
     if counts is not None and not with_questions:
@@ -249,6 +275,10 @@ def _product_out(
         # Recipe status for the Catalog page (the recipe itself: GET /products/{id}/recipe).
         "has_recipe": bool(getattr(p, "recipe", None)),
         "recipe_steps": len((getattr(p, "recipe", None) or {}).get("steps") or []),
+        # Newest recipe version: who changed it and when (Catalog badge "Updated by client").
+        "recipe_change": (recipe_changes if recipe_changes is not None else latest_changes(db, [p.id])).get(p.id),
+        # The survey round collecting surveys now (organization portal starts rounds), or None.
+        "live_round": (rounds if rounds is not None else live_rounds(db, [p.id])).get(p.id),
         "responses_collected": collected,
         "survey_count": _all_surveys(db, p.id) if not p.is_active else None,  # only needed for inactive products
         # Drives the "Generate Consolidated Feedback" button.
@@ -408,7 +438,9 @@ def list_products(
         query = query.filter(Product.name.ilike(f"%{q.strip()}%"))
     rows = query.order_by(Category.name, Product.name).all()
     counts = _batch_counts(db, [p.id for p, _ in rows])
-    return {"products": [_product_out(db, p, c, counts=counts) for p, c in rows]}
+    changes = latest_changes(db, [p.id for p, _ in rows])
+    current = live_rounds(db, [p.id for p, _ in rows])
+    return {"products": [_product_out(db, p, c, counts=counts, recipe_changes=changes, rounds=current) for p, c in rows]}
 
 
 def question_dicts(questions) -> List[dict]:

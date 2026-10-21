@@ -26,6 +26,8 @@ os.environ.update(
     {
         "APP_ENV": "development",
         "DATABASE_URL": f"sqlite:///{_TMP / 'test.db'}",
+        # config.py insists on this even though tests use SQLite; CI has no backend/.env.
+        "MYSQL_PASSWORD": "test-password-unused-with-sqlite",
         "FMCG_WORKER_MODE": "off",
         "FMCG_SECRET_KEY": "test-secret-key-not-for-production",
         "FMCG_PBKDF2_ROUNDS": "1000",  # fast hashing in tests; production default is 600,000

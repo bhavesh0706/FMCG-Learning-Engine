@@ -126,3 +126,26 @@ def job_or_404(db: Session, request: Request, job_id: int) -> AnalysisJob:
     if job.response_id is not None and owns_response(request, db.get(SurveyResponse, job.response_id)):
         return job
     _not_found("Analysis job")
+
+
+# ------------------------------------------------------------
+# The organization login (users.role = "client")
+# ------------------------------------------------------------
+
+def is_client(request: Request) -> bool:
+    """The organization's login (the company whose products are surveyed)."""
+    return account(request).get("role") == "client"
+
+
+def check_product_access(db: Session, request: Request, product_id: int) -> None:
+    """
+    Admins and the organization: every active product (the organization owns
+    them all). A product that doesn't exist, or that the organization can't see
+    because it was deactivated, answers 404. Other accounts never reach the
+    routes that call this (the access middleware stops them).
+    """
+    from app.database.models import Product
+
+    product = db.get(Product, product_id)
+    if product is None or (is_client(request) and not product.is_active):
+        _not_found("Product")

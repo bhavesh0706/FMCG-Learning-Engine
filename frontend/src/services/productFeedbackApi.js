@@ -10,15 +10,18 @@ export async function getProductFeedbackList() {
   return res.data;
 }
 
-// GET /product-feedback/{id} -> { product, summary, responses: [...], report }
-export async function getProductFeedback(productId) {
-  const res = await api.get(`/product-feedback/${productId}`);
+// GET /product-feedback/{id}[?round=N] -> { product, summary, responses: [...], report, rounds, round }
+export async function getProductFeedback(productId, round = null) {
+  const res = await api.get(`/product-feedback/${productId}`, { params: round != null ? { round } : {} });
   return res.data;
 }
 
-// POST /product-feedback/{id}/consolidate -> the new report (takes 1-3 minutes)
-export async function generateConsolidatedReport(productId) {
-  const res = await api.post(`/product-feedback/${productId}/consolidate`, null, { timeout: 15 * 60 * 1000 });
+// POST /product-feedback/{id}/consolidate[?round=N] -> the new report (takes 1-3 minutes)
+export async function generateConsolidatedReport(productId, round = null) {
+  const res = await api.post(`/product-feedback/${productId}/consolidate`, null, {
+    params: round != null ? { round } : {},
+    timeout: 15 * 60 * 1000,
+  });
   return res.data;
 }
 

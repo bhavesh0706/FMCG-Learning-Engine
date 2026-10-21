@@ -554,16 +554,19 @@ class _AnalyzePageState extends State<AnalyzePage> {
 
   Future<void> _pickFile() async {
     // Newer file_picker versions call pickFiles directly on FilePicker
-    // (the old FilePicker.platform was removed), so the result type is inferred.
-    final picked = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: _allowedExtensions,
-    ).catchError((Object e) {
+    // (the old FilePicker.platform was removed) and return a non-null list,
+    // so errors are handled with try/catch and a cancelled pick is an empty list.
+    final List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: _allowedExtensions,
+      );
+    } catch (e) {
       if (mounted) showComingSoon(context, "Couldn't open your files: $e");
-      return null;
-    });
-    // pickFiles returns the list of picked files directly (null if cancelled).
-    if (picked == null || picked.isEmpty || !mounted) return;
+      return;
+    }
+    if (picked.isEmpty || !mounted) return;
     final file = picked.first;
     if (file.path == null) return;
 

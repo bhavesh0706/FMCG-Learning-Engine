@@ -15,6 +15,8 @@ from app.api.analysis import router as analysis_router, reanalyze_router
 from app.api.recipes import router as recipes_router
 from app.api.question_templates import router as question_templates_router
 from app.api.notifications import router as notifications_router
+from app.api.org import router as org_router
+from app.api.rounds import router as rounds_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
 from app.services.audit import install_audit
@@ -141,6 +143,16 @@ app.include_router(
 # Notification bell (web dashboard and mobile app)
 app.include_router(
     notifications_router
+)
+
+# Organization portal (the company whose products are surveyed)
+app.include_router(
+    org_router
+)
+
+# Survey rounds in the admin dashboard
+app.include_router(
+    rounds_router
 )
 
 

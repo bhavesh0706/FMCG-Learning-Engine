@@ -21,6 +21,42 @@ import { API_BASE_URL } from "../config";
 
 const STEPS = ["Product", "Respondent", "Questions"];
 
+// "Recipe v2 · Round 2": the version of the product being tested right now.
+export function versionLabel(product) {
+  const r = product?.live_round;
+  if (!r) return "";
+  return [r.recipe_version ? `Recipe v${r.recipe_version}` : null, `Round ${r.number}`].filter(Boolean).join(" · ");
+}
+
+// Under the chosen product: which recipe version this survey tests, the round's
+// progress and the organization's short note. The recipe itself is never shown.
+function VersionCard({ round }) {
+  if (!round) {
+    return (
+      <p className="version-card is-none">
+        No survey round is collecting for this product right now. This survey joins its latest round.
+      </p>
+    );
+  }
+  const pct = Math.min(100, Math.round((100 * (round.done || 0)) / Math.max(1, round.target || 1)));
+  return (
+    <div className="version-card" aria-label="Recipe version being tested">
+      <div className="version-chips">
+        {round.recipe_version && <span className="version-chip">Recipe v{round.recipe_version}</span>}
+        <span className="round-chip is-live">Round {round.number} · {round.done} of {round.target}</span>
+        {round.new_version && <span className="status-chip is-act">New version</span>}
+      </div>
+      <div className="version-progress" aria-hidden="true"><span style={{ width: `${pct}%` }} /></div>
+      <p className="muted version-text">
+        {round.new_version
+          ? `The recipe has changed: consumers taste recipe v${round.recipe_version}. This survey counts toward Round ${round.number}.`
+          : `This survey counts toward Round ${round.number}.`}
+      </p>
+      {round.note && <p className="version-note">Note from the organization: “{round.note}”</p>}
+    </div>
+  );
+}
+
 const USAGE_PERIODS = [
   { value: "last_week", label: "In the last week" },
   { value: "last_month", label: "In the last month" },
@@ -307,6 +343,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     onReady?.({
       productId: Number(productId),
       productName: product?.name || "",
+      // The recipe version and round this survey tests (filed by the server under the live round).
+      recipeVersion: product?.live_round?.recipe_version ?? null,
+      round: product?.live_round?.number ?? null,
       respondentName: respondent.name.trim(),
       questionCount: questions.length,
       respondent: {
@@ -389,7 +428,11 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     <section className="survey" aria-labelledby="survey-title">
       <header className="survey-head">
         <h1 id="survey-title">Take survey</h1>
-        <p className="survey-sub">Product, respondent and answers here; the customer's recording comes next.</p>
+        <p className="survey-sub">
+          {product && step > 0
+            ? `${product.name}${versionLabel(product) ? ` · ${versionLabel(product)}` : ""}`
+            : "Product, respondent and answers here; the customer's recording comes next."}
+        </p>
       </header>
 
       <ol className="stepper" aria-label="Survey progress">
@@ -484,7 +527,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                     >
                       <option value="">{categoryId ? "Choose a product" : "Choose a category first"}</option>
                       {categoryProducts.map((p) => (
-                        <option key={p.id} value={p.id}>{p.name}</option>
+                        <option key={p.id} value={p.id}>
+                          {p.name}{versionLabel(p) ? ` (${versionLabel(p)}${p.live_round?.new_version ? ", new version" : ""})` : ""}
+                        </option>
                       ))}
                     </select>
                   )}
@@ -508,6 +553,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   {product.question_count} questions · {product.responses_collected}{" "}
                   {Number(product.responses_collected) === 1 ? "survey" : "surveys"} so far
                 </p>
+                <VersionCard round={product.live_round} />
               </div>
             )}
           </>
