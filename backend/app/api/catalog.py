@@ -9,7 +9,7 @@ deactivated items, and PUT is_active=true to restore them.
 from datetime import date
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +19,7 @@ from app.api.auth import optional_user
 from app.database.database import get_db
 from app.services.product_access import hidden_product_ids
 from app.database.models import Category, Product, SurveyQuestion, SurveyResponse
+from app.services import audit
 
 router = APIRouter(tags=["Catalog"])
 
@@ -302,11 +303,12 @@ def list_categories(include_inactive: bool = False, user=Depends(optional_user),
 
 
 @router.post("/categories", status_code=201)
-def create_category(body: CategoryIn, db: Session = Depends(get_db)):
+def create_category(body: CategoryIn, request: Request, db: Session = Depends(get_db)):
     category = Category(name=body.name, description=body.description)
     db.add(category)
     _commit(db, f'A category named "{body.name}" already exists.')
     db.refresh(category)
+    audit.note(request, target_id=category.id, summary=f"Added category #{category.id} ({category.name})")
     return _category_out(category)
 
 
@@ -445,7 +447,7 @@ def _starting_questions(db: Session, body: ProductIn) -> List[dict]:
 
 
 @router.post("/products", status_code=201)
-def create_product(body: ProductIn, db: Session = Depends(get_db)):
+def create_product(body: ProductIn, request: Request, db: Session = Depends(get_db)):
     category = _get_or_404(db, Category, body.category_id, "Category")
     if not category.is_active:
         raise HTTPException(status_code=400, detail="This category is deactivated. Restore it first.")
@@ -464,6 +466,7 @@ def create_product(body: ProductIn, db: Session = Depends(get_db)):
         db.add(SurveyQuestion(product_id=product.id, position=position, **q))
     _commit(db, conflict)
     db.refresh(product)
+    audit.note(request, target_id=product.id, summary=f"Added product #{product.id} ({product.name}) in {category.name}")
     return _product_out(db, product, category, with_questions=True)
 
 

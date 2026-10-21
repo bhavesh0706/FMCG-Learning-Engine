@@ -23,7 +23,7 @@
         Remove it once the backend is served over https://.
     -->
     <application
-        android:label="FMCG Field Survey"
+        android:label="Recipe Survey"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">

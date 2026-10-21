@@ -35,7 +35,8 @@ import {
   getRecentSurveys,
   deleteSurvey,
 } from "./services/productFeedbackApi";
-import { getTeam, updateTeamMember } from "./services/teamApi";
+import { getTeam, signOutMember, updateTeamMember } from "./services/teamApi";
+import ActivityLog from "./components/ActivityLog";
 import CatalogPage from "./components/CatalogPage";
 import LoginPage from "./components/LoginPage";
 import NotificationBell from "./components/NotificationBell";
@@ -574,7 +575,7 @@ function ChevronIcon({ dir = "right" }) {
   );
 }
 
-function PlayGlyph({ size = 14 }) {
+function PlayGlyph({ size = 16 }) {
   return (
     <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
       <path d="M8 5.5v13l10-6.5z" fill="currentColor" />
@@ -950,7 +951,7 @@ function HistoryList({ items, loading, error, onOpen, onRefresh, onAnalyze }) {
         <HistorySkeleton />
       ) : items.length === 0 && !error ? (
         <div className="panel history-empty">
-          <div className="history-empty-icon"><PlayGlyph size={22} /></div>
+          <div className="history-empty-icon"><PlayGlyph size={24} /></div>
           <h2>No feedback videos yet</h2>
           <p>Analyze your first customer feedback video and it will show up here.</p>
           <button type="button" className="btn btn-primary" onClick={onAnalyze}>
@@ -1009,7 +1010,7 @@ function HistoryList({ items, loading, error, onOpen, onRefresh, onAnalyze }) {
                 rows.map((item) => (
                   <button key={item.id} type="button" className="feedback-row" onClick={() => onOpen(item.id)}>
                     <span className={`row-thumb tone-${item._sentiment.tone}`}>
-                      <PlayGlyph />
+                      <PlayGlyph size={20} />
                     </span>
                     <span className="row-name">
                       <strong title={item.filename}>{item.filename}</strong>
@@ -1281,7 +1282,7 @@ function FeedbackDetail({ record, onBack, onRecordUpdated }) {
             {!videoError && isAudioName(record.filename) ? (
               <div className="audio-frame">
                 <span className="audio-frame-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="28" height="28"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                  <svg viewBox="0 0 24 24" width="24" height="24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
                 </span>
                 <audio
                   ref={videoRef}
@@ -1349,7 +1350,7 @@ function FeedbackDetail({ record, onBack, onRecordUpdated }) {
                       <FeedbackRatingList feedback={p.feedback || []} title="Customer feedback" />
                       {!videoError && (
                         <button type="button" className="part-play" onClick={() => seekTo(Number(p.start) || 0)}>
-                          <PlayGlyph size={12} /> Play from {formatTime(p.start)}
+                          <PlayGlyph /> Play from {formatTime(p.start)}
                         </button>
                       )}
                     </li>
@@ -1443,9 +1444,9 @@ function SavedRecordings({ items, online, busy, onAnalyze, onDelete }) {
           <li key={item.id} className="saved-item">
             <span className={`saved-icon is-${item.kind}`} aria-hidden="true">
               {item.kind === "video" ? (
-                <svg viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M15.5 10.5l5-3v9l-5-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M15.5 10.5l5-3v9l-5-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" /></svg>
               ) : (
-                <svg viewBox="0 0 24 24" width="18" height="18"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                <svg viewBox="0 0 24 24" width="20" height="20"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
               )}
             </span>
             <span className="saved-body">
@@ -1517,7 +1518,7 @@ function RecentAnalyses({ items, onOpen, onViewAll }) {
           const s = recordSentiment(it);
           return (
             <button key={it.id} type="button" className="recent-card" onClick={() => onOpen(it.id)}>
-              <span className={`row-thumb tone-${s.tone}`}><PlayGlyph /></span>
+              <span className={`row-thumb tone-${s.tone}`}><PlayGlyph size={20} /></span>
               <span className="recent-body">
                 <strong title={it.filename}>{it.filename}</strong>
                 <span className="recent-meta">
@@ -2334,6 +2335,7 @@ const TEAM_FILTERS = {
 };
 
 function TeamPage() {
+  const [tab, setTab] = useState("members"); // "members" | "activity"
   const [data, setData] = useState({ loading: true, error: "", users: [] });
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("all");
@@ -2394,6 +2396,26 @@ function TeamPage() {
     }
   };
 
+  // Lost or shared phone: end every sign-in of this person (their password stays the same).
+  const signOutEverywhere = async (user) => {
+    const ok = await confirmDialog({
+      title: `Sign ${user.name} out of every device?`,
+      message: `${user.name} is signed out of the mobile app and the web straight away and must sign in again with their password. Use this when a phone is lost or was shared. Surveys saved on the phone are not deleted.`,
+      confirmLabel: "Sign out everywhere",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    setSaving((x) => ({ ...x, [user.id]: true }));
+    try {
+      await signOutMember(user.id);
+      setNotice(`${user.name} was signed out of every device.`);
+    } catch {
+      setNotice(`Couldn't sign ${user.name} out. Try again.`);
+    } finally {
+      setSaving((x) => ({ ...x, [user.id]: false }));
+    }
+  };
+
   const query = q.trim().toLowerCase();
   // Team members only: admins manage the team and aren't part of it here.
   const scoped = data.users.filter(
@@ -2408,15 +2430,30 @@ function TeamPage() {
           <h1 id="team-title">Team</h1>
           <p className="home-sub">Survey executives using the mobile app. Add executives and choose who may see their survey history.</p>
         </div>
-        <div className="catalog-head-actions">
-          <button type="button" className="btn btn-secondary" onClick={() => load()} disabled={data.loading}>
-            {data.loading ? "Refreshing…" : "Refresh"}
-          </button>
-          <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "add" })}>
-            Add team member
-          </button>
-        </div>
+        {tab === "members" && (
+          <div className="catalog-head-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => load()} disabled={data.loading}>
+              {data.loading ? "Refreshing…" : "Refresh"}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "add" })}>
+              Add team member
+            </button>
+          </div>
+        )}
       </header>
+
+      <div className="segmented team-tabs" role="tablist" aria-label="Team page">
+        <button type="button" role="tab" aria-selected={tab === "members"} className={tab === "members" ? "is-on" : ""}
+          onClick={() => setTab("members")}>
+          Members
+        </button>
+        <button type="button" role="tab" aria-selected={tab === "activity"} className={tab === "activity" ? "is-on" : ""}
+          onClick={() => setTab("activity")}>
+          Activity log
+        </button>
+      </div>
+
+      {tab === "activity" && <ActivityLog />}
 
       {notice && (
         <p className="team-notice" role="status" onAnimationEnd={() => setNotice("")} key={notice}>
@@ -2424,7 +2461,7 @@ function TeamPage() {
         </p>
       )}
 
-      <section className="panel home-products">
+      <section className="panel home-products" hidden={tab !== "members"}>
         <div className="table-toolbar">
           <input type="search" className="search" placeholder="Search by name, mobile or email" value={q}
             onChange={(e) => setQ(e.target.value)} aria-label="Search executives" />
@@ -2540,9 +2577,14 @@ function TeamPage() {
                         />
                       </td>
                       <td className="cell-action">
-                        <button type="button" className="link-btn" onClick={() => setDialog({ type: "reset", member: u })}>
-                          Reset password
-                        </button>
+                        <div className="team-actions">
+                          <button type="button" className="link-btn" onClick={() => setDialog({ type: "reset", member: u })}>
+                            Reset password
+                          </button>
+                          <button type="button" className="link-btn" disabled={saving[u.id]} onClick={() => signOutEverywhere(u)}>
+                            Sign out everywhere
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -2561,6 +2603,12 @@ function TeamPage() {
             <strong>Active</strong> on: they can log in and take surveys. Off: their login is refused and they're signed out
             of the app; their account and surveys are kept, and switching it back on restores access. Use it instead of
             deleting someone who leaves or should be paused.
+          </p>
+          <p>
+            <strong>Sign out everywhere</strong> ends every sign-in of that person at once (a lost or shared phone) without
+            changing their password. Resetting a password, switching Active off or changing the role does this too.
+            Survey persons stay signed in for 7 days and admins for 24 hours while the app isn't used; using the app
+            keeps the sign-in fresh.
           </p>
           <p className="muted">Changes reach the app the next time it's opened or refreshed. Admins always have access.</p>
         </div>
@@ -2780,7 +2828,7 @@ function MySurveys({ user, onTakeSurvey }) {
                             open(sv);
                           }}
                         >
-                          <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                             <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
                             <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
                           </svg>
@@ -3444,7 +3492,7 @@ function AllSurveysList({ onOpenFeedback }) {
                             removeSurvey(s);
                           }}
                         >
-                          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                             <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
                           </svg>
                         </button>
@@ -5170,7 +5218,7 @@ function AppContent({ user }) {
                           className={inputMode === "upload" ? "is-on" : ""}
                           onClick={() => setInputMode("upload")}
                         >
-                          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 16V4m0 0l-4.5 4.5M12 4l4.5 4.5M4 16v2.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 16V4m0 0l-4.5 4.5M12 4l4.5 4.5M4 16v2.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
                           Upload a file
                         </button>
                         <button
@@ -5194,7 +5242,7 @@ function AppContent({ user }) {
                       ) : (
                       <div {...getRootProps({ className: `dropzone${isDragActive ? " is-dragging" : ""}` })}>
                         <div className="dropzone-icon" aria-hidden="true">
-                          <svg viewBox="0 0 24 24" width="26" height="26">
+                          <svg viewBox="0 0 24 24" width="24" height="24">
                             <path
                               d="M12 16V4m0 0l-4.5 4.5M12 4l4.5 4.5M4 16v2.5A1.5 1.5 0 005.5 20h13a1.5 1.5 0 001.5-1.5V16"
                               fill="none"
@@ -5207,7 +5255,7 @@ function AppContent({ user }) {
                         </div>
                         <p className="dropzone-title">{isDragActive ? "Drop the video to start" : "Drag a video here"}</p>
                         <p className="dropzone-sub">MP4, MOV, AVI, MKV, WebM, MP3, WAV or M4A, from 30 seconds to 35 minutes</p>
-                        <span className="btn btn-primary btn-lg">Choose a file</span>
+                        <span className="btn btn-primary">Choose a file</span>
                       </div>
                       )}
                       </>
@@ -5350,7 +5398,7 @@ function AppContent({ user }) {
                       {videoUrl && !videoError && isAudioFile(file) ? (
                         <div className="audio-frame">
                           <span className="audio-frame-icon" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" width="28" height="28"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                            <svg viewBox="0 0 24 24" width="24" height="24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
                           </span>
                           <audio
                             ref={videoRef}
@@ -5535,10 +5583,14 @@ function AppContent({ user }) {
 export default function App() {
   const [session, setSession] = useState(getSession);
   useEffect(() => onSessionChange(setSession), []);
-  // Latest role and permissions from the server whenever the app opens.
+  // Latest role and permissions from the server whenever the app opens, and every
+  // 30 minutes while it stays open (this also renews the sign-in before it expires).
   const token = session?.token;
   useEffect(() => {
-    if (token) refreshMe(API_BASE_URL);
+    if (!token) return undefined;
+    refreshMe(API_BASE_URL);
+    const timer = setInterval(() => refreshMe(API_BASE_URL), 30 * 60 * 1000);
+    return () => clearInterval(timer);
   }, [token]);
 
   if (!session) return <LoginPage apiBase={API_BASE_URL} onSignedIn={() => {}} />;

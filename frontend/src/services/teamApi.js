@@ -42,3 +42,16 @@ export async function saveMemberProducts(id, productIds) {
   window.dispatchEvent(new Event("fmcg:data-changed"));
   return res.data;
 }
+// Sign a member out of every device (lost phone); their password stays the same.
+export async function signOutMember(id) {
+  const res = await api.post(`/admin/users/${id}/sign-out`);
+  return res.data;
+}
+
+// GET /admin/audit -> { total, limit, offset, entries: [{ id, at, user_name, user_role, action, summary, details, ip, ... }] }
+// Filtered and paged on the server: { limit, offset, q, action ("user." = every team change), days, user_id }
+export async function getAuditLog(params = {}) {
+  const clean = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== "" && v !== null && v !== undefined));
+  const res = await api.get("/admin/audit", { params: clean });
+  return res.data;
+}

@@ -100,7 +100,13 @@ export function takeSignOutReason() {
 
 export function signOut(reason = "") {
   signOutReason = reason;
+  const token = getToken();
   save(null);
+  // End the token on the server too, so it stops working at once (not only when
+  // it expires). Best effort: signing out works offline as well.
+  if (token && !reason) {
+    axios.post(`${API_BASE_URL}/auth/logout`, null, { headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+  }
 }
 
 /* ---------- Token on every request, from every axios client ---------- */
@@ -178,7 +184,8 @@ export async function refreshMe(base) {
   if (!getToken()) return null;
   try {
     const res = await axios.get(`${base}/auth/me`);
-    save({ token: getToken(), user: res.data.user });
+    // The server hands out a fresh token once the current one is a day old.
+    save({ token: res.data.token || getToken(), user: res.data.user });
     return res.data.user;
   } catch {
     return session?.user || null; // offline: keep what we have; 401 already signs out

@@ -121,21 +121,27 @@ ThemeData buildAppTheme(bool dark) {
       style: FilledButton.styleFrom(
         backgroundColor: AppColors.brand,
         foregroundColor: AppColors.onBrand,
-        minimumSize: const Size(0, 52),
-        textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        minimumSize: const Size(0, 40),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         foregroundColor: AppColors.ink,
-        minimumSize: const Size(0, 48),
+        minimumSize: const Size(0, 40),
         side: BorderSide(color: AppColors.line),
-        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
     ),
-    textButtonTheme: TextButtonThemeData(style: TextButton.styleFrom(foregroundColor: AppColors.brand)),
+    // Size standard: medium buttons are 40 high (small 32 via styleFrom); Flutter still
+    // pads the touch area to 48. Icons: 16 inline, 20 standalone, 24 feature tiles.
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: AppColors.brand, minimumSize: const Size(0, 40)),
+    ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: AppColors.surface,
@@ -359,7 +365,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
                 color: AppColors.accent,
                 borderRadius: BorderRadius.circular(9),
               ),
-              child: Icon(Icons.play_arrow_rounded, color: AppColors.brandDark, size: 21),
+              child: Icon(Icons.play_arrow_rounded, color: AppColors.brandDark, size: 20),
             ),
             const SizedBox(width: 12),
             const Flexible(
@@ -402,7 +408,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
               width: 52,
               height: 36,
               decoration: BoxDecoration(color: AppColors.brand, borderRadius: BorderRadius.circular(18)),
-              child: Icon(Icons.add_rounded, color: AppColors.onBrand, size: 28),
+              child: Icon(Icons.add_rounded, color: AppColors.onBrand, size: 24),
             ),
             label: 'Survey',
             tooltip: 'Start a survey',
@@ -476,7 +482,7 @@ Future<bool> confirmAction(
           child: Text(cancelLabel),
         ),
         FilledButton(
-          style: FilledButton.styleFrom(backgroundColor: AppColors.record, minimumSize: const Size(0, 48)),
+          style: FilledButton.styleFrom(backgroundColor: AppColors.record, minimumSize: const Size(0, 40)),
           onPressed: () => Navigator.pop(ctx, true),
           child: Text(confirmLabel),
         ),
@@ -745,7 +751,7 @@ class _SavedTile extends StatelessWidget {
                 child: Icon(
                   item.isVideo ? Icons.videocam_rounded : Icons.mic_rounded,
                   color: item.isVideo ? AppColors.video : AppColors.brand,
-                  size: 22,
+                  size: 20,
                 ),
               ),
               Positioned(
@@ -759,7 +765,7 @@ class _SavedTile extends StatelessWidget {
                     shape: BoxShape.circle,
                     border: Border.all(color: AppColors.surface, width: 2),
                   ),
-                  child: Icon(Icons.play_arrow_rounded, size: 14, color: AppColors.onBrand),
+                  child: Icon(Icons.play_arrow_rounded, size: 16, color: AppColors.onBrand),
                 ),
               ),
             ],
@@ -787,7 +793,7 @@ class _SavedTile extends StatelessWidget {
           FilledButton(
             onPressed: onAnalyze,
             style: FilledButton.styleFrom(
-              minimumSize: const Size(0, 48),
+              minimumSize: const Size(0, 40),
               padding: const EdgeInsets.symmetric(horizontal: 14),
               textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             ),
@@ -842,7 +848,7 @@ class _PrimaryActionCard extends StatelessWidget {
                 child: const Icon(
                   Icons.videocam_rounded,
                   color: Colors.white,
-                  size: 28,
+                  size: 24,
                 ),
               ),
               const SizedBox(width: 16),
@@ -1055,7 +1061,7 @@ class _EmptyCard extends StatelessWidget {
               color: AppColors.bg,
               borderRadius: BorderRadius.circular(13),
             ),
-            child: Icon(icon, color: AppColors.muted, size: 22),
+            child: Icon(icon, color: AppColors.muted, size: 20),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -1197,7 +1203,7 @@ class RecordSheet extends StatelessWidget {
                 child: Icon(
                   isVideo ? Icons.videocam_rounded : Icons.mic_rounded,
                   color: isVideo ? AppColors.video : AppColors.brand,
-                  size: 26,
+                  size: 24,
                 ),
               ),
               const SizedBox(width: 14),
@@ -1276,7 +1282,7 @@ class RecordSheet extends StatelessWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: AppColors.record,
               ),
-              icon: const Icon(Icons.fiber_manual_record_rounded, size: 18),
+              icon: const Icon(Icons.fiber_manual_record_rounded, size: 16),
               label: const Text('Start recording'),
             ),
           ),
@@ -1485,7 +1491,7 @@ class _HistoryPageState extends State<HistoryPage> {
                   ),
                   child: Row(
                     children: [
-                      Icon(Icons.cloud_off_rounded, size: 18, color: AppColors.neg),
+                      Icon(Icons.cloud_off_rounded, size: 16, color: AppColors.neg),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
@@ -1656,7 +1662,7 @@ class _HistoryCard extends StatelessWidget {
                       child: Icon(
                         record.isAudio ? Icons.mic_rounded : Icons.videocam_rounded,
                         color: toneColor(tone.tone),
-                        size: 22,
+                        size: 20,
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -1896,7 +1902,7 @@ class _HistoryEmpty extends StatelessWidget {
             width: 64,
             height: 64,
             decoration: BoxDecoration(color: AppColors.brandSoft, shape: BoxShape.circle),
-            child: Icon(Icons.history_rounded, size: 30, color: AppColors.brand),
+            child: Icon(Icons.history_rounded, size: 24, color: AppColors.brand),
           ),
           const SizedBox(height: 16),
           const Text('No feedback yet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
@@ -1918,9 +1924,9 @@ class _HistoryEmpty extends StatelessWidget {
           const SizedBox(height: 4),
           TextButton.icon(
             onPressed: onRefresh,
-            icon: const Icon(Icons.refresh_rounded, size: 18),
+            icon: const Icon(Icons.refresh_rounded, size: 16),
             label: const Text('Refresh'),
-            style: TextButton.styleFrom(foregroundColor: AppColors.muted, minimumSize: const Size(0, 44)),
+            style: TextButton.styleFrom(foregroundColor: AppColors.muted, minimumSize: const Size(0, 40)),
           ),
         ],
       ),
@@ -2074,7 +2080,7 @@ class _DetailBody extends StatelessWidget {
                     children: [
                       const Text('Overall product rating', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                       const SizedBox(height: 6),
-                      RatingStars(rating: rating, size: 22),
+                      RatingStars(rating: rating, size: 24),
                       if (record.aspectRatings.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
@@ -2349,7 +2355,7 @@ class _InsightGroup extends StatelessWidget {
                     width: 24,
                     height: 24,
                     decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-                    child: Icon(icon, size: 15, color: Colors.white),
+                    child: Icon(icon, size: 16, color: Colors.white),
                   ),
                   const SizedBox(width: 10),
                   Expanded(
@@ -2601,7 +2607,7 @@ class _FeedbackItem extends StatelessWidget {
               Expanded(
                 child: Text(item.name, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700)),
               ),
-              if (item.rating != null) RatingStars(rating: item.rating!, size: 14),
+              if (item.rating != null) RatingStars(rating: item.rating!, size: 16),
             ],
           ),
           const SizedBox(height: 4),

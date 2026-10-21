@@ -56,6 +56,13 @@
   --radius-md: 10px;
   --shadow: 0 1px 2px rgba(0, 29, 57, 0.05), 0 8px 24px rgba(0, 29, 57, 0.07);
 
+  /* Vite's starter index.css switches these to dark-mode colours when the
+     computer is in dark mode, which made page headings (h1, h2) almost white on
+     the app's light pages. The app is light-only, so pin them to its palette. */
+  --text: var(--ink-2);
+  --text-h: var(--ink);
+  --border: var(--line);
+
   /* Keep native controls light even when the OS is in dark mode */
   color-scheme: light;
   accent-color: var(--brand);
@@ -108,6 +115,19 @@ button {
 
 /* ---------- Buttons ---------- */
 
+/* ---------- Size standard: buttons and icons ----------
+   Buttons   small 32 (13px text, 16px icon)  - actions inside cards, panels,
+                                                table rows, toolbars, pagers
+             medium 40 (14px text, 16px icon) - page-header actions, dialog
+                                                footers, form submits, top bar
+             large 48 (16px text, 20px icon)  - defined for completeness, not used
+   Icon-only buttons  small 32 x 32 with a 16px icon, medium 40 x 40 with a 20px icon
+   Icons     small 16 - inline in buttons, chips, tables, links and labels
+             medium 20 - top bar, standalone icon buttons, list icon tiles
+             large 24 - empty states, feature tiles, dialog and hero tiles
+   Icon tiles small 32 (radius 8), medium 40 (radius 12), large 48 (radius 12)
+*/
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -120,6 +140,12 @@ button {
   font-size: 14px;
   white-space: nowrap;
   transition: background-color 0.15s, border-color 0.15s;
+}
+
+.btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .btn-primary {
@@ -185,7 +211,7 @@ button {
   place-items: center;
   width: 32px;
   height: 32px;
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--accent);
   color: var(--ink);
   flex-shrink: 0;
@@ -304,9 +330,9 @@ button {
 .dropzone-icon {
   display: grid;
   place-items: center;
-  width: 64px;
-  height: 64px;
-  border-radius: 18px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
   margin-bottom: 18px;
@@ -348,8 +374,8 @@ button {
 .file-icon {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border-radius: 12px;
   background: var(--ink);
   color: var(--accent);
@@ -1137,8 +1163,8 @@ button {
 .chapter-close {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 8px;
   color: var(--muted);
   flex-shrink: 0;
@@ -1191,7 +1217,9 @@ button {
 }
 
 .chapter-foot .btn {
-  height: 36px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 @media (max-width: 600px) {
@@ -1317,9 +1345,9 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 36px;
-  padding: 0 14px;
-  border-radius: 9px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 8px;
   color: rgba(255, 255, 255, 0.72);
   font-size: 14px;
   font-weight: 600;
@@ -1758,10 +1786,10 @@ button.feedback-row:hover .row-chevron {
 .history-empty-icon {
   display: grid;
   place-items: center;
-  width: 56px;
-  height: 56px;
+  width: 48px;
+  height: 48px;
   margin-bottom: 6px;
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
 }
@@ -2427,8 +2455,8 @@ button.feedback-row:hover .row-chevron {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 42px;
-  border-radius: 11px;
+  height: 40px;
+  border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
   color: var(--muted);
@@ -2594,7 +2622,7 @@ button.feedback-row:hover .row-chevron {
   width: 48px;
   height: 48px;
   margin-bottom: 4px;
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
 }
@@ -2659,8 +2687,8 @@ button.feedback-row:hover .row-chevron {
 .stage-btn {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
@@ -2828,9 +2856,9 @@ button.feedback-row:hover .row-chevron {
 .recorder-audio-icon {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 14px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
   flex-shrink: 0;
@@ -2845,11 +2873,6 @@ button.feedback-row:hover .row-chevron {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
-}
-
-.recorder-actions .btn {
-  height: 46px;
-  font-size: 15px;
 }
 
 .recorder-links {
@@ -2947,7 +2970,7 @@ button.feedback-row:hover .row-chevron {
   place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 11px;
+  border-radius: 12px;
   background: var(--brand-soft);
   color: var(--brand);
 }
@@ -2974,16 +2997,36 @@ button.feedback-row:hover .row-chevron {
 }
 
 .saved-actions .btn {
-  height: 36px;
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 
 .icon-btn {
-  display: grid;
+  display: inline-grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-md);
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
   color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-btn-md {
+  width: 40px;
+  height: 40px;
+}
+
+.icon-btn-md svg {
+  width: 20px;
+  height: 20px;
 }
 
 .icon-btn:hover {
@@ -3010,9 +3053,9 @@ button.feedback-row:hover .row-chevron {
 .audio-frame-icon {
   display: grid;
   place-items: center;
-  width: 60px;
-  height: 60px;
-  border-radius: 16px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
   background: var(--brand);
   color: #fff;
   flex-shrink: 0;
@@ -3077,10 +3120,16 @@ button.feedback-row:hover .row-chevron {
   top: 12px;
 }
 
+/* Large: part of the standard, intentionally not used on any screen. */
 .btn-lg {
-  height: 46px;
-  padding: 0 22px;
-  font-size: 15px;
+  height: 48px;
+  padding: 0 20px;
+  font-size: 16px;
+}
+
+.btn-lg svg {
+  width: 20px;
+  height: 20px;
 }
 
 .btn-danger {
@@ -3121,8 +3170,8 @@ button.feedback-row:hover .row-chevron {
 .dialog-icon {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   margin-bottom: 14px;
   border-radius: 12px;
   background: var(--brand-soft);
@@ -4080,6 +4129,7 @@ textarea.input {
 .btn-sm {
   height: 32px;
   padding: 0 12px;
+  gap: 6px;
   font-size: 13px;
 }
 
@@ -4427,7 +4477,7 @@ textarea.input {
 }
 
 .page-tabs button {
-  height: 36px;
+  height: 40px;
   font-size: 14px;
 }
 
@@ -5188,20 +5238,6 @@ textarea.input {
   font-size: 13px;
 }
 
-.icon-btn {
-  display: inline-grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  color: var(--muted);
-}
-
-.icon-btn:hover {
-  background: var(--bg);
-  color: var(--ink);
-}
-
 .icon-btn.danger:hover {
   background: var(--neg-soft);
   color: var(--neg);
@@ -5917,17 +5953,6 @@ textarea.input {
   padding: 12px 18px 16px;
 }
 
-.modal-foot .btn {
-  height: 36px;
-  padding: 0 14px;
-  font-size: 14px;
-}
-
-.modal .icon-btn {
-  width: 30px;
-  height: 30px;
-}
-
 .survey-catalog-note {
   margin-bottom: 12px;
   padding: 10px 14px;
@@ -6152,10 +6177,10 @@ textarea.input {
 .login-feature-icon {
   display: grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(123, 189, 232, 0.16);
   font-size: 18px;
 }
@@ -6605,8 +6630,8 @@ textarea.input {
 .reanalyze-icon {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   background: var(--pos);
   color: #fff;
@@ -8591,12 +8616,6 @@ input[type="radio"] {
   font-size: 13.5px;
 }
 
-.btn-sm {
-  padding: 6px 12px;
-  font-size: 13.5px;
-  white-space: nowrap;
-}
-
 .recipe-value {
   font-size: 15px;
   font-weight: 600;
@@ -9294,9 +9313,9 @@ input[type="radio"] {
 .notif-icon {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
   background: var(--bg);
   color: var(--muted);
 }
@@ -9417,10 +9436,6 @@ input[type="radio"] {
     right: 24px;
   }
 
-  .notif-bell {
-    width: 36px;
-    height: 36px;
-  }
 }
 
 @media (max-width: 600px) {
@@ -9592,5 +9607,83 @@ input[type="radio"] {
 
   .pager-controls {
     justify-content: space-between;
+  }
+}
+
+/* ================================================================
+   Team page: Members / Activity log tabs, sign-out action, activity log
+   ================================================================ */
+
+.team-tabs {
+  margin-bottom: 14px;
+}
+
+.team-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.team-actions .link-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.activity-head {
+  margin-bottom: 12px;
+}
+
+.activity-head h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.activity-head p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.activity-table td {
+  vertical-align: top;
+}
+
+.activity-when {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+.activity-what {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.activity-warn {
+  color: var(--act);
+  font-weight: 600;
+}
+
+.activity-changes {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.activity-log .pager {
+  margin-top: 12px;
+}
+
+@media (max-width: 600px) {
+  .team-actions {
+    align-items: flex-start;
+  }
+
+  .activity-what {
+    min-width: 160px;
   }
 }

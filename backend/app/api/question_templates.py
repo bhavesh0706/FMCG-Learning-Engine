@@ -17,7 +17,7 @@ All of these are admin-only (see access.py), like other catalog writes.
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.catalog import QuestionIn, _active_questions, _clean, question_dicts
 from app.database.database import get_db
 from app.database.models import Category, Product, QuestionTemplate
+from app.services import audit
 
 router = APIRouter(prefix="/question-templates", tags=["Question templates"])
 
@@ -117,7 +118,7 @@ def get_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
-def create_template(body: TemplateIn, db: Session = Depends(get_db)):
+def create_template(body: TemplateIn, request: Request, db: Session = Depends(get_db)):
     _check_name_free(db, body.name)
     _check_category(db, body.category_id)
     if body.from_product_id:
@@ -133,6 +134,7 @@ def create_template(body: TemplateIn, db: Session = Depends(get_db)):
     db.add(t)
     _commit(db, f'A question template named "{body.name}" already exists.')
     db.refresh(t)
+    audit.note(request, target_id=t.id, summary=f"Added question template #{t.id} ({t.name})")
     return _out(t, _names(db))
 
 

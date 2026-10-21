@@ -202,11 +202,15 @@ class Session {
       final r = await _dio.get('/auth/me', options: _auth);
       final data = Map<String, dynamic>.from(r.data as Map);
       user.value = SessionUser.fromJson(Map<String, dynamic>.from(data['user'] as Map));
+      // The server sends a fresh token once the current one is a day old, so
+      // people who use the app regularly stay signed in.
+      final renewed = data['token'];
+      if (renewed is String && renewed.isNotEmpty) token = renewed;
       await _save();
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) {
         signedOutReason.value = 'Your session ended or your account was disabled. Please log in again.';
-        await logout();
+        await logout(endOnServer: false); // the server has already ended it
       }
       // Offline: keep the saved permissions.
     } catch (_) {}
@@ -224,7 +228,20 @@ class Session {
     }
   }
 
-  static Future<void> logout() async {
+  /// Signs out on this phone. [endOnServer]: also end the token on the server, so it
+  /// stops working at once (best effort: signing out works offline too).
+  static Future<void> logout({bool endOnServer = true}) async {
+    final old = token;
+    if (endOnServer && old != null) {
+      // Not awaited: signing out never waits for the network (works offline too).
+      Future(() async {
+        try {
+          await _dio.post('/auth/logout', options: Options(headers: {'Authorization': 'Bearer $old'}));
+        } catch (_) {
+          // Offline or server unreachable: the token still expires on its own.
+        }
+      });
+    }
     Notifications.clear(); // the next account on this phone starts with an empty bell
     token = null;
     user.value = null;

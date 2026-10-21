@@ -79,11 +79,11 @@ function ConfirmDialogView({
       >
         <span className="dialog-icon" aria-hidden="true">
           {danger ? (
-            <svg viewBox="0 0 24 24" width="22" height="22">
+            <svg viewBox="0 0 24 24" width="20" height="20">
               <path d="M4 7h16M9 7V5h6v2M7 7l1 12h8l1-12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           ) : (
-            <svg viewBox="0 0 24 24" width="22" height="22">
+            <svg viewBox="0 0 24 24" width="20" height="20">
               <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.8" />
               <path d="M12 8v5M12 16.5v.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>

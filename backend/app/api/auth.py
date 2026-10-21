@@ -3,7 +3,9 @@ Accounts for survey executives (mobile app).
 
 POST /auth/signup   {name, identifier, password}   -> {token, user}
 POST /auth/login    {identifier, password}         -> {token, user}
-GET  /auth/me       Authorization: Bearer <token>  -> {user}
+GET  /auth/me       Authorization: Bearer <token>  -> {user, token?}  (token: renewed one, when due)
+POST /auth/logout   ends this token
+POST /auth/logout-all  ends every token of this account (lost phone)
 
 identifier = a 10-digit mobile number or an email address.
 
@@ -11,7 +13,13 @@ Only the Python standard library is used:
   - passwords: PBKDF2-HMAC-SHA256 with a random salt (never stored in plain text),
     600,000 rounds as OWASP recommends; older, cheaper hashes are upgraded at the
     next successful login
-  - tokens: a signed, expiring token (HMAC-SHA256), valid for 30 days
+  - tokens: a signed, expiring token (HMAC-SHA256). Survey persons stay signed in
+    for FMCG_TOKEN_DAYS (default 7), admins for FMCG_ADMIN_TOKEN_HOURS (default 24).
+    GET /auth/me hands out a fresh token once the current one is a day old, so
+    people who use the app regularly are not asked to sign in again.
+  - sign-out ends the token on the server (POST /auth/logout: this device;
+    POST /auth/logout-all: every device). A password reset, a disabled account
+    or a role change signs the account out everywhere (users.token_version).
   - repeated wrong passwords are slowed down: after 5 failures for one account
     (or 30 from one address) in 15 minutes, login waits (HTTP 429)
 
@@ -40,11 +48,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
-from app.database.models import LoginFailure, SurveyResponse, User
+from app.database.models import LoginFailure, RevokedToken, SurveyResponse, User
+from app.services import audit
 
 router = APIRouter(prefix="/auth", tags=["Accounts"])
 
-TOKEN_DAYS = 30
+# How long a sign-in lasts. Shorter for admins, whose accounts can change everything.
+TOKEN_DAYS = float(os.environ.get("FMCG_TOKEN_DAYS", "") or 7)
+ADMIN_TOKEN_HOURS = float(os.environ.get("FMCG_ADMIN_TOKEN_HOURS", "") or 24)
+# /auth/me renews a token that is older than this (seconds).
+RENEW_AFTER_SECONDS = int(float(os.environ.get("FMCG_TOKEN_RENEW_HOURS", "") or 24) * 3600)
 
 # Accounts are created by admins (Team page). Self sign-up only if enabled:
 #   $env:FMCG_ALLOW_SIGNUP = "1"
@@ -157,14 +170,30 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
+def token_lifetime_seconds(user: User) -> int:
+    if user.role == "admin":
+        return int(ADMIN_TOKEN_HOURS * 3600)
+    return int(TOKEN_DAYS * 86400)
+
+
 def make_token(user: User) -> str:
-    payload = _b64(json.dumps({"uid": user.id, "exp": int(time.time()) + TOKEN_DAYS * 86400}).encode())
+    now = int(time.time())
+    claims = {
+        "uid": user.id,
+        "iat": now,
+        "exp": now + token_lifetime_seconds(user),
+        "ver": int(user.token_version or 0),
+        # Random part: two sign-ins in the same second still get different tokens,
+        # so signing out on one device never ends the other.
+        "jti": secrets.token_urlsafe(9),
+    }
+    payload = _b64(json.dumps(claims, separators=(",", ":")).encode())
     signature = _b64(hmac.new(_secret(), payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{signature}"
 
 
-def read_token(token: str) -> Optional[int]:
-    """User id from a valid, unexpired token; otherwise None."""
+def read_claims(token: str) -> Optional[dict]:
+    """The token's contents if its signature is valid and it hasn't expired; otherwise None."""
     try:
         payload, signature = token.split(".")
         expected = _b64(hmac.new(_secret(), payload.encode(), hashlib.sha256).digest())
@@ -173,17 +202,64 @@ def read_token(token: str) -> Optional[int]:
         data = json.loads(_unb64(payload))
         if int(data.get("exp", 0)) < time.time():
             return None
-        return int(data["uid"])
+        data["uid"] = int(data["uid"])
+        return data
     except Exception:
         return None
 
 
+def read_token(token: str) -> Optional[int]:
+    """User id from a valid, unexpired token; otherwise None (signature and expiry only)."""
+    claims = read_claims(token)
+    return claims["uid"] if claims else None
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def user_for_token(db: Session, token: Optional[str]) -> Optional[User]:
+    """
+    The account a token belongs to, or None when the token is invalid, expired,
+    signed out (POST /auth/logout), issued before the account was signed out
+    everywhere, or the account is disabled. Every sign-in check goes through here.
+    """
+    claims = read_claims(token) if token else None
+    if not claims:
+        return None
+    user = db.get(User, claims["uid"])
+    if not user or not user.is_active:
+        return None
+    if int(claims.get("ver", 0)) != int(user.token_version or 0):
+        return None
+    if db.get(RevokedToken, token_hash(token)) is not None:
+        return None
+    return user
+
+
+def revoke_token(db: Session, token: str) -> None:
+    """End one token (this device) until it would have expired anyway."""
+    claims = read_claims(token)
+    if not claims:
+        return
+    key = token_hash(token)
+    if db.get(RevokedToken, key) is None:
+        db.add(RevokedToken(token_hash=key, user_id=claims["uid"], expires_at=datetime.utcfromtimestamp(int(claims["exp"]))))
+        db.commit()
+
+
+def sign_out_everywhere(user: User) -> None:
+    """Every token issued so far for this account stops working (caller commits)."""
+    user.token_version = int(user.token_version or 0) + 1
+
+
+def _bearer(authorization: Optional[str]) -> str:
+    return (authorization or "").removeprefix("Bearer ").strip()
+
+
 def optional_user(authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> Optional[User]:
     """The signed-in user if a valid token was sent, otherwise None (e.g. the web app)."""
-    token = (authorization or "").removeprefix("Bearer ").strip()
-    uid = read_token(token) if token else None
-    user = db.get(User, uid) if uid else None
-    return user if user and user.is_active else None
+    return user_for_token(db, _bearer(authorization))
 
 
 def can_view_history(user: User) -> bool:
@@ -211,10 +287,8 @@ def admin_guard(user: Optional[User] = Depends(optional_user)):
 
 def current_user(authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)) -> User:
     """Use as a dependency on endpoints that need a signed-in user."""
-    token = (authorization or "").removeprefix("Bearer ").strip()
-    uid = read_token(token) if token else None
-    user = db.get(User, uid) if uid else None
-    if not user or not user.is_active:
+    user = user_for_token(db, _bearer(authorization))
+    if not user:
         raise HTTPException(status_code=401, detail="Please sign in again.")
     return user
 
@@ -367,6 +441,8 @@ def first_admin(body: SignupIn, request: Request, db: Session = Depends(get_db))
     db.commit()
     db.refresh(user)
     link_earlier_surveys(db, user)
+    audit.record_from_request(request, action="auth.setup", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Created the first admin account")
     return {"token": make_token(user), "user": _user_out(user)}
 
 
@@ -399,6 +475,18 @@ def signup(body: SignupIn, db: Session = Depends(get_db)):
     return {"token": make_token(user), "user": _user_out(user), "linked_surveys": linked}
 
 
+def _account_of(user: User) -> dict:
+    return {"id": user.id, "name": user.name, "role": user.role}
+
+
+def _masked(value: str) -> str:
+    """98******10 / an***@example.com: enough to recognise, not to reuse."""
+    if "@" in value:
+        name, _, domain = value.partition("@")
+        return f"{name[:2]}***@{domain}"
+    return f"{value[:2]}{'*' * max(len(value) - 4, 0)}{value[-2:]}"
+
+
 @router.post("/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     kind, value = _parse_identifier(body.identifier)
@@ -410,20 +498,60 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     valid = verify_password(body.password, user.password_hash if user else _DUMMY_HASH)
     if not user or not valid:
         record_login_failure(db, key, address)
+        audit.record_from_request(
+            request, action="auth.login_failed", account={}, status=401,
+            target_type="user" if user else None, target_id=user.id if user else None,
+            summary=f"Wrong password or unknown account ({_masked(value)})",
+        )
         raise HTTPException(status_code=401, detail="The mobile/email or password is incorrect.")
     if not user.is_active:
+        audit.record_from_request(request, action="auth.login_refused", account=_account_of(user), status=403,
+                                  target_type="user", target_id=user.id, summary="Sign-in refused: account disabled")
         raise HTTPException(status_code=403, detail="This account has been disabled. Contact your admin.")
     if needs_rehash(user.password_hash):
         user.password_hash = hash_password(body.password)  # upgrade to today's hashing cost
     clear_login_failures(db, key)
     user.last_login_at = datetime.utcnow()
     db.commit()
+    audit.record_from_request(request, action="auth.login", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Signed in")
     return {"token": make_token(user), "user": _user_out(user)}
 
 
+@router.post("/logout")
+def logout(request: Request, authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
+    """Sign out on this device: the token stops working at once, not when it expires."""
+    token = _bearer(authorization)
+    user = user_for_token(db, token)
+    if user is not None:
+        revoke_token(db, token)
+        audit.record_from_request(request, action="auth.logout", account=_account_of(user), target_type="user",
+                                  target_id=user.id, summary="Signed out")
+    return {"ok": True}  # also fine for a token that had already ended
+
+
+@router.post("/logout-all")
+def logout_all(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Sign out on every device (e.g. a lost phone). This device must sign in again too."""
+    sign_out_everywhere(user)
+    db.commit()
+    audit.record_from_request(request, action="auth.logout_all", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Signed out of every device")
+    return {"ok": True}
+
+
 @router.get("/me")
-def me(user: User = Depends(current_user)):
-    return {"user": _user_out(user)}
+def me(authorization: Optional[str] = Header(default=None), user: User = Depends(current_user)):
+    """
+    The account's latest details. When the token is more than a day old (or was
+    issued by an older version without a date), a fresh token is included as
+    "token": apps that store it stay signed in while they are being used.
+    """
+    out = {"user": _user_out(user)}
+    claims = read_claims(_bearer(authorization)) or {}
+    if time.time() - int(claims.get("iat", 0)) >= RENEW_AFTER_SECONDS:
+        out["token"] = make_token(user)
+    return out
 
 
 @router.get("/me/stats")

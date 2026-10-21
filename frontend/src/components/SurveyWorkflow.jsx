@@ -693,7 +693,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         )}
         <button
           type="button"
-          className="btn btn-primary btn-lg"
+          className="btn btn-primary"
           onClick={next}
           disabled={step === 0 && catalogLoading}
         >

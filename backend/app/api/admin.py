@@ -9,6 +9,11 @@ GET  /admin/users/{user_id}/products  products assigned to this executive
 PUT  /admin/users/{user_id}/products  {product_ids: [...]} replace them
 GET  /admin/products/{product_id}/executives  executives assigned to this product
 PUT  /admin/products/{product_id}/executives  {user_ids: [...]} replace them ([] = every executive)
+POST /admin/users/{user_id}/sign-out  sign this person out of every device (lost phone)
+GET  /admin/audit                     the activity log (who changed what, when), newest first
+
+A password reset, disabling an account or changing its role also signs that
+person out of every device.
 
 Note: the web app has no login yet, so these are open to anyone who can reach
 the backend, like the rest of the web API. Admin login for the web is the next step.
@@ -18,7 +23,7 @@ Register in app/main.py:
     app.include_router(admin_router)
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -31,11 +36,13 @@ from app.api.auth import (
     check_password,
     hash_password,
     link_earlier_surveys,
+    sign_out_everywhere,
     survey_counts,
     surveys_of,
 )
 from app.database.database import get_db
-from app.database.models import Product, ProductAssignment, User
+from app.database.models import AuditLog, Product, ProductAssignment, User
+from app.services import audit
 from app.services.notifications import notify_product_assigned
 from app.services.product_access import (
     assignees_for_product,
@@ -83,6 +90,19 @@ class UserIds(BaseModel):
     user_ids: list[int] = Field(default_factory=list, max_length=5000)
 
 
+def _product_names(db: Session, ids) -> list:
+    """Names for the activity log (ids are meaningless to a reader)."""
+    if not ids:
+        return []
+    return sorted(name for (name,) in db.query(Product.name).filter(Product.id.in_(list(ids))).all())
+
+
+def _user_names(db: Session, ids) -> list:
+    if not ids:
+        return []
+    return sorted(name for (name,) in db.query(User.name).filter(User.id.in_(list(ids))).all())
+
+
 @router.get("/users/{user_id}/products")
 def user_products(user_id: int, db: Session = Depends(get_db)):
     if not db.get(User, user_id):
@@ -100,6 +120,8 @@ def save_user_products(user_id: int, body: ProductIds, request: Request, db: Ses
         raise HTTPException(status_code=400, detail=f"Unknown product id(s): {sorted(unknown)}")
     before = set(assignments_for_user(db, user_id))
     saved = set_user_products(db, user_id, body.product_ids)
+    audit.note(request, details={"added_products": _product_names(db, set(saved) - before),
+                                 "removed_products": _product_names(db, before - set(saved))})
     # Tell the survey person about products they didn't have before.
     added = set(saved) - before
     if added:
@@ -124,6 +146,8 @@ def save_product_executives(product_id: int, body: UserIds, request: Request, db
         raise HTTPException(status_code=400, detail=f"Unknown user id(s): {sorted(unknown)}")
     before = set(assignees_for_product(db, product_id))
     saved = set_product_users(db, product_id, body.user_ids)
+    audit.note(request, details={"added_people": _user_names(db, set(saved) - before),
+                                 "removed_people": _user_names(db, before - set(saved))})
     # Tell each newly added survey person about this product.
     added = set(saved) - before
     if added:
@@ -146,7 +170,7 @@ class NewMember(BaseModel):
 
 
 @router.post("/users", status_code=201)
-def add_member(body: NewMember, db: Session = Depends(get_db)):
+def add_member(body: NewMember, request: Request, db: Session = Depends(get_db)):
     """The admin creates the account and gives the executive their login details."""
     from app.database.models import User as U
 
@@ -184,6 +208,7 @@ def add_member(body: NewMember, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
     linked = link_earlier_surveys(db, user)
+    audit.note(request, target_id=user.id, summary=f"Added team member #{user.id} ({user.name}, {user.role})")
     return {"user": _user_out(user), "linked_surveys": linked}
 
 
@@ -192,13 +217,27 @@ class NewPassword(BaseModel):
 
 
 @router.put("/users/{user_id}/password")
-def reset_password(user_id: int, body: NewPassword, db: Session = Depends(get_db)):
+def reset_password(user_id: int, body: NewPassword, request: Request, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
     check_password(body.password)
     user.password_hash = hash_password(body.password)
+    sign_out_everywhere(user)  # the old password's sign-ins end too
     db.commit()
+    audit.note(request, summary=f"Reset the password of {user.name} (#{user.id}) and signed them out everywhere")
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/sign-out")
+def sign_out_member(user_id: int, request: Request, db: Session = Depends(get_db)):
+    """Sign a team member out of every device, e.g. when a phone is lost. Their password stays the same."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    sign_out_everywhere(user)
+    db.commit()
+    audit.note(request, summary=f"Signed {user.name} (#{user.id}) out of every device")
     return {"ok": True}
 
 
@@ -212,10 +251,12 @@ class UserUpdate(BaseModel):
 
 
 @router.put("/users/{user_id}")
-def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db)):
+def update_user(user_id: int, body: UserUpdate, request: Request, db: Session = Depends(get_db)):
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
+    tracked = ("name", "role", "is_active", "can_view_history", "age", "gender")
+    before = {k: getattr(user, k) for k in tracked}
     if body.role is not None:
         if body.role not in ("executive", "admin"):
             raise HTTPException(status_code=400, detail="Role must be 'executive' or 'admin'.")
@@ -232,6 +273,69 @@ def update_user(user_id: int, body: UserUpdate, db: Session = Depends(get_db)):
         if body.gender not in GENDERS:
             raise HTTPException(status_code=400, detail="Choose a gender from the list.")
         user.gender = body.gender
+    after = {k: getattr(user, k) for k in tracked}
+    changed = audit.changes(before, after)
+    # Disabling an account or changing its role ends its current sign-ins at once.
+    if "is_active" in changed or "role" in changed:
+        sign_out_everywhere(user)
     db.commit()
     db.refresh(user)
+    if changed:
+        labels = {"is_active": "active", "can_view_history": "history access"}
+        audit.note(request, details=changed,
+                   summary=f"Changed {user.name} (#{user.id}): " + ", ".join(labels.get(k, k) for k in changed))
     return {"user": _user_out(user)}
+
+
+# ============================================================
+# Activity log (audit trail)
+# ============================================================
+
+def _audit_out(e: AuditLog) -> dict:
+    return {
+        "id": e.id,
+        "at": e.created_at.isoformat() + "Z" if e.created_at else None,
+        "user_id": e.user_id,
+        "user_name": e.user_name,
+        "user_role": e.user_role,
+        "action": e.action,
+        "target_type": e.target_type,
+        "target_id": e.target_id,
+        "summary": e.summary,
+        "details": e.details,
+        "status": e.status,
+        "ip": e.ip,
+        "request_id": e.request_id,
+    }
+
+
+@router.get("/audit")
+def audit_log(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user_id: Optional[int] = Query(default=None),
+    action: Optional[str] = Query(default=None, max_length=60, description="exact action, or a prefix like 'user.'"),
+    target_type: Optional[str] = Query(default=None, max_length=40),
+    target_id: Optional[int] = Query(default=None),
+    q: Optional[str] = Query(default=None, max_length=100, description="text in the summary or the person's name"),
+    days: Optional[int] = Query(default=None, ge=1, le=3650, description="only the last N days"),
+    db: Session = Depends(get_db),
+):
+    """Newest first, filtered and paged on the server (the log grows without limit)."""
+    query = db.query(AuditLog)
+    if user_id is not None:
+        query = query.filter(AuditLog.user_id == user_id)
+    if action:
+        query = query.filter(AuditLog.action.like(f"{action}%") if action.endswith(".") else AuditLog.action == action)
+    if target_type:
+        query = query.filter(AuditLog.target_type == target_type)
+    if target_id is not None:
+        query = query.filter(AuditLog.target_id == target_id)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        query = query.filter(AuditLog.summary.like(like) | AuditLog.user_name.like(like))
+    if days:
+        query = query.filter(AuditLog.created_at >= datetime.utcnow() - timedelta(days=days))
+    total = query.count()
+    rows = query.order_by(AuditLog.id.desc()).offset(offset).limit(limit).all()
+    return {"total": total, "limit": limit, "offset": offset, "entries": [_audit_out(e) for e in rows]}

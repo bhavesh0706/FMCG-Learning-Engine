@@ -346,6 +346,10 @@ class User(Base):
     gender = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login_at = Column(DateTime, nullable=True)
+    # Raised to sign this account out on every device at once (password reset,
+    # account disabled, role changed, "sign out everywhere"). Every sign-in
+    # token carries the number it was issued with; an older number is refused.
+    token_version = Column(Integer, nullable=False, default=0)
 
 
 # ============================================================
@@ -418,6 +422,51 @@ class LoginFailure(Base):
     # "id:<mobile or email>" or "ip:<client address>"
     key = Column(String(200), nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+class RevokedToken(Base):
+    """A sign-in token ended by "Sign out" before its expiry (one device only)."""
+
+    __tablename__ = "revoked_tokens"
+
+    # SHA-256 of the token: the token itself is never stored.
+    token_hash = Column(String(64), primary_key=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    # When the token would have expired anyway; the row can be removed after that.
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+
+class AuditLog(Base):
+    """
+    Who changed what, and when (admin changes, catalog and recipe edits,
+    deletions, survey submissions, sign-ins and sign-outs). Rows are only ever
+    added, never edited. No passwords, tokens, request bodies or customer
+    names, phone numbers or addresses are stored here.
+    """
+
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    # The account that did it (name and role copied, so the entry still reads
+    # correctly after the account is renamed or deleted).
+    user_id = Column(Integer, nullable=True, index=True)
+    user_name = Column(String(150), nullable=True)
+    user_role = Column(String(20), nullable=True)
+    # Short machine name, e.g. "user.update", "recipe.update", "product.delete"
+    action = Column(String(60), nullable=False, index=True)
+    # What it was done to, e.g. ("product", 12)
+    target_type = Column(String(40), nullable=True, index=True)
+    target_id = Column(Integer, nullable=True, index=True)
+    # Human-readable one-line summary shown on the Activity log page
+    summary = Column(String(300), nullable=True)
+    # Field-level changes, e.g. {"is_active": [true, false]} (never secrets)
+    details = Column(JSON, nullable=True)
+    method = Column(String(10), nullable=True)
+    path = Column(String(300), nullable=True)
+    status = Column(Integer, nullable=True)
+    ip = Column(String(64), nullable=True)
+    request_id = Column(String(128), nullable=True)
 
 
 # ============================================================

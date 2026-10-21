@@ -27,9 +27,8 @@ from fastapi.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.api.auth import read_token
+from app.api.auth import user_for_token
 from app.database.database import SessionLocal
-from app.database.models import User
 
 WRITE = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -42,6 +41,7 @@ PUBLIC = [
     ({"POST"}, r"^/auth/signup$"),  # the endpoint itself refuses unless sign-up is enabled
     ({"GET"}, r"^/auth/setup-status$"),
     ({"POST"}, r"^/auth/setup$"),  # only works while no admin exists
+    ({"POST"}, r"^/auth/logout$"),  # ends the sent token if it is still valid; harmless otherwise
 ]
 
 ADMIN = [
@@ -83,13 +83,13 @@ def required_role(method: str, path: str) -> str:
 
 
 def _account(token: Optional[str]) -> Optional[dict]:
-    uid = read_token(token) if token else None
-    if not uid:
+    """The signed-in account, or None (invalid, expired or signed-out token, disabled account)."""
+    if not token:
         return None
     db = SessionLocal()
     try:
-        user = db.get(User, uid)
-        if not user or not user.is_active:
+        user = user_for_token(db, token)
+        if user is None:
             return None
         return {"id": user.id, "role": user.role, "name": user.name}
     finally:
@@ -102,10 +102,9 @@ SURVEY_CREATE = re.compile(r"^/surveys/responses$")
 def _may_survey(token: str, product_id: int) -> bool:
     from app.services.product_access import can_survey
 
-    uid = read_token(token) if token else None
     db = SessionLocal()
     try:
-        user = db.get(User, uid) if uid else None
+        user = user_for_token(db, token) if token else None
         return user is None or can_survey(db, user, product_id)  # no user: the sign-in check answers
     finally:
         db.close()

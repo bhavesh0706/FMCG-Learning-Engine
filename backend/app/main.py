@@ -17,6 +17,7 @@ from app.api.question_templates import router as question_templates_router
 from app.api.notifications import router as notifications_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
+from app.services.audit import install_audit
 from app.services import analysis_worker
 from app.services import ai_client
 from app.database.database import engine
@@ -59,6 +60,10 @@ app = FastAPI(
 # Sign-in and role checks for every endpoint (before CORS, so CORS stays outermost
 # and error responses still carry CORS headers for the browser).
 install_access_control(app)
+
+# Audit log: one entry per successful change (runs outside access control, so it
+# sees the signed-in account).
+install_audit(app)
 
 # Request IDs, one JSON access-log line per request, API security headers.
 install_observability(app)

@@ -1,5 +1,63 @@
 # Changelog
 
+## Unreleased - button and icon size standard
+
+- Buttons have three sizes: small 32 px, medium 40 px, large 48 px. Large is defined but not used anywhere.
+- Medium: page-header actions, dialog footers, form submits, empty-state actions, top bar. Small: actions inside cards, panels, table rows and toolbars.
+- Icons have three sizes: small 16 px (inside buttons, chips, tables), medium 20 px (top bar, icon tiles in lists), large 24 px (empty states, feature tiles).
+- Icon-only buttons are 32 px (small) or 40 px (medium); icon tiles are 32, 40 or 48 px.
+- Removed a duplicate `.btn-sm` rule and conflicting per-screen button heights (36, 42, 46 px).
+- Android app: buttons 40 px (the touch area stays 48), icons 16 / 20 / 24.
+
+## 1.4.0 — Client role: brand logins with their own reports and recipes (16 Oct 2026)
+
+### Client portal (proposal section 2, "Client" role)
+- **New account type `client`** for the brand that owns products. Admins create client logins on **Team → Clients** and choose each client's products (new `client_products` table; `GET/PUT /admin/users/{id}/client-products`).
+- **What a client sees.** A client signs in on the web and gets a separate, simple portal (**Product reports**):
+  - its products as cards (rating, number of responses, when the report was updated);
+  - each product's consolidated consumer report, with the same client summary and **Download PDF** as admins;
+  - a **Recipe** tab to read and update the recipe (ingredients, batch shares, production steps) that the report's recommendations refer to.
+- **What a client never sees.** Customer names, phone numbers or addresses, survey person names, individual surveys, recordings, the team, the catalog, or other brands' products. Only aggregated results are sent (`GET /client/products`, `GET /client/products/{id}`); internal survey ids are removed from the report.
+- **Enforced on the server.** A client may call only the routes in `CLIENT_ALLOWED` (`access.py`); everything else answers 403. Another brand's product answers 404 (`ownership.check_product_access`). Survey persons can't open the client portal.
+- **Separate from the team.** Clients are never linked to old surveys by name, can't be given products to survey, and can't be switched to or from a team role. Client logins have the same 7-day sign-in, sign-out, **Sign out everywhere** and **Active** switch as everyone else. Recipe changes by clients appear in the Activity log as "Client".
+- **Mobile.** The app refuses client logins with a clear message ("This is a client account. Open the web portal…").
+
+### Not in this update
+- **Starting a new survey round after a recipe change (re-release).** This needs recipe versions and survey rounds, which come in the next update; the client portal will then get a "Start new round" button and a round-by-round comparison.
+
+### Fixes
+- **Survey persons only.** The survey assignment lists (Team → Members, Catalog → product → who can survey) now show survey persons only, never clients.
+
+### Upgrade notes
+1. Restart the backend. It creates the `client_products` table by itself.
+2. Add a client: **Team → Clients → Add client**, share the login, then **Manage** to pick their products.
+
+## 1.3.0 — Phase 2 quick wins: sign-out, activity log, Play Store app ID (16 Oct 2026)
+
+### Sign-in and sign-out (SEC-06)
+- **Shorter sign-ins.** Survey persons stay signed in for 7 days (`FMCG_TOKEN_DAYS`) and admins for 24 hours (`FMCG_ADMIN_TOKEN_HOURS`), down from 30 days for everyone. While the app is used, `GET /auth/me` hands out a fresh token once the current one is a day old, so regular users are not asked to sign in again. The web app checks every 30 minutes while it is open, and the mobile app checks each time it opens.
+- **Real sign-out.** "Sign out" now ends the token on the server (`POST /auth/logout`, new `revoked_tokens` table), on the web and on the phone. Before, a copied token kept working until it expired. `POST /auth/logout-all` ends every sign-in of the account.
+- **Lost phone.** A new **Sign out everywhere** button on the Team page (`POST /admin/users/{id}/sign-out`) signs a person out of every device without changing their password. A password reset, switching **Active** off, or a role change now does the same automatically (new `users.token_version` column).
+- **Compatible.** Tokens issued by 1.2.0 keep working and are swapped for a new 7-day token the next time the app opens. No one is signed out by the upgrade.
+- **Fix.** Two sign-ins in the same second used to get an identical token, so signing out on one device would have ended the other. Each token now has a random part.
+
+### Activity log (audit trail, proposal section 3)
+- **New `audit_log` table.** Every successful change is recorded automatically: team, catalog, recipes, question templates, surveys, recordings, reports and deletions. Sign-ins, failed sign-ins (with a masked number), sign-outs and first-admin setup are recorded as well. Each entry holds who, when, what, the target, its name, an address and a request ID.
+- **Field-level changes.** Team edits show old → new (for example, Survey history On → Off), recipe saves show ingredient and step counts, and product assignments show the names added or removed.
+- **Never recorded.** Passwords, tokens, request bodies, and customer names, phone numbers or addresses.
+- **New Activity log tab on the Team page.** You can search, filter by area and period, and page through entries; filtering and paging run on the server (`GET /admin/audit`). Entries can't be edited, and entries older than `FMCG_AUDIT_KEEP_DAYS` (default 3 years) are removed.
+
+### Mobile: Play Store readiness
+- **New `scripts/set_android_app_id.ps1`.** It changes the Android app ID from `com.example.mobile` (which the Play Store refuses) to your own ID (default `com.ioneit.recipesurvey`) and sets the app name (default "Recipe Survey"). It has a `-WhatIf` preview and saves a `.bak` copy of each changed file.
+
+### Fixes
+- **Web headings in dark mode.** When Windows or macOS was in dark mode, page headings were almost invisible, because Vite's starter `index.css` switched heading colours while the app stays light. The colours are now pinned in `App.css`.
+
+### Upgrade notes
+1. Restart the backend. It adds `users.token_version` and the `audit_log` and `revoked_tokens` tables by itself.
+2. Mobile: copy the new `lib/services/session.dart`. To change the app ID, run `.\scripts\set_android_app_id.ps1`, then `adb uninstall com.example.mobile` once on test phones.
+3. Optional settings (`backend/.env`): `FMCG_TOKEN_DAYS`, `FMCG_ADMIN_TOKEN_HOURS`, `FMCG_TOKEN_RENEW_HOURS`, `FMCG_AUDIT_KEEP_DAYS`.
+
 ## 1.2.0 — R&D phase 1: security, data safety, performance (15 Oct 2026)
 
 Finding IDs refer to the problem register in the R&D Assessment & Roadmap document.

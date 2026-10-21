@@ -15,12 +15,13 @@ Register in app/main.py:
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
 from app.database.models import Product
+from app.services import audit
 
 router = APIRouter(tags=["Recipes"])
 
@@ -63,7 +64,7 @@ def get_recipe(product_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/products/{product_id}/recipe")
-def save_recipe(product_id: int, body: RecipeIn, db: Session = Depends(get_db)):
+def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session = Depends(get_db)):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
@@ -71,6 +72,12 @@ def save_recipe(product_id: int, body: RecipeIn, db: Session = Depends(get_db)):
     recipe["ingredients"] = [i for i in recipe["ingredients"] if i["name"]]
     recipe["steps"] = [s for s in recipe["steps"] if s["title"]]
     recipe["updated_at"] = datetime.utcnow().isoformat()
+    old = product.recipe or {}
     product.recipe = recipe if (recipe["ingredients"] or recipe["steps"]) else None
     db.commit()
+    audit.note(request, details={
+        "ingredients": [len(old.get("ingredients") or []), len(recipe["ingredients"])],
+        "steps": [len(old.get("steps") or []), len(recipe["steps"])],
+        "batch_size": [old.get("batch_size"), recipe.get("batch_size")],
+    })
     return {"product_id": product.id, "recipe": product.recipe}

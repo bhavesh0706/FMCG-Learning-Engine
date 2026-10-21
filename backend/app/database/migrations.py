@@ -75,6 +75,8 @@ def run_migrations():
     # R&D phase 1: record ownership of customers, stored tone of each result.
     _add_column("respondents", "created_by", "INT NULL", index=True)
     _add_column("feedback_records", "tone", "VARCHAR(20) NULL", index=True)
+    # Phase 2: sign every device out at once (password reset, account disabled, ...)
+    _add_column("users", "token_version", "INT NOT NULL DEFAULT 0")
 
     # 3. Data steps (each one does nothing once done).
     backfill_feedback_tone()

@@ -54,14 +54,14 @@ function permissionMessage(err) {
 
 /* ---------- Icons ---------- */
 
-const MicIcon = ({ size = 22 }) => (
+const MicIcon = ({ size = 20 }) => (
   <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
     <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" />
     <path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
   </svg>
 );
 
-const CameraIcon = ({ size = 22 }) => (
+const CameraIcon = ({ size = 20 }) => (
   <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
     <rect x="3" y="6.5" width="12.5" height="11" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
     <path d="M15.5 10.5l5-3v9l-5-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
@@ -69,7 +69,7 @@ const CameraIcon = ({ size = 22 }) => (
 );
 
 const SwitchIcon = () => (
-  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+  <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
     <path d="M4 9a8 8 0 0114-3l2 2M20 15a8 8 0 01-14 3l-2-2M20 4v4h-4M4 20v-4h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
   </svg>
 );
@@ -395,7 +395,7 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
                 openStream("audio");
               }}
             >
-              <span className="record-option-icon"><MicIcon size={26} /></span>
+              <span className="record-option-icon"><MicIcon size={24} /></span>
               <strong>Voice only</strong>
               <span>Uses the microphone. Smaller file, quicker to upload on a weak network.</span>
             </button>
@@ -407,7 +407,7 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
                 openStream("video");
               }}
             >
-              <span className="record-option-icon"><CameraIcon size={26} /></span>
+              <span className="record-option-icon"><CameraIcon size={24} /></span>
               <strong>Video with voice</strong>
               <span>Uses the camera and microphone, so you can show the product while you talk.</span>
             </button>
@@ -429,7 +429,7 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
       <div className="recorder">
         <div className="recorder-head">
           <span className="recorder-kind">
-            {isVideo ? <CameraIcon size={18} /> : <MicIcon size={18} />}
+            {isVideo ? <CameraIcon size={16} /> : <MicIcon size={16} />}
             {isVideo ? "Video recording" : "Voice recording"}
           </span>
           <span className="recorder-meta">
@@ -443,7 +443,7 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
             <video className="recorder-stage" src={result.url} controls playsInline />
           ) : (
             <div className="recorder-audio-review">
-              <span className="recorder-audio-icon"><MicIcon size={28} /></span>
+              <span className="recorder-audio-icon"><MicIcon size={24} /></span>
               <audio src={result.url} controls />
             </div>
           )}
@@ -508,7 +508,7 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
     <div className={`recorder${live ? " is-live" : ""}`}>
       <div className="recorder-head">
         <span className="recorder-kind">
-          {isVideo ? <CameraIcon size={18} /> : <MicIcon size={18} />}
+          {isVideo ? <CameraIcon size={16} /> : <MicIcon size={16} />}
           {isVideo ? "Video with voice" : "Voice only"}
         </span>
         {live ? (

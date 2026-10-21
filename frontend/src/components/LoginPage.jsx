@@ -112,7 +112,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
       <aside className="login-brand" aria-hidden={false}>
         <div className="login-brand-top">
           <span className="login-logo" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="22" height="22"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
           </span>
           <span className="login-brand-name">FMCG Video Learning Engine</span>
         </div>
