@@ -1,30 +1,28 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:mobile/main.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  test('formatDuration reads naturally', () {
+    expect(formatDuration(45), '45 sec');
+    expect(formatDuration(125), '2 min 05 sec');
+    expect(formatDuration(3720), '1 hr 2 min');
+  });
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  test('formatClock shows minutes and seconds', () {
+    expect(formatClock(75), '01:15');
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  testWidgets('App theme builds in light and dark and renders a widget', (WidgetTester tester) async {
+    for (final dark in [false, true]) {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildAppTheme(dark),
+          home: const Scaffold(body: Text('FMCG Field Survey')),
+        ),
+      );
+      expect(find.text('FMCG Field Survey'), findsOneWidget);
+    }
   });
 }

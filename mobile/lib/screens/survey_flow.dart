@@ -364,17 +364,16 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
 
   /// Upload from device: browse the phone's storage for an audio or video file.
   Future<void> _pickFile() async {
-    Object? pickError;
-    // The result type is inferred (it differs between file_picker versions).
-    final picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: _fileTypes).catchError((Object e) {
-      pickError = e;
-      return null;
-    });
-    if (pickError != null) {
-      if (mounted) setState(() => _error = "The phone's files couldn't be opened: $pickError");
+    // This file_picker version returns a non-null list from pickFiles (empty if
+    // the person cancels), so errors are caught with try/catch.
+    final List<PlatformFile> picked;
+    try {
+      picked = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: _fileTypes);
+    } catch (e) {
+      if (mounted) setState(() => _error = "The phone's files couldn't be opened: $e");
       return;
     }
-    if (picked == null || picked.isEmpty || !mounted) return;
+    if (picked.isEmpty || !mounted) return;
     final f = picked.first;
     if (f.path == null) {
       setState(() => _error = "This file can't be read. Copy it to the phone's storage and choose it again.");
