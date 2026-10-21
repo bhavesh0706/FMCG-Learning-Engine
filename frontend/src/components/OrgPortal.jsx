@@ -105,8 +105,10 @@ function useData(loader, deps) {
       if (silent) return;
       setState({ loading: false, error: orgError(err, "This page couldn't be loaded. Try again in a moment."), data: null });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when the caller's inputs change
-  }, deps);
+  }, []);
+  // The caller's inputs (product id, round numbers...) as one stable string:
+  // when it changes, the data loads again.
+  const depsKey = JSON.stringify(deps);
   useEffect(() => {
     load();
     const tick = () => document.visibilityState === "visible" && load({ silent: true });
@@ -116,7 +118,7 @@ function useData(loader, deps) {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [load]);
+  }, [load, depsKey]);
   return [state, load];
 }
 
