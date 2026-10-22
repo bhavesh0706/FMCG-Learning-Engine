@@ -537,7 +537,10 @@ function buildReport({ filename, date, duration, processingTime, sentiment, insi
 
 // Voice-only files get an audio player instead of a black video frame.
 const isAudioFile = (file) => Boolean(file?.type?.startsWith("audio/"));
-const isAudioName = (name) => /^audio-recording|\.(m4a|mp3|wav|ogg|oga|opus|aac)$/i.test(name || "");
+const isAudioName = (name) =>
+  /^(?:audio-recording.*|\S.*\.(?:mp3|m4a|wav|ogg|oga|opus|aac|flac|webm))$/i.test(
+    String(name || "").trim().split("?")[0]
+  );
 
 // Ratings are 1–5. A missing rating (null, "", 0) means "not rated", not 0.0.
 const toRating = (v) => {
@@ -1280,42 +1283,83 @@ function FeedbackDetail({ record, onBack, onRecordUpdated }) {
       <div className="results-grid">
         <div className="col-main">
           <article className="panel video-panel">
-            {!videoError && isAudioName(record.filename) ? (
+            {isAudioName(record.filename) ? (
               <div className="audio-frame">
                 <span className="audio-frame-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" width="24" height="24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" /></svg>
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="24"
+                    height="24"
+                  >
+                    <rect
+                      x="9"
+                      y="3"
+                      width="6"
+                      height="11"
+                      rx="3"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                    />
+                    <path
+                      d="M5.5 11a6.5 6.5 0 0013 0M12 17.5V21"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                    />
+                  </svg>
                 </span>
+
                 <audio
-                  ref={videoRef}
+                  key={record.id}
                   src={withToken(getFeedbackVideoUrl(record.id))}
                   controls
                   preload="metadata"
-                  onLoadedMetadata={(e) => setVideoDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)}
-                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-                  onError={() => setVideoError(true)}
+                  onLoadedMetadata={(e) => {
+                    const duration = e.currentTarget.duration;
+                    setVideoDuration(Number.isFinite(duration) ? duration : 0);
+                  }}
+                  onTimeUpdate={(e) => {
+                    setCurrentTime(e.currentTarget.currentTime);
+                  }}
+                  onError={(e) => {
+                    console.error(
+                      "Audio playback failed:",
+                      record.filename,
+                      e.currentTarget.error
+                    );
+                  }}
                 />
               </div>
             ) : !videoError ? (
               <div className="video-frame">
                 <video
+                  key={record.id}
                   ref={videoRef}
                   src={withToken(getFeedbackVideoUrl(record.id))}
                   controls
                   preload="metadata"
-                  onLoadedMetadata={(e) => setVideoDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : 0)}
-                  onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                  onLoadedMetadata={(e) => {
+                    const duration = e.currentTarget.duration;
+                    setVideoDuration(Number.isFinite(duration) ? duration : 0);
+                  }}
+                  onTimeUpdate={(e) => {
+                    setCurrentTime(e.currentTarget.currentTime);
+                  }}
                   onError={() => setVideoError(true)}
                 />
               </div>
             ) : (
-              <div className="video-fallback">
+              <div className="video-frame">
                 <p>The original video can't be played in this browser.</p>
                 <p className="muted">
-                  MOV files recorded on phones often use a format Chrome can't play.{" "}
-                  <a href={withToken(getFeedbackVideoUrl(record.id))} download>
-                    Download the video
-                  </a>{" "}
-                  to watch it.
+                  <a
+                    href={withToken(getFeedbackVideoUrl(record.id))}
+                    download={record.filename}
+                  >
+                    Download recording
+                  </a>
                 </p>
               </div>
             )}
