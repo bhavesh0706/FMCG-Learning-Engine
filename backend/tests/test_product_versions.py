@@ -13,7 +13,7 @@ Product versions (= recipe versions) and who manages recipes and survey question
 from datetime import datetime
 
 import pytest
-from conftest import _unique, answers_payload, auth, make_user, start_survey
+from conftest import _unique, answers_payload, auth, make_user
 
 from app.database.models import Category, FeedbackRecord, Product, SurveyQuestion, SurveyResponse
 
