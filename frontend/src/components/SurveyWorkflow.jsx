@@ -22,7 +22,10 @@ import { API_BASE_URL } from "../config";
 const STEPS = ["Product", "Respondent", "Questions"];
 
 // "Recipe v2 · Round 2": the version of the product being tested right now.
+// Products with several versions in fieldwork: "2 versions" (the survey person picks one).
 export function versionLabel(product) {
+  const versions = product?.survey_versions || [];
+  if (versions.length > 1) return `${versions.length} versions`;
   const r = product?.live_round;
   if (!r) return "";
   return [r.recipe_version ? `Recipe v${r.recipe_version}` : null, `Round ${r.number}`].filter(Boolean).join(" · ");
@@ -30,7 +33,21 @@ export function versionLabel(product) {
 
 // Under the chosen product: which recipe version this survey tests, the round's
 // progress and the organization's short note. The recipe itself is never shown.
-function VersionCard({ round }) {
+function VersionCard({ round, version = null }) {
+  if (!round && version) {
+    const last = version.rounds[version.rounds.length - 1];
+    return (
+      <div className="version-card" aria-label="Product version">
+        <div className="version-chips">
+          <span className="version-chip">Recipe v{version.version}</span>
+          <span className="round-chip">Round {last} · complete</span>
+        </div>
+        <p className="muted version-card-note">
+          This version's round has ended. The survey is added to Round {last}, so it counts in that version's report.
+        </p>
+      </div>
+    );
+  }
   if (!round) {
     return (
       <p className="version-card is-none">
@@ -156,6 +173,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   const [catalogError, setCatalogError] = useState("");
   const [categoryId, setCategoryId] = useState(initialContext?.categoryId ?? "");
   const [productId, setProductId] = useState(initialContext?.productId ?? "");
+  // The product version the customer tasted (recipe version), as text; "" = not chosen.
+  const [versionChoice, setVersionChoice] = useState(
+    initialContext?.recipeVersion != null ? String(initialContext.recipeVersion) : "");
   const [questions, setQuestions] = useState([]);
   const [questionsLoading, setQuestionsLoading] = useState(false);
   // Bumped whenever the catalog changes, so the chosen product's questions reload too.
@@ -178,6 +198,17 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   const alertRef = useRef(null);
 
   const product = useMemo(() => products.find((p) => String(p.id) === String(productId)) || null, [products, productId]);
+  // Versions of the chosen product in fieldwork. One: used automatically. Several: the
+  // survey person picks (the one collecting now is suggested). None yet: the server
+  // files the survey under the product's first round.
+  const versions = useMemo(() => product?.survey_versions || [], [product]);
+  const autoVersion = versions.length === 1
+    ? String(versions[0].version)
+    : String(versions.find((v) => v.live)?.version ?? "");
+  const versionValue = versions.some((v) => String(v.version) === versionChoice) ? versionChoice : autoVersion;
+  const chosenVersion = versions.find((v) => String(v.version) === versionValue) || null;
+  const liveForChoice = product?.live_round && (!chosenVersion || product.live_round.recipe_version === chosenVersion.version)
+    ? product.live_round : null;
   const categoryProducts = useMemo(
     () => products.filter((p) => String(p.category_id) === String(categoryId)),
     [products, categoryId]
@@ -302,6 +333,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     if (!categoryId) return "Choose a category.";
     if (!productId || !product) return "Choose the product the customer used.";
     if (!product.survey_ready) return `${product.name} isn't ready for surveys yet: it needs 5 to 10 questions.`;
+    if (versions.length > 1 && !chosenVersion) return "Choose the version of the product the customer tasted.";
     return "";
   };
 
@@ -343,9 +375,11 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     onReady?.({
       productId: Number(productId),
       productName: product?.name || "",
-      // The recipe version and round this survey tests (filed by the server under the live round).
-      recipeVersion: product?.live_round?.recipe_version ?? null,
-      round: product?.live_round?.number ?? null,
+      // The product (recipe) version and round this survey tests: the chosen version's
+      // live round, else its latest round (the server files it the same way).
+      recipeVersion: chosenVersion?.version ?? product?.live_round?.recipe_version ?? null,
+      round: liveForChoice?.number ?? (chosenVersion ? chosenVersion.rounds[chosenVersion.rounds.length - 1] : null)
+        ?? product?.live_round?.number ?? null,
       respondentName: respondent.name.trim(),
       questionCount: questions.length,
       respondent: {
@@ -359,6 +393,8 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
       },
       response: {
         product_id: Number(productId),
+        // Saved with the survey; omitted when the product has no version in fieldwork yet.
+        ...(chosenVersion ? { recipe_version: chosenVersion.version } : {}),
         executive_name: (signedInName || executiveName).trim(),
         usage_period: usagePeriod,
         location: surveyLocation.trim(),
@@ -367,7 +403,8 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
       },
       answers: questions.map((q) => ({ question_id: q.id, value: String(answers[q.id] ?? "").trim() })),
       // Kept for "Next respondent, same product".
-      context: { categoryId, productId, usagePeriod, surveyLocation: surveyLocation.trim(), coords },
+      context: { categoryId, productId, recipeVersion: chosenVersion?.version ?? null, usagePeriod,
+        surveyLocation: surveyLocation.trim(), coords },
     });
   }
 
@@ -507,6 +544,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         setCatalogNote("");
                         setCategoryId(e.target.value);
                         setProductId("");
+                        setVersionChoice("");
                       }}
                     >
                       <option value="">{catalogLoading ? "Loading…" : "Choose a category"}</option>
@@ -523,7 +561,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                       className="input"
                       value={productId}
                       disabled={!categoryId}
-                      onChange={(e) => setProductId(e.target.value)}
+                      onChange={(e) => { setProductId(e.target.value); setVersionChoice(""); }}
                     >
                       <option value="">{categoryId ? "Choose a product" : "Choose a category first"}</option>
                       {categoryProducts.map((p) => (
@@ -534,6 +572,22 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                     </select>
                   )}
                 </Field>
+                {versions.length > 1 && (
+                  <Field label="Version" required>
+                    {(id) => (
+                      <select id={id} className="input" value={versionValue}
+                        onChange={(e) => setVersionChoice(e.target.value)}>
+                        {!autoVersion && <option value="">Choose the version tasted</option>}
+                        {versions.map((v) => (
+                          <option key={v.version} value={String(v.version)}>
+                            Version {v.version} · Round{v.rounds.length > 1 ? "s" : ""} {v.rounds.join(", ")}
+                            {v.live ? " (collecting now)" : " (complete)"}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </Field>
+                )}
               </div>
             </fieldset>
 
@@ -553,7 +607,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   {product.question_count} questions · {product.responses_collected}{" "}
                   {Number(product.responses_collected) === 1 ? "survey" : "surveys"} so far
                 </p>
-                <VersionCard round={product.live_round} />
+                <VersionCard round={liveForChoice} version={liveForChoice ? null : chosenVersion} />
               </div>
             )}
           </>

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import optional_user
+from app.api.ownership import check_product_access, is_client
 from app.database.database import get_db
 from app.services.product_access import hidden_product_ids
 from app.database.models import Category, Product, SurveyQuestion, SurveyResponse
@@ -248,7 +249,10 @@ def _product_out(
     counts: Optional[tuple] = None,
     recipe_changes: Optional[dict] = None,
     rounds: Optional[dict] = None,
+    versions: Optional[dict] = None,
 ) -> dict:
+    from app.services.rounds import versions_by_product
+
     category = category or db.get(Category, p.category_id)
     if counts is not None and not with_questions:
         question_counts, response_counts = counts
@@ -279,6 +283,11 @@ def _product_out(
         "recipe_change": (recipe_changes if recipe_changes is not None else latest_changes(db, [p.id])).get(p.id),
         # The survey round collecting surveys now (organization portal starts rounds), or None.
         "live_round": (rounds if rounds is not None else live_rounds(db, [p.id])).get(p.id),
+        # Product versions (= recipe versions). recipe_versions: every saved version
+        # (Catalog); survey_versions: the ones in fieldwork, which a survey person can
+        # choose when taking a survey ([{version, rounds, live}]).
+        **((versions if versions is not None else versions_by_product(db, [p.id])).get(
+            p.id, {"recipe_versions": [], "survey_versions": []})),
         "responses_collected": collected,
         "survey_count": _all_surveys(db, p.id) if not p.is_active else None,  # only needed for inactive products
         # Drives the "Generate Consolidated Feedback" button.
@@ -440,7 +449,11 @@ def list_products(
     counts = _batch_counts(db, [p.id for p, _ in rows])
     changes = latest_changes(db, [p.id for p, _ in rows])
     current = live_rounds(db, [p.id for p, _ in rows])
-    return {"products": [_product_out(db, p, c, counts=counts, recipe_changes=changes, rounds=current) for p, c in rows]}
+    from app.services.rounds import versions_by_product
+
+    versions = versions_by_product(db, [p.id for p, _ in rows])
+    return {"products": [_product_out(db, p, c, counts=counts, recipe_changes=changes, rounds=current, versions=versions)
+                         for p, c in rows]}
 
 
 def question_dicts(questions) -> List[dict]:
@@ -483,6 +496,11 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
     category = _get_or_404(db, Category, body.category_id, "Category")
     if not category.is_active:
         raise HTTPException(status_code=400, detail="This category is deactivated. Restore it first.")
+    if body.question_template_id or body.copy_questions_from_product_id:
+        # Survey questions are managed by the organization (its portal), not on the
+        # admin dashboard: a new product starts without questions.
+        raise HTTPException(status_code=403, detail="Survey questions are added by the organization in its portal. "
+                            "Create the product without starting questions.")
     starting = _starting_questions(db, body)  # validated before anything is written
 
     # One transaction: the product and its starting questions are saved together, or not at all.
@@ -586,14 +604,18 @@ def delete_product_permanently(product_id: int, db: Session = Depends(get_db)):
 # ============================================================
 
 @router.get("/products/{product_id}/questions")
-def list_questions(product_id: int, user=Depends(optional_user), db: Session = Depends(get_db)):
+def list_questions(product_id: int, request: Request, user=Depends(optional_user), db: Session = Depends(get_db)):
+    if is_client(request):
+        check_product_access(db, request, product_id)  # the organization: its active products
     _check_assigned(db, user, product_id)
     _get_or_404(db, Product, product_id, "Product")
     return {"questions": [_question_out(q) for q in _active_questions(db, product_id)]}
 
 
 @router.post("/products/{product_id}/questions", status_code=201)
-def add_question(product_id: int, body: QuestionIn, db: Session = Depends(get_db)):
+def add_question(product_id: int, body: QuestionIn, request: Request, db: Session = Depends(get_db)):
+    # Only the organization reaches this (access.py ORG_CONTENT), for its active products.
+    check_product_access(db, request, product_id)
     _get_or_404(db, Product, product_id, "Product")
     existing = _active_questions(db, product_id)
     if len(existing) >= MAX_QUESTIONS:
@@ -610,12 +632,15 @@ def add_question(product_id: int, body: QuestionIn, db: Session = Depends(get_db
     db.add(question)
     db.commit()
     db.refresh(question)
+    audit.note(request, target_id=product_id,
+               summary=f"Added survey question #{question.id} to product #{product_id}: {question.text[:80]}")
     return _question_out(question)
 
 
 @router.put("/questions/{question_id}")
-def update_question(question_id: int, body: QuestionUpdate, db: Session = Depends(get_db)):
+def update_question(question_id: int, body: QuestionUpdate, request: Request, db: Session = Depends(get_db)):
     question = _get_or_404(db, SurveyQuestion, question_id, "Question")
+    check_product_access(db, request, question.product_id)
     data = body.model_dump(exclude_unset=True)
 
     if data.get("is_active") is True and not question.is_active:
@@ -645,21 +670,27 @@ def update_question(question_id: int, body: QuestionUpdate, db: Session = Depend
     _renumber(db, question.product_id)
     db.commit()
     db.refresh(question)
+    audit.note(request, target_id=question.product_id,
+               summary=f"Changed survey question #{question.id} of product #{question.product_id}")
     return _question_out(question)
 
 
 @router.delete("/questions/{question_id}")
-def deactivate_question(question_id: int, db: Session = Depends(get_db)):
+def deactivate_question(question_id: int, request: Request, db: Session = Depends(get_db)):
     question = _get_or_404(db, SurveyQuestion, question_id, "Question")
+    check_product_access(db, request, question.product_id)
     question.is_active = 0
     db.flush()
     _renumber(db, question.product_id)
     db.commit()
+    audit.note(request, target_id=question.product_id,
+               summary=f"Removed survey question #{question_id} from product #{question.product_id}")
     return {"id": question_id, "is_active": False, "message": "Question removed. Answers already collected are kept."}
 
 
 @router.put("/products/{product_id}/questions/order")
-def reorder_questions(product_id: int, body: QuestionOrder, db: Session = Depends(get_db)):
+def reorder_questions(product_id: int, body: QuestionOrder, request: Request, db: Session = Depends(get_db)):
+    check_product_access(db, request, product_id)
     _get_or_404(db, Product, product_id, "Product")
     questions = {q.id: q for q in _active_questions(db, product_id)}
     if sorted(body.question_ids) != sorted(questions):

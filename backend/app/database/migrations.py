@@ -79,6 +79,7 @@ def run_migrations():
     _add_column("users", "token_version", "INT NOT NULL DEFAULT 0")
     # Organization portal: survey rounds, forced password change, Updates page.
     _add_column("survey_responses", "round_id", "INT NULL", index=True)
+    _add_column("survey_responses", "recipe_version", "INT NULL", index=True)
     _add_column("consolidated_reports", "round_id", "INT NULL", index=True)
     _add_column("users", "must_change_password", "INT NOT NULL DEFAULT 0")
     _add_column("users", "updates_seen_at", "DATETIME NULL")
@@ -87,6 +88,27 @@ def run_migrations():
     backfill_feedback_tone()
     link_unclaimed_surveys()
     create_first_rounds()
+    backfill_survey_versions()
+
+
+def backfill_survey_versions() -> int:
+    """
+    Surveys made before survey_responses.recipe_version existed get the version of
+    their round (once: only empty values are filled; nothing else is changed).
+    """
+    with engine.begin() as conn:
+        result = conn.execute(text(
+            "UPDATE survey_responses SET recipe_version = ("
+            " SELECT survey_rounds.recipe_version FROM survey_rounds"
+            " WHERE survey_rounds.id = survey_responses.round_id)"
+            " WHERE recipe_version IS NULL AND round_id IS NOT NULL"
+            " AND EXISTS (SELECT 1 FROM survey_rounds WHERE survey_rounds.id = survey_responses.round_id"
+            " AND survey_rounds.recipe_version IS NOT NULL)"
+        ))
+    filled = result.rowcount or 0
+    if filled > 0:
+        print(f"Database updated: product version filled in for {filled} existing surveys")
+    return filled
 
 
 def create_first_rounds() -> int:

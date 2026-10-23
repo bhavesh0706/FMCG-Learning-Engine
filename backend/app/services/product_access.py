@@ -17,8 +17,12 @@ from app.database.models import ProductAssignment
 
 
 def hidden_product_ids(db: Session, user) -> Set[int]:
-    """Products this person may NOT survey (empty for admins and when nothing is assigned)."""
-    if user is None or getattr(user, "role", None) == "admin":
+    """
+    Products this person may NOT survey (empty for admins and when nothing is assigned).
+    "Who can survey" restricts survey persons only: admins and the organization (which
+    owns the products: recipes, questions, rounds) always see every product.
+    """
+    if user is None or getattr(user, "role", None) in ("admin", "client"):
         return set()
     rows = db.query(ProductAssignment.product_id, ProductAssignment.user_id).all()
     assigned_to_someone = {pid for pid, _ in rows}

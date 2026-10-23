@@ -38,7 +38,7 @@ import {
 import { getTeam, signOutMember, updateTeamMember } from "./services/teamApi";
 import ActivityLog from "./components/ActivityLog";
 import CatalogPage from "./components/CatalogPage";
-import OrgPortal from "./components/OrgPortal";
+import OrgPortal, { CompareSection } from "./components/OrgPortal";
 import LoginPage from "./components/LoginPage";
 import NotificationBell from "./components/NotificationBell";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
@@ -1728,6 +1728,34 @@ const SORTS = {
 
 const formatCount = (n) => Number(n || 0).toLocaleString();
 
+// Survey history: how many feedback rounds a product had, which versions they tested, and
+// whether one is still collecting. E.g. "2 rounds" / "v1 → v2 · all complete".
+function RoundsCell({ product }) {
+  const list = product.round_list || [];
+  const n = list.length || product.rounds || 0;
+  if (!n) return <span className="muted">—</span>;
+  const versions = [...new Set(list.map((r) => r.recipe_version).filter((v) => v != null))];
+  const live = list.find((r) => r.status === "live");
+  const status = live ? `Round ${live.number} collecting` : "all complete";
+  const tip = list.map((r) => `Round ${r.number}: version ${r.recipe_version ?? "?"}, ${r.status === "live" ? "collecting surveys" : "complete"}`).join("\n");
+  return (
+    <span className="rounds-cell" title={tip}>
+      <span className="cell-count">{n} {n === 1 ? "round" : "rounds"}</span>
+      <span className="cell-sub">
+        {versions.length > 1 ? `v${versions.join(" → v")}` : versions.length === 1 ? `version ${versions[0]}` : ""}
+        {versions.length ? " · " : ""}{status}
+      </span>
+    </span>
+  );
+}
+
+// "Version 2 · Round 2 (collecting)": a product version in fieldwork (survey_versions item).
+function versionLabel(v) {
+  const rounds = v.rounds || [];
+  const which = rounds.length ? `Round${rounds.length > 1 ? "s" : ""} ${rounds.join(", ")}` : "";
+  return [`Version ${v.version}`, which].filter(Boolean).join(" · ") + (v.live ? " (collecting)" : "");
+}
+
 // Admin badges: the round collecting surveys now, and a recipe changed by the organization.
 const ORG_BADGE_DAYS = 14;
 function ProductBadges({ product }) {
@@ -1766,6 +1794,9 @@ function HomeDashboard({
   const tableRef = useRef(null);
 
   const [productRatings, setProductRatings] = useState(() => pageCache.homeRatings || {});
+  // Product version chosen per row ("all" or a version number as text); products with
+  // several versions in fieldwork get a version picker that switches the row's numbers.
+  const [versionPick, setVersionPick] = useState({});
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setCatalog((c) => ({ ...c, loading: true, error: "" }));
@@ -2024,25 +2055,46 @@ function HomeDashboard({
                     </tr>
                   </thead>
                   <tbody>
-                    {pageRows.map((p) => (
+                    {pageRows.map((p) => {
+                      const versions = p.survey_versions || [];
+                      const picked = versionPick[p.id] || "all";
+                      const shown = picked === "all" ? null : versions.find((v) => String(v.version) === picked) || null;
+                      const responses = shown ? shown.responses : p.responses_collected;
+                      const rating = shown ? shown.rating : productRatings[p.id];
+                      return (
                       <tr key={p.id}>
                         <td>
                           <div className="cell-product">
                             <strong title={p.name}>{p.name}</strong>
                             <span>{p.sku || `${p.question_count} questions`}</span>
                             <span className="cell-category-inline">{p._category}</span>
+                            {versions.length > 1 && (
+                              <label className="version-pick">
+                                <span className="visually-hidden">Version of {p.name}</span>
+                                <select className="select select-sm" value={picked}
+                                  onChange={(e) => setVersionPick((m) => ({ ...m, [p.id]: e.target.value }))}>
+                                  <option value="all">All {versions.length} versions</option>
+                                  {versions.map((v) => (
+                                    <option key={v.version} value={String(v.version)}>
+                                      {versionLabel(v)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
                             <ProductBadges product={p} />
                           </div>
                         </td>
                         <td className="col-category">{p._category}</td>
                         <td>
                           <span className="cell-count">
-                            {formatCount(p.responses_collected)} {Number(p.responses_collected) === 1 ? "response" : "responses"}
+                            {formatCount(responses)} {Number(responses) === 1 ? "response" : "responses"}
                           </span>
+                          {shown && <span className="cell-sub">Version {shown.version} only</span>}
                         </td>
                         <td className="cell-rating">
-                          {productRatings[p.id] != null ? (
-                            <RatingStars rating={productRatings[p.id]} compact />
+                          {rating != null && Number(rating) > 0 ? (
+                            <RatingStars rating={Number(rating)} compact />
                           ) : (
                             <span className="muted">—</span>
                           )}
@@ -2065,7 +2117,8 @@ function HomeDashboard({
                         </td>
                         )}
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2243,20 +2296,23 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
               : "Every analyzed survey from every product, newest first."}
           </p>
         </div>
+      </header>
+
+      {/* View tabs on the left, Refresh on the right of the same row */}
+      <div className="history-tabs-row">
+        <div className="segmented page-tabs history-tabs" role="tablist" aria-label="Survey history view">
+          <button type="button" role="tab" aria-selected={tab === "products"} className={tab === "products" ? "is-on" : ""} onClick={() => onTabChange?.("products")}>
+            By product
+          </button>
+          <button type="button" role="tab" aria-selected={tab === "surveys"} className={tab === "surveys" ? "is-on" : ""} onClick={() => onTabChange?.("surveys")}>
+            All surveys
+          </button>
+        </div>
         {tab === "products" && (
           <button type="button" className="btn btn-secondary" onClick={load} disabled={data.loading}>
             {data.loading ? "Refreshing…" : "Refresh"}
           </button>
         )}
-      </header>
-
-      <div className="segmented page-tabs history-tabs" role="tablist" aria-label="Survey history view">
-        <button type="button" role="tab" aria-selected={tab === "products"} className={tab === "products" ? "is-on" : ""} onClick={() => onTabChange?.("products")}>
-          By product
-        </button>
-        <button type="button" role="tab" aria-selected={tab === "surveys"} className={tab === "surveys" ? "is-on" : ""} onClick={() => onTabChange?.("surveys")}>
-          All surveys
-        </button>
       </div>
 
       {tab === "surveys" ? (
@@ -2308,6 +2364,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
                 <thead>
                   <tr>
                     <th scope="col">Product</th>
+                    <th scope="col" title="One round = one batch of customer surveys for one product version">Feedback rounds</th>
                     <th scope="col">Responses</th>
                     <th scope="col">Avg rating</th>
                     <th scope="col">Sentiment</th>
@@ -2323,10 +2380,11 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
                           <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); onOpenProduct(p.id); }}>
                             {p.name}
                           </button>
-                          <span>{p.category_name}{p.rounds > 1 ? ` · ${p.rounds} rounds` : ""}</span>
+                          <span>{p.category_name}</span>
                           <ProductBadges product={p} />
                         </div>
                       </td>
+                      <td><RoundsCell product={p} /></td>
                       <td>
                         <span className="cell-count">
                           {formatCount(p.responses)} {p.responses === 1 ? "response" : "responses"}
@@ -3937,6 +3995,8 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
   const [elapsed, setElapsed] = useState(0);
   const [tab, setTab] = useState("report");
   const [round, setRound] = useState(initialRound); // null = every survey of the product
+  // "Compare rounds": two rounds side by side (same view as the organization portal).
+  const [comparing, setComparing] = useState(false);
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setState((s) => ({ ...s, loading: true, error: "" }));
@@ -4007,6 +4067,10 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
 
   const { product, summary, responses, report } = state.data;
   const rounds = state.data.rounds || [];
+  if (round == null && rounds.length > 1) {
+    // Several rounds: open the latest one ("All rounds" mixed versions; use Compare rounds instead).
+    setRound(rounds[rounds.length - 1].number);
+  }
   const shown = round != null ? rounds.find((r) => r.number === round) : null;
   const live = rounds.find((r) => r.status === "live");
   const analyzed = responses.filter((r) => r.status === "analyzed" && r.feedback);
@@ -4022,17 +4086,27 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
           <p className="eyebrow">{product.category_name}</p>
           <h1 id="pf-title">{product.name}</h1>
           <p className="home-sub">
-            {formatCount(summary.responses)} customer {summary.responses === 1 ? "response" : "responses"} analyzed
-            {shown ? ` in Round ${shown.number}` : rounds.length > 1 ? ` in ${rounds.length} rounds` : ""}
+            {comparing
+              ? `${rounds.length} feedback rounds, each testing one version of the product`
+              : <>
+                  {formatCount(summary.responses)} customer {summary.responses === 1 ? "response" : "responses"} analyzed
+                  {shown ? ` in Round ${shown.number}` : rounds.length > 1 ? ` in ${rounds.length} rounds` : ""}
+                </>}
             {product.sku ? ` · ${product.sku}` : ""}
           </p>
           {live && <span className="product-badges"><span className="round-chip is-live">Round {live.number} · {live.done} of {live.target}</span></span>}
         </div>
-        {rounds.length > 0 && (
-          <div className="segmented round-picker" role="group" aria-label="Survey round">
-            <button type="button" aria-pressed={round == null} className={round == null ? "is-on" : ""} onClick={() => setRound(null)}>All rounds</button>
+        {rounds.length > 1 && (
+          <div className="segmented round-picker" role="group" aria-label="Feedback round">
+            <button type="button" aria-pressed={comparing} className={comparing ? "is-on" : ""} onClick={() => setComparing(true)}
+              title="Two rounds side by side: rating, aspects and what changed in the recipe">
+              Compare rounds
+            </button>
             {rounds.map((r) => (
-              <button key={r.number} type="button" aria-pressed={round === r.number} className={round === r.number ? "is-on" : ""} onClick={() => setRound(r.number)}>
+              <button key={r.number} type="button" aria-pressed={!comparing && round === r.number}
+                className={!comparing && round === r.number ? "is-on" : ""}
+                onClick={() => { setComparing(false); setRound(r.number); }}
+                title={`Round ${r.number}: version ${r.recipe_version ?? "?"}${r.status === "live" ? ", collecting surveys" : ""}`}>
                 Round {r.number}{r.status === "live" ? " · live" : ""}
               </button>
             ))}
@@ -4040,151 +4114,163 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
         )}
       </header>
 
-      <div className="home-stats">
-        <div className="h-stat">
-          <span className="h-stat-label">Responses</span>
-          <span className="h-stat-value">{formatCount(summary.responses)}</span>
-          <span className="h-stat-note">{summary.pending ? `${summary.pending} awaiting a recording` : "analyzed surveys"}</span>
+      {comparing ? (
+        <div className="pf-compare">
+          <p className="rounds-explainer">
+            Each round is one batch of customer surveys for one version of {product.name}. Pick two rounds to see
+            what changed in the recipe and how customers responded.
+          </p>
+          <CompareSection product={product} rounds={rounds} />
         </div>
-        <div className="h-stat">
-          <span className="h-stat-label">Average rating</span>
-          <span className="h-stat-value h-stat-rating">
-            {summary.avg_rating != null ? summary.avg_rating.toFixed(1) : "—"}
-            {summary.avg_rating != null && <RatingStars rating={summary.avg_rating} showValue={false} compact />}
-          </span>
-          <span className="h-stat-note">from individual analyses</span>
-        </div>
-        <div className="h-stat h-stat-wide">
-          <span className="h-stat-label">Customer sentiment</span>
-          <ToneBar counts={summary.sentiment} />
-          <div className="bar-legend">
-            <span><i className="dot dot-positive" />{summary.sentiment.positive} positive</span>
-            <span><i className="dot dot-mixed" />{summary.sentiment.mixed} mixed</span>
-            <span><i className="dot dot-negative" />{summary.sentiment.negative} negative</span>
+      ) : (
+      <>
+        <div className="home-stats">
+          <div className="h-stat">
+            <span className="h-stat-label">Responses</span>
+            <span className="h-stat-value">{formatCount(summary.responses)}</span>
+            <span className="h-stat-note">{summary.pending ? `${summary.pending} awaiting a recording` : "analyzed surveys"}</span>
+          </div>
+          <div className="h-stat">
+            <span className="h-stat-label">Average rating</span>
+            <span className="h-stat-value h-stat-rating">
+              {summary.avg_rating != null ? summary.avg_rating.toFixed(1) : "—"}
+              {summary.avg_rating != null && <RatingStars rating={summary.avg_rating} showValue={false} compact />}
+            </span>
+            <span className="h-stat-note">from individual analyses</span>
+          </div>
+          <div className="h-stat h-stat-wide">
+            <span className="h-stat-label">Customer sentiment</span>
+            <ToneBar counts={summary.sentiment} />
+            <div className="bar-legend">
+              <span><i className="dot dot-positive" />{summary.sentiment.positive} positive</span>
+              <span><i className="dot dot-mixed" />{summary.sentiment.mixed} mixed</span>
+              <span><i className="dot dot-negative" />{summary.sentiment.negative} negative</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="segmented page-tabs" role="tablist" aria-label="Product feedback">
-        <button type="button" role="tab" aria-selected={tab === "report"} className={tab === "report" ? "is-on" : ""} onClick={() => setTab("report")}>
-          Consolidated feedback
-        </button>
-        <button type="button" role="tab" aria-selected={tab === "responses"} className={tab === "responses" ? "is-on" : ""} onClick={() => setTab("responses")}>
-          Customer feedback <span className="seg-count">{responses.length}</span>
-        </button>
-      </div>
+        <div className="segmented page-tabs" role="tablist" aria-label="Product feedback">
+          <button type="button" role="tab" aria-selected={tab === "report"} className={tab === "report" ? "is-on" : ""} onClick={() => setTab("report")}>
+            Consolidated feedback
+          </button>
+          <button type="button" role="tab" aria-selected={tab === "responses"} className={tab === "responses" ? "is-on" : ""} onClick={() => setTab("responses")}>
+            Customer feedback <span className="seg-count">{responses.length}</span>
+          </button>
+        </div>
 
-      {tab === "report" && (
-        <>
-          <div className={`report-bar${report ? "" : " is-empty"}`}>
-            <div>
+        {tab === "report" && (
+          <>
+            <div className={`report-bar${report ? "" : " is-empty"}`}>
+              <div>
+                {generating ? (
+                  <>
+                    <strong>Updating the consolidated report… {elapsed}s</strong>
+                    <span>Combining {summary.responses} stored analyses and writing the summary. This usually takes under a minute.</span>
+                  </>
+                ) : report ? (
+                  <>
+                    <strong>
+                      {shown ? `Round ${shown.number} report` : "Consolidated report"}
+                      {updating && <span className="status-chip is-act report-updating-chip">Updating with the latest analyses…</span>}
+                    </strong>
+                    <span>
+                      {shown
+                        ? `Recipe v${shown.recipe_version ?? "—"} · ${shown.done} of ${shown.target} consumers · started by ${shown.started_by_name}${shown.note ? ` · “${shown.note}”` : ""} · `
+                        : ""}
+                      Based on {formatCount(report.response_count)} {report.response_count === 1 ? "survey" : "surveys"} · updated{" "}
+                      {timeAgo(report.generated_at)}. It updates by itself after every new analysis.
+                    </span>
+                  </>
+                ) : summary.can_consolidate ? (
+                  <>
+                    <strong>Creating the consolidated report…</strong>
+                    <span>It's made automatically from the analyzed surveys, usually within a minute. You can also create it now.</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>No analyzed surveys yet</strong>
+                    <span>The consolidated report appears automatically after the first survey of {product.name} is analyzed.</span>
+                  </>
+                )}
+              </div>
               {generating ? (
-                <>
-                  <strong>Updating the consolidated report… {elapsed}s</strong>
-                  <span>Combining {summary.responses} stored analyses and writing the summary. This usually takes under a minute.</span>
-                </>
-              ) : report ? (
-                <>
-                  <strong>
-                    {shown ? `Round ${shown.number} report` : "Consolidated report"}
-                    {updating && <span className="status-chip is-act report-updating-chip">Updating with the latest analyses…</span>}
-                  </strong>
-                  <span>
-                    {shown
-                      ? `Recipe v${shown.recipe_version ?? "—"} · ${shown.done} of ${shown.target} consumers · started by ${shown.started_by_name}${shown.note ? ` · “${shown.note}”` : ""} · `
-                      : ""}
-                    Based on {formatCount(report.response_count)} {report.response_count === 1 ? "survey" : "surveys"} · updated{" "}
-                    {timeAgo(report.generated_at)}. It updates by itself after every new analysis.
-                  </span>
-                </>
+                <span className="spinner" aria-hidden="true" />
               ) : summary.can_consolidate ? (
-                <>
-                  <strong>Creating the consolidated report…</strong>
-                  <span>It's made automatically from the analyzed surveys, usually within a minute. You can also create it now.</span>
-                </>
-              ) : (
-                <>
-                  <strong>No analyzed surveys yet</strong>
-                  <span>The consolidated report appears automatically after the first survey of {product.name} is analyzed.</span>
-                </>
-              )}
+                <button type="button" className={`btn ${report ? "btn-secondary" : "btn-primary"}`} onClick={generate}>
+                  {report ? "Refresh now" : "Create now"}
+                </button>
+              ) : null}
             </div>
-            {generating ? (
-              <span className="spinner" aria-hidden="true" />
-            ) : summary.can_consolidate ? (
-              <button type="button" className={`btn ${report ? "btn-secondary" : "btn-primary"}`} onClick={generate}>
-                {report ? "Refresh now" : "Create now"}
-              </button>
-            ) : null}
-          </div>
-          {genError && <p className="alert alert-error report-error" role="alert">{genError}</p>}
-          {report && !generating && (
-            <ConsolidatedReportView report={report} product={shown ? { ...product, name: `${product.name} · Round ${shown.number}` } : product} />
-          )}
-        </>
-      )}
+            {genError && <p className="alert alert-error report-error" role="alert">{genError}</p>}
+            {report && !generating && (
+              <ConsolidatedReportView report={report} product={shown ? { ...product, name: `${product.name} · Round ${shown.number}` } : product} />
+            )}
+          </>
+        )}
 
-      {tab === "responses" && (
-        <section className="panel home-products">
-          {responses.length === 0 ? (
-            <p className="muted table-empty">No surveys for {product.name}{shown ? ` in Round ${shown.number}` : ""} yet.</p>
-          ) : (
-            <div className="table-wrap">
-              <table className="data-table">
-                <caption className="visually-hidden">Customer feedback for {product.name}</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Customer</th>
-                    <th scope="col" className="col-category">City</th>
-                    {rounds.length > 0 && <th scope="col">Round</th>}
-                    <th scope="col">Rating</th>
-                    <th scope="col">Sentiment</th>
-                    <th scope="col" className="col-summary">Summary</th>
-                    <th scope="col" className="col-category">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...analyzed, ...pending].map((r) => {
-                    const fb = r.feedback;
-                    const who = r.respondent;
-                    const open = fb && r.status === "analyzed" ? () => onOpenFeedback(fb.id) : null;
-                    return (
-                      <tr key={r.response_id} className={open ? "is-clickable" : "is-pending"} onClick={open || undefined}>
-                        <td>
-                          <div className="cell-product">
-                            {open ? (
-                              <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); open(); }}>
-                                {who?.name || `Respondent #${r.response_id}`}
-                              </button>
+        {tab === "responses" && (
+          <section className="panel home-products">
+            {responses.length === 0 ? (
+              <p className="muted table-empty">No surveys for {product.name}{shown ? ` in Round ${shown.number}` : ""} yet.</p>
+            ) : (
+              <div className="table-wrap">
+                <table className="data-table">
+                  <caption className="visually-hidden">Customer feedback for {product.name}</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Customer</th>
+                      <th scope="col" className="col-category">City</th>
+                      {rounds.length > 0 && <th scope="col">Round</th>}
+                      <th scope="col">Rating</th>
+                      <th scope="col">Sentiment</th>
+                      <th scope="col" className="col-summary">Summary</th>
+                      <th scope="col" className="col-category">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...analyzed, ...pending].map((r) => {
+                      const fb = r.feedback;
+                      const who = r.respondent;
+                      const open = fb && r.status === "analyzed" ? () => onOpenFeedback(fb.id) : null;
+                      return (
+                        <tr key={r.response_id} className={open ? "is-clickable" : "is-pending"} onClick={open || undefined}>
+                          <td>
+                            <div className="cell-product">
+                              {open ? (
+                                <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); open(); }}>
+                                  {who?.name || `Respondent #${r.response_id}`}
+                                </button>
+                              ) : (
+                                <strong>{who?.name || `Respondent #${r.response_id}`}</strong>
+                              )}
+                              <span>{[who?.gender, who?.age ? `${who.age} yrs` : null].filter(Boolean).join(" · ") || `Survey #${r.response_id}`}</span>
+                              <span className="cell-category-inline">{who?.location}</span>
+                            </div>
+                          </td>
+                          <td className="col-category">{who?.location || "—"}</td>
+                          {rounds.length > 0 && <td>{r.round ? <span className="round-chip">{r.round}</span> : "—"}</td>}
+                          <td>{fb && toRating(fb.overall_rating) ? <RatingStars rating={fb.overall_rating} compact /> : <span className="muted">—</span>}</td>
+                          <td>
+                            {fb ? (
+                              <SentimentPill sentiment={TONE_SENTIMENT[fb.tone] || SENTIMENTS.neutral} small />
                             ) : (
-                              <strong>{who?.name || `Respondent #${r.response_id}`}</strong>
+                              <span className="status-chip is-warn">Awaiting recording</span>
                             )}
-                            <span>{[who?.gender, who?.age ? `${who.age} yrs` : null].filter(Boolean).join(" · ") || `Survey #${r.response_id}`}</span>
-                            <span className="cell-category-inline">{who?.location}</span>
-                          </div>
-                        </td>
-                        <td className="col-category">{who?.location || "—"}</td>
-                        {rounds.length > 0 && <td>{r.round ? <span className="round-chip">{r.round}</span> : "—"}</td>}
-                        <td>{fb && toRating(fb.overall_rating) ? <RatingStars rating={fb.overall_rating} compact /> : <span className="muted">—</span>}</td>
-                        <td>
-                          {fb ? (
-                            <SentimentPill sentiment={TONE_SENTIMENT[fb.tone] || SENTIMENTS.neutral} small />
-                          ) : (
-                            <span className="status-chip is-warn">Awaiting recording</span>
-                          )}
-                        </td>
-                        <td className="col-summary">
-                          <span className="summary-clip">{fb?.summary || "—"}</span>
-                        </td>
-                        <td className="col-category">{formatDateTime(fb?.uploaded_at || r.created_at)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
+                          </td>
+                          <td className="col-summary">
+                            <span className="summary-clip">{fb?.summary || "—"}</span>
+                          </td>
+                          <td className="col-category">{formatDateTime(fb?.uploaded_at || r.created_at)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+      </>
       )}
     </section>
   );
@@ -5075,7 +5161,6 @@ function AppContent({ user }) {
             <NotificationBell
               onOpenHistory={isAdminUser ? goHistory : undefined}
               onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
-              onOpenRecipe={isAdminUser ? (pid) => openCatalogProduct(pid, "recipe") : undefined}
               onOpenRounds={isAdminUser ? (pid) => openCatalogProduct(pid, "rounds") : undefined}
             />
             <UserMenu user={user} />

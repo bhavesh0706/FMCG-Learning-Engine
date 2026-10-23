@@ -191,8 +191,13 @@ def test_organization_starts_a_round_and_everyone_is_told(client, db, admin, org
 
 def test_round_reports_compare_and_admin_round_view(client, db, admin, org, alice, product):
     from app.api.product_feedback import build_round_report, stale_round_ids
+    from app.database.models import Product, RecipeVersion
 
-    client.put(f"/products/{product.id}/recipe", headers=auth(admin), json=RECIPE)
+    # Version 1 was saved by an admin before recipes became organization-only (existing data).
+    db.get(Product, product.id).recipe = RECIPE
+    db.add(RecipeVersion(product_id=product.id, version=1, recipe=RECIPE, changed_by=admin.id,
+                         changed_by_name=admin.name, changed_by_role="admin", changes=["First version"]))
+    db.commit()
     client.post(f"/org/products/{product.id}/rounds", headers=auth(org), json={"target": 1})
     a = _submit(client, db, alice, product)
     _analyze(db, a, rating=3.5, sentiment="mixed")
@@ -233,7 +238,13 @@ def test_round_reports_compare_and_admin_round_view(client, db, admin, org, alic
 
 
 def test_updates_feed_and_unread_count(client, db, admin, org, product):
-    client.put(f"/products/{product.id}/recipe", headers=auth(admin), json=RECIPE)
+    # A version saved by an admin before recipes became organization-only (existing data).
+    from app.database.models import Product, RecipeVersion
+
+    db.get(Product, product.id).recipe = RECIPE
+    db.add(RecipeVersion(product_id=product.id, version=1, recipe=RECIPE, changed_by=admin.id,
+                         changed_by_name=admin.name, changed_by_role="admin", changes=["First version"]))
+    db.commit()
     feed = client.get("/org/updates", headers=auth(org)).json()
     mine = [u for u in feed["updates"] if u["product_id"] == product.id]
     assert mine[0]["title"].startswith("Research team updated the recipe") and mine[0]["unread"]
@@ -280,7 +291,7 @@ def test_round_report_reuses_the_product_report_when_surveys_match(client, db, a
 
 
 def test_survey_persons_see_the_recipe_version_being_tested(client, db, admin, org, alice, product):
-    client.put(f"/products/{product.id}/recipe", headers=auth(admin), json=RECIPE)
+    client.put(f"/products/{product.id}/recipe", headers=auth(org), json=RECIPE)
     client.post(f"/org/products/{product.id}/rounds", headers=auth(org), json={"target": 5})
     client.post(f"/org/products/{product.id}/rounds/1/end", headers=auth(org))
     client.put(f"/products/{product.id}/recipe", headers=auth(org), json=LESS_SUGAR)

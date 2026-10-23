@@ -10027,8 +10027,9 @@ input[type="radio"] {
 }
 
 /* Pages */
+/* Organization overview: Products · Consumer responses · Open rounds */
 .org-kpis {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .org-two {
@@ -10534,7 +10535,7 @@ input[type="radio"] {
 
 @media (max-width: 1024px) {
   .org-kpis {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr)); /* 3 cards: keep one row, no lone card */
   }
 
   .org-two,
@@ -10597,7 +10598,7 @@ input[type="radio"] {
 
 @media (max-width: 480px) {
   .org-kpis {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 
   .org-cards {
@@ -10674,4 +10675,248 @@ input[type="radio"] {
 
 .version-note {
   color: var(--ink-2);
+}
+
+/* ================================================================
+   Product versions and feedback rounds (admin dashboard, catalog, surveys)
+   ================================================================ */
+
+/* Home: version picker in a product row */
+.version-pick {
+  display: inline-flex;
+  margin-top: 6px;
+}
+
+.version-pick .select.select-sm {
+  min-width: 170px;
+}
+
+/* A second, smaller line inside a table cell ("Version 2 only", "v1 → v2 · all complete") */
+.cell-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+/* Survey history and product report: what a feedback round is */
+.rounds-explainer {
+  max-width: 760px;
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  background: var(--brand-tint);
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.rounds-cell {
+  display: inline-flex;
+  flex-direction: column;
+  cursor: help;
+}
+
+/* Catalog: Versions column */
+.versions-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.versions-count {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.versions-cell .version-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.versions-cell .version-chip {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
+
+.versions-cell .version-chip:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.versions-cell .version-chip.is-latest {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fff;
+}
+
+.versions-cell .version-chip.is-live {
+  box-shadow: 0 0 0 2px var(--pos-soft);
+}
+
+/* Admin: recipe and survey questions are managed by the organization */
+.managed-note {
+  margin: 10px 0 14px;
+}
+
+.recipe-notes-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+/* Admin product report: Compare rounds */
+.pf-compare .rounds-explainer {
+  margin-bottom: 14px;
+}
+
+.version-card-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .version-pick .select.select-sm {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+/* Organization overview: 3 KPI cards. Wins over the generic three-card rule above
+   (which uses 2 columns on phones and would leave one card alone). */
+.home-stats.org-kpis:has(> .h-stat:nth-child(3):last-child) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 600px) {
+  .home-stats.org-kpis:has(> .h-stat:nth-child(3):last-child) {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Survey history: By product / All surveys on the left, Refresh on the right */
+.history-tabs-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.history-tabs-row > .history-tabs {
+  margin-bottom: 0;
+}
+
+/* Catalog: the All products table always fits its panel (no sideways scrolling).
+   Fixed proportional columns; long badges and chips wrap instead of widening it. */
+.catalog-table-wrap {
+  overflow-x: visible;
+}
+
+.catalog-table {
+  table-layout: fixed;
+}
+
+.catalog-table th:nth-child(1) { width: 20%; }
+.catalog-table th.col-category { width: 16%; }
+.catalog-table th:nth-last-child(5) { width: 14%; } /* Survey questions */
+.catalog-table th:nth-last-child(4) { width: 19%; } /* Recipe */
+.catalog-table th:nth-last-child(3) { width: 12%; } /* Versions */
+.catalog-table th:nth-last-child(2) { width: 15%; } /* Status */
+.catalog-table th:last-child { width: 40px; }
+
+.catalog-table td {
+  overflow-wrap: anywhere;
+}
+
+.catalog-table .client-change-badge,
+.catalog-table .status-chip,
+.catalog-table .recipe-yes {
+  white-space: normal;
+  height: auto;
+  line-height: 1.35;
+}
+
+.catalog-table .client-change-badge {
+  display: inline-block;
+  max-width: 100%;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+
+.catalog-table .mini-progress {
+  width: auto;
+  min-width: 36px;
+  flex: 1 1 auto;
+}
+
+.catalog-table .versions-cell .version-chips {
+  flex-direction: row;
+}
+
+.catalog-table .cell-progress {
+  min-width: 0;
+  gap: 6px;
+}
+
+.catalog-table .cell-progress .mini-progress {
+  min-width: 20px;
+}
+
+.catalog-table .status-stack {
+  max-width: 100%;
+}
+
+.catalog-table .round-chip {
+  white-space: normal;
+  height: auto;
+  min-height: 24px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 1.3;
+}
+
+/* Narrower windows: the category list on the left already shows each product's category */
+@media (max-width: 1100px) {
+  .catalog-table .col-category {
+    display: none;
+  }
+}
+
+.catalog-table .versions-cell {
+  max-width: 100%;
+}
+
+.catalog-table .versions-count {
+  white-space: normal;
+}
+
+.catalog-table th {
+  white-space: normal;
+  line-height: 1.3;
+}
+
+.catalog-table td.col-category {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.catalog-table .cell-product .row-link {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  text-align: left;
 }

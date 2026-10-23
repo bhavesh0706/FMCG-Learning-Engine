@@ -8,6 +8,8 @@ check permissions themselves (feedback.py, surveys.py, video.py, catalog.py).
   user    any signed-in, active account (admin or survey person)
   admin   admins only: team, survey history, reports, catalog changes, deleting
   client  the organization's login: ONLY the routes in CLIENT_ALLOWED (its portal)
+  org     recipes and survey questions are written ONLY by the organization
+          (ORG_CONTENT); admins and survey persons may read them, not change them
 
 An account that must choose a new password (the organization's first sign-in,
 or after its password was reset on the server) may only read /auth/me, change
@@ -72,6 +74,16 @@ ADMIN = [
     ({"POST"}, r"^/analysis/reanalyze/\d+$"),
 ]
 
+# Product content the ORGANIZATION manages (its portal: Recipe and Survey questions
+# tabs). Admins and survey persons can read recipes and questions but not change
+# them: these answer 403 for every role except "client".
+ORG_CONTENT = [
+    ({"PUT"}, r"^/products/\d+/recipe$"),
+    ({"POST"}, r"^/products/\d+/questions$"),
+    ({"PUT"}, r"^/products/\d+/questions/order$"),
+    ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
+]
+
 # The organization's login may use ONLY these routes; every other route answers
 # 403 for it. It sees every active product (ownership.check_product_access), but
 # only aggregated results: no customer details, survey persons or recordings.
@@ -81,6 +93,10 @@ CLIENT_ALLOWED = [
     (None, r"^/org(/|$)"),
     ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
     ({"GET"}, r"^/products/\d+/recipe/versions$"),
+    # Survey questions of a product: read, add, edit, reorder, remove
+    ({"GET", "POST"}, r"^/products/\d+/questions$"),
+    ({"PUT"}, r"^/products/\d+/questions/order$"),
+    ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
 ]
 
 # While an account must choose a new password, only these work.
@@ -94,6 +110,7 @@ MEDIA = re.compile(r"^/feedback/\d+/(video|audio|media)")
 _PUBLIC = [(m, re.compile(p)) for m, p in PUBLIC]
 _ADMIN = [(m, re.compile(p)) for m, p in ADMIN]
 _CLIENT = [(m, re.compile(p)) for m, p in CLIENT_ALLOWED]
+_ORG_CONTENT = [(m, re.compile(p)) for m, p in ORG_CONTENT]
 _PASSWORD_CHANGE = [(m, re.compile(p)) for m, p in PASSWORD_CHANGE_ALLOWED]
 
 
@@ -105,6 +122,11 @@ def _matches(rules, method: str, path: str) -> bool:
 
 def client_may(method: str, path: str) -> bool:
     return _matches(_CLIENT, method, path)
+
+
+def organization_only(method: str, path: str) -> bool:
+    """Recipe and survey-question changes: only the organization may make them."""
+    return _matches(_ORG_CONTENT, method, path)
 
 
 def required_role(method: str, path: str) -> str:
@@ -218,6 +240,10 @@ def install_access_control(app):
         if account["role"] == "client":
             if not client_may(request.method, request.url.path):
                 return JSONResponse(status_code=403, content={"detail": "The organization portal can't open this page."})
+        elif organization_only(request.method, request.url.path):
+            return JSONResponse(status_code=403, content={
+                "detail": "Recipes and survey questions are managed by the organization in its portal.",
+                "code": "organization_only"})
         elif need == "admin" and account["role"] != "admin":
             return JSONResponse(status_code=403, content={"detail": "This is only available to admins."})
         request.state.account = account

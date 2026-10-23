@@ -23,6 +23,28 @@ class CatalogCategory {
       );
 }
 
+/// One version of a product (= recipe version) that is or was in fieldwork: the
+/// survey person picks it when a product has several (GET /products: survey_versions).
+class ProductVersion {
+  const ProductVersion({required this.version, required this.rounds, required this.live});
+
+  final int version;
+  final List<int> rounds; // the survey rounds that tested it, e.g. [2]
+  final bool live; // a round of this version is collecting surveys now
+
+  /// "Round 2 · collecting now" / "Round 1 · complete"
+  String get detail {
+    final which = rounds.isEmpty ? '' : 'Round${rounds.length > 1 ? 's' : ''} ${rounds.join(', ')} · ';
+    return '$which${live ? 'collecting now' : 'complete'}';
+  }
+
+  factory ProductVersion.fromJson(Map<String, dynamic> j) => ProductVersion(
+        version: _int(j['version']),
+        rounds: [for (final r in (j['rounds'] is List ? j['rounds'] as List : const [])) _int(r)],
+        live: j['live'] == true,
+      );
+}
+
 class CatalogProduct {
   const CatalogProduct({
     required this.id,
@@ -33,6 +55,7 @@ class CatalogProduct {
     required this.surveyReady,
     required this.responsesCollected,
     required this.minResponses,
+    this.surveyVersions = const [],
   });
 
   final int id;
@@ -43,6 +66,18 @@ class CatalogProduct {
   final bool surveyReady;
   final int responsesCollected;
   final int minResponses;
+  // Versions in fieldwork, oldest first. Empty for a product never surveyed (the
+  // server then files the survey under its first round).
+  final List<ProductVersion> surveyVersions;
+
+  /// The version used without asking: the only one, else the one collecting now.
+  ProductVersion? get defaultVersion {
+    if (surveyVersions.length == 1) return surveyVersions.first;
+    for (final v in surveyVersions) {
+      if (v.live) return v;
+    }
+    return null;
+  }
 
   factory CatalogProduct.fromJson(Map<String, dynamic> j) => CatalogProduct(
         id: _int(j['id']),
@@ -53,6 +88,10 @@ class CatalogProduct {
         surveyReady: j['survey_ready'] == true,
         responsesCollected: _int(j['responses_collected']),
         minResponses: _int(j['min_responses'], 10),
+        surveyVersions: [
+          for (final v in (j['survey_versions'] is List ? j['survey_versions'] as List : const []))
+            if (v is Map) ProductVersion.fromJson(Map<String, dynamic>.from(v)),
+        ],
       );
 }
 

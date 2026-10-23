@@ -146,7 +146,39 @@ function CategoryDialog({ category, onClose, onSaved }) {
   );
 }
 
-function ProductDialog({ categories, products = [], defaultCategoryId, onClose, onCreated, onNeedCategory }) {
+/* Product versions (= recipe versions), from the database: every saved version, with
+   the latest one marked and the ones survey persons are collecting feedback on. */
+function versionsOf(product) {
+  const saved = product?.recipe_versions || [];
+  const surveyed = new Map((product?.survey_versions || []).map((v) => [v.version, v]));
+  return { saved, surveyed, latest: saved.length ? saved[saved.length - 1] : null };
+}
+
+function VersionsCell({ product }) {
+  const { saved, surveyed, latest } = versionsOf(product);
+  if (!saved.length) return <span className="muted">No recipe yet</span>;
+  return (
+    <span className="versions-cell">
+      <span className="versions-count">{saved.length === 1 ? "1 version" : `${saved.length} versions`}</span>
+      <span className="version-chips">
+        {saved.map((v) => {
+          const sv = surveyed.get(v);
+          const tip = [`Version ${v}`, v === latest ? "latest recipe" : null,
+            sv ? `surveyed in Round${sv.rounds.length > 1 ? "s" : ""} ${sv.rounds.join(", ")}${sv.live ? " (collecting now)" : ""}` : "not surveyed yet"]
+            .filter(Boolean).join(" · ");
+          return (
+            <span key={v} title={tip} tabIndex={0}
+              className={`version-chip${v === latest ? " is-latest" : ""}${sv?.live ? " is-live" : ""}`}>
+              v{v}
+            </span>
+          );
+        })}
+      </span>
+    </span>
+  );
+}
+
+function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNeedCategory }) {
   const active = categories.filter((c) => c.is_active);
   const [form, setForm] = useState({
     category_id: defaultCategoryId || active[0]?.id || "",
@@ -159,28 +191,8 @@ function ProductDialog({ categories, products = [], defaultCategoryId, onClose, 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const valid = form.name.trim().length >= 2 && form.category_id;
 
-  // Starting survey questions: "" (none) | "t:<template id>" | "p:<product id>"
-  const [templates, setTemplates] = useState([]);
-  const [startWith, setStartWith] = useState("");
-  const [picked, setPicked] = useState(false); // the admin chose something: stop auto-suggesting
-  useEffect(() => {
-    listQuestionTemplates()
-      .then((d) => setTemplates(listOf(d, "templates")))
-      .catch(() => setTemplates([]));
-  }, []);
-  useEffect(() => {
-    if (picked) return;
-    // Suggest the template made for this category, if there is one.
-    const forCategory = templates.find((t) => String(t.category_id) === String(form.category_id));
-    setStartWith(forCategory ? `t:${forCategory.id}` : "");
-  }, [form.category_id, templates, picked]);
-  const copyable = products.filter((p) => p.is_active && (p.question_count || 0) > 0);
-  const chosen = startWith.startsWith("t:")
-    ? templates.find((t) => `t:${t.id}` === startWith)
-    : startWith.startsWith("p:")
-    ? copyable.find((p) => `p:${p.id}` === startWith)
-    : null;
-  const chosenCount = chosen ? chosen.question_count || 0 : 0;
+  // Survey questions and the recipe are added by the organization in its portal,
+  // so a new product starts without them (the server refuses starting questions).
 
   if (!active.length) {
     return (
@@ -201,8 +213,6 @@ function ProductDialog({ categories, products = [], defaultCategoryId, onClose, 
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         description: form.description.trim() || null,
-        question_template_id: startWith.startsWith("t:") ? Number(startWith.slice(2)) : null,
-        copy_questions_from_product_id: startWith.startsWith("p:") ? Number(startWith.slice(2)) : null,
       });
       onCreated(p);
     } catch (err) {
@@ -214,7 +224,7 @@ function ProductDialog({ categories, products = [], defaultCategoryId, onClose, 
   return (
     <Modal
       title="Add a product"
-      subtitle="Next you'll add its survey questions and recipe."
+      subtitle="The organization then adds its survey questions and recipe in its portal."
       onClose={onClose}
       footer={
         <>
@@ -242,35 +252,6 @@ function ProductDialog({ categories, products = [], defaultCategoryId, onClose, 
       <label className="field">
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={form.description} placeholder="Pack size, variant… (optional)" onChange={set("description")} />
-      </label>
-      <label className="field">
-        <span className="field-label">Starting survey questions</span>
-        <select className="input" value={startWith} onChange={(e) => { setStartWith(e.target.value); setPicked(true); }}>
-          <option value="">None: I'll add the questions myself</option>
-          {templates.length > 0 && (
-            <optgroup label="Question templates">
-              {templates.map((t) => (
-                <option key={t.id} value={`t:${t.id}`}>
-                  {t.name} ({t.question_count} questions{t.category_name ? ` · ${t.category_name}` : ""})
-                </option>
-              ))}
-            </optgroup>
-          )}
-          {copyable.length > 0 && (
-            <optgroup label="Copy from a product">
-              {copyable.map((p) => (
-                <option key={p.id} value={`p:${p.id}`}>{p.name} ({p.question_count} questions)</option>
-              ))}
-            </optgroup>
-          )}
-        </select>
-        <span className="field-hint">
-          {chosen
-            ? `${chosenCount} questions will be added. You can edit, reorder or remove them afterwards; the template itself won't change.`
-            : templates.length || copyable.length
-            ? "The product starts without questions; add 5–10 on its Survey questions tab."
-            : 'No templates yet. After adding questions to a product, use "Save as template" to reuse them.'}
-        </span>
       </label>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
@@ -547,8 +528,6 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
   };
 
   // Setup guide: what's done and what's missing.
-  const firstNeedingQuestions = activeProducts.find((p) => p.question_count < MIN_Q);
-  const firstWithoutRecipe = activeProducts.find((p) => !p.has_recipe);
   const steps = [
     {
       done: categories.some((c) => c.is_active),
@@ -565,14 +544,14 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
     {
       done: activeProducts.length > 0 && readyCount === activeProducts.length,
       title: "Survey questions",
-      text: activeProducts.length ? `${readyCount} of ${activeProducts.length} products ready` : "5–10 per product",
-      action: firstNeedingQuestions ? { label: "Add questions", run: () => openProduct(firstNeedingQuestions.id, "questions") } : null,
+      text: activeProducts.length ? `${readyCount} of ${activeProducts.length} products ready · added by the organization` : "5–10 per product, added by the organization",
+      action: null,
     },
     {
       done: activeProducts.length > 0 && recipeCount === activeProducts.length,
       title: "Recipes",
-      text: activeProducts.length ? `${recipeCount} of ${activeProducts.length} products have one` : "Powers recipe advice",
-      action: firstWithoutRecipe ? { label: "Add a recipe", run: () => openProduct(firstWithoutRecipe.id, "recipe") } : null,
+      text: activeProducts.length ? `${recipeCount} of ${activeProducts.length} products have one · added by the organization` : "Added by the organization",
+      action: null,
     },
   ];
   const setupDone = steps.every((s) => s.done);
@@ -619,13 +598,8 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
           onCreated={async (p) => {
             setDialog(null);
             await load();
-            notify(
-              "ok",
-              p.question_count
-                ? `"${p.name}" created with ${p.question_count} survey questions. Review them, then add its recipe.`
-                : `"${p.name}" created. Add 5–10 survey questions so executives can survey it.`
-            );
-            openProduct(p.id, "questions");
+            notify("ok", `"${p.name}" created. The organization adds its survey questions and recipe in its portal.`);
+            openProduct(p.id, "details");
           }}
         />
       )}
@@ -653,6 +627,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
             <span className={`status-chip ${product.has_recipe ? "is-ok" : "is-neutral"}`}>
               {product.has_recipe ? `Recipe · ${product.recipe_steps} steps` : "No recipe"}
             </span>
+            {versionsOf(product).saved.length > 0 && (
+              <span className="status-chip is-neutral" title="Each saved change to the recipe is a new product version">
+                {versionsOf(product).saved.length === 1
+                  ? `1 version (v${versionsOf(product).latest})`
+                  : `${versionsOf(product).saved.length} versions: ${versionsOf(product).saved.map((v) => `v${v}`).join(", ")}`}
+              </span>
+            )}
             {clientRecipeChange(product) && (
               <span className="status-chip is-act client-change-chip">
                 Recipe updated by {clientRecipeChange(product).by_name || "the organization"} · {ago(clientRecipeChange(product).at)}
@@ -800,7 +781,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
               )}
             </div>
           ) : (
-            <div className="table-wrap">
+            <div className="table-wrap catalog-table-wrap">
               <table className="data-table catalog-table">
                 <caption className="visually-hidden">Products</caption>
                 <thead>
@@ -809,6 +790,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
                     {categoryId === "all" && <th scope="col" className="col-category">Category</th>}
                     <th scope="col">Survey questions</th>
                     <th scope="col">Recipe</th>
+                    <th scope="col" title="Each saved change to the recipe is a new product version">Versions</th>
                     <th scope="col">Status</th>
                     <th scope="col"><span className="visually-hidden">Open</span></th>
                   </tr>
@@ -840,18 +822,18 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
                             <span className="recipe-cell">
                               <span className="recipe-yes">✓ {p.recipe_steps} steps</span>
                               {clientRecipeChange(p) && (
-                                <button type="button" className="client-change-badge" title="Open the recipe and its version history"
-                                  onClick={(e) => { e.stopPropagation(); openProduct(p.id, "recipe"); }}>
+                                <span className="client-change-badge" title="The organization changed the recipe (a new version)">
                                   Updated by {clientRecipeChange(p).by_name || "the organization"} · {ago(clientRecipeChange(p).at)}
-                                </button>
+                                </span>
                               )}
                             </span>
                           ) : (
-                            <button type="button" className="link-btn" onClick={(e) => { e.stopPropagation(); openProduct(p.id, "recipe"); }}>
-                              + Add recipe
-                            </button>
+                            <span className="muted" title="Recipes are added by the organization in its portal">
+                              Added by the organization
+                            </span>
                           )}
                         </td>
+                        <td><VersionsCell product={p} /></td>
                         <td>
                           <span className="status-stack">
                             <span className={`status-chip is-${st.tone}`}>{st.label}</span>
@@ -877,13 +859,14 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
    Product page: Details · Survey questions · Recipe
    ================================================================ */
 
+// Recipes and survey questions are managed (and shown) only in the organization's
+// portal, so the admin product page has no Recipe or Survey questions tab.
+const ADMIN_PRODUCT_TABS = ["details", "access", "rounds"];
+
 function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted, onOpenRound }) {
-  const [tab, setTab] = useState(startTab || "details");
-  const onNotice = useCallback((n) => notify(n.tone, n.text), [notify]);
+  const [tab, setTab] = useState(ADMIN_PRODUCT_TABS.includes(startTab) ? startTab : "details");
   const tabs = [
     ["details", "Product details"],
-    ["recipe", product.has_recipe ? "Recipe" : "Recipe · not added"],
-    ["questions", `Survey questions (${product.question_count})`],
     ["access", "Who can survey"],
     ["rounds", product.live_round ? `Rounds · Round ${product.live_round.number} live` : "Rounds"],
   ];
@@ -899,8 +882,6 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
       <section className="panel product-panel">
         {tab === "details" && <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} onDeleted={onDeleted} />}
         {tab === "access" && <SurveyAccess product={product} notify={notify} />}
-        {tab === "questions" && <QuestionsTab product={product} onChanged={onChanged} onNotice={onNotice} />}
-        {tab === "recipe" && <RecipeTab product={product} onNotice={onNotice} onSaved={onChanged} />}
         {tab === "rounds" && <RoundsTab product={product} notify={notify} onChanged={onChanged} onOpenRound={onOpenRound} />}
       </section>
     </>
@@ -1175,7 +1156,10 @@ const REPORT_ROLES = {
   ease: { label: "Ease of use / preparation", hint: "How easy it was to use or prepare.", types: ["rating", "yes_no", "single_choice"] },
 };
 
-function QuestionsTab({ product, onChanged, onNotice }) {
+// readOnly: the admin dashboard lists the questions but can't change them (the
+// organization manages them in its portal; the server refuses admin changes too).
+// allowTemplates: "Save as template" (admin-only feature) is hidden in the portal.
+export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false, allowTemplates = true }) {
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1312,9 +1296,11 @@ function QuestionsTab({ product, onChanged, onNotice }) {
       <div className="tab-head">
         <div className="tab-intro">
           <strong>Survey questions</strong>
-          <p className="muted">What executives ask each customer about {product.name}, in this order. Products need 5–10 questions.</p>
+          <p className="muted">What survey persons ask each customer about {product.name}, in this order. Products need 5–10 questions.</p>
         </div>
+        {!readOnly && (
         <span className="tab-intro-actions">
+          {allowTemplates && (
           <button
             type="button"
             className="btn btn-secondary"
@@ -1324,6 +1310,7 @@ function QuestionsTab({ product, onChanged, onNotice }) {
           >
             Save as template
           </button>
+          )}
           <button
             type="button"
             className="btn btn-primary"
@@ -1334,7 +1321,14 @@ function QuestionsTab({ product, onChanged, onNotice }) {
             + Add question
           </button>
         </span>
+        )}
       </div>
+      {readOnly && (
+        <p className="catalog-hint managed-note" role="note">
+          Survey questions are added and changed by the organization in its portal. Changes appear here and in the
+          survey workflow straight away.
+        </p>
+      )}
       {savingTemplate && (
         <SaveTemplateDialog
           product={product}
@@ -1348,7 +1342,9 @@ function QuestionsTab({ product, onChanged, onNotice }) {
       )}
       {editing && !editing.id && editor}
       <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>
-        {count} of 5–10 questions. {count < 5 ? `Add ${5 - count} more before it can be surveyed.` : "Ready for surveys."}
+        {count} of 5–10 questions. {count < 5
+          ? (readOnly ? `The organization needs to add ${5 - count} more before it can be surveyed.` : `Add ${5 - count} more before it can be surveyed.`)
+          : "Ready for surveys."}
       </p>
       {loading ? (
         <p className="muted">Loading…</p>
@@ -1371,6 +1367,7 @@ function QuestionsTab({ product, onChanged, onNotice }) {
                     {q.options?.length ? <span className="muted qoptions">{q.options.join(" / ")}</span> : null}
                   </span>
                 </div>
+                {!readOnly && (
                 <div className="question-admin-actions">
                   <button type="button" className="icon-btn" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
                   <button type="button" className="icon-btn" aria-label="Move down" disabled={i === count - 1} onClick={() => move(i, 1)}>↓</button>
@@ -1380,6 +1377,7 @@ function QuestionsTab({ product, onChanged, onNotice }) {
                   </button>
                   <button type="button" className="link-btn danger-link" onClick={() => remove(q)}>Remove</button>
                 </div>
+                )}
               </li>
             )
           )}
@@ -1414,7 +1412,9 @@ function minutesOf(text) {
 }
 const fmtMinutes = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${Math.round(m % 60)} min` : ""}` : `${Math.round(m)} min`);
 
-export function RecipeTab({ product, onNotice, onSaved }) {
+// readOnly: the admin dashboard shows recipes but can't change them (the organization
+// manages recipes in its portal; the server refuses admin changes too).
+export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
   const [recipe, setRecipe] = useState(null);
   const [saved, setSaved] = useState("");
@@ -1512,6 +1512,12 @@ export function RecipeTab({ product, onNotice, onSaved }) {
           feedback to an exact ingredient or step, e.g. "7 of 10 find it too sweet: reduce sugar in step 1".
         </p>
       </div>
+      {readOnly && (
+        <p className="catalog-hint managed-note" role="note">
+          Recipes are added and changed by the organization in its portal. Every saved change becomes a new version,
+          listed below.
+        </p>
+      )}
 
       {/* ---- batch ---- */}
       <section className="recipe-card">
@@ -1520,7 +1526,7 @@ export function RecipeTab({ product, onNotice, onSaved }) {
             <h3>Batch size</h3>
             <p className="muted">How much one production batch makes. The ingredient quantities below are for this batch.</p>
           </div>
-          {!editing.batch && <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("batch")}>Edit</button>}
+          {!readOnly && !editing.batch && <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("batch")}>Edit</button>}
         </header>
         {editing.batch ? (
           <label className="field recipe-field">
@@ -1540,7 +1546,7 @@ export function RecipeTab({ product, onNotice, onSaved }) {
             <h3>Ingredients for one batch <span className="count-badge">{recipe.ingredients.filter((i) => i.name.trim()).length}</span></h3>
             <p className="muted">What goes into the product, how much, and why it's there.</p>
           </div>
-          {!editing.ingredients && (
+          {!editing.ingredients && !readOnly && (
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("ingredients")}>
               {recipe.ingredients.length ? "Edit ingredients" : "Add ingredients"}
             </button>
@@ -1627,7 +1633,7 @@ export function RecipeTab({ product, onNotice, onSaved }) {
               How {product.name} is made, in order{totalMinutes != null ? ` · about ${fmtMinutes(totalMinutes)} in total` : ""}.
             </p>
           </div>
-          {!editing.steps && (
+          {!editing.steps && !readOnly && (
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("steps")}>
               {recipe.steps.length ? "Edit steps" : "Add steps"}
             </button>
@@ -1706,11 +1712,15 @@ export function RecipeTab({ product, onNotice, onSaved }) {
             <p className="muted">Shelf life, storage, allergens, quality checks…</p>
           </div>
         </header>
-        <textarea className="input" rows={2} value={recipe.notes} placeholder="Optional"
-          onChange={(e) => setRecipe({ ...recipe, notes: e.target.value })} />
+        {readOnly ? (
+          <p className={recipe.notes ? "recipe-notes-text" : "muted"}>{recipe.notes || "No notes."}</p>
+        ) : (
+          <textarea className="input" rows={2} value={recipe.notes} placeholder="Optional"
+            onChange={(e) => setRecipe({ ...recipe, notes: e.target.value })} />
+        )}
       </section>
 
-      {dirty && (
+      {dirty && !readOnly && (
         <div className="recipe-savebar" role="status">
           <span>You have unsaved changes to the recipe.</span>
           <span className="recipe-savebar-actions">

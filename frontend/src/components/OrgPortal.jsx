@@ -16,7 +16,7 @@ import {
   startRound,
 } from "../services/orgApi";
 import { downloadComparisonPdf } from "../services/comparisonPdf";
-import { RecipeTab } from "./CatalogPage";
+import { QuestionsTab, RecipeTab } from "./CatalogPage";
 import { ConfirmHost, confirmDialog } from "./ConfirmDialog";
 import Modal from "./Modal";
 
@@ -488,11 +488,6 @@ function OverviewPage() {
           <span className="h-stat-note">all rounds</span>
         </div>
         <div className="h-stat">
-          <span className="h-stat-label">Average rating</span>
-          <span className="h-stat-value h-stat-rating">{one(numbers.avg_rating)} <Stars value={numbers.avg_rating} /></span>
-          <span className="h-stat-note">latest round of each product</span>
-        </div>
-        <div className="h-stat">
           <span className="h-stat-label">Open rounds</span>
           <span className="h-stat-value">{numbers.open_rounds}</span>
           <span className="h-stat-note">collecting surveys now</span>
@@ -640,12 +635,13 @@ function ProductsPage() {
 }
 
 /* ================================================================
-   One product: Consumer report · Recipe · Rounds · Compare rounds
+   One product: Consumer report · Recipe · Survey questions · Rounds · Compare rounds
    ================================================================ */
 
 const TABS = [
   ["report", "Consumer report"],
   ["recipe", "Recipe"],
+  ["questions", "Survey questions"],
   ["rounds", "Rounds"],
   ["compare", "Compare rounds"],
 ];
@@ -711,6 +707,7 @@ function ProductPage({ productId, tab, round, ReportView }) {
       {tab === "recipe" && (
         <RecipeSection product={product} detail={detail} onNotice={onNotice} onSaved={() => reload({ silent: true })} onStart={() => setDialog(true)} />
       )}
+      {tab === "questions" && <QuestionsSection product={product} onNotice={onNotice} />}
       {tab === "rounds" && (
         <RoundsSection product={product} detail={detail} onStart={() => setDialog(true)} onChanged={() => reload({ silent: true })} onNotice={onNotice} />
       )}
@@ -819,6 +816,24 @@ function RecipeSection({ product, detail, onNotice, onSaved, onStart }) {
           research team; start a new round to test it with consumers.
         </p>
         <RecipeTab product={product} onNotice={onNotice} onSaved={onSaved} />
+      </section>
+    </div>
+  );
+}
+
+/* ---------------- Survey questions ---------------- */
+
+// The organization manages the questions survey persons ask (the admin dashboard
+// only shows them). Saved to the database straight away; the next survey uses them.
+function QuestionsSection({ product, onNotice }) {
+  return (
+    <div className="org-questions">
+      <section className="panel product-panel">
+        <p className="muted org-recipe-note">
+          Survey persons ask these questions, in this order, before recording the consumer. Changes apply to new surveys
+          straight away; answers already collected are kept. Keep the questions the same between rounds you want to compare.
+        </p>
+        <QuestionsTab product={product} onNotice={onNotice} allowTemplates={false} />
       </section>
     </div>
   );
@@ -1012,7 +1027,8 @@ function Delta({ a, b, unit = "", better = "up" }) {
 
 const pct = (v) => (v == null ? "—" : `${v}%`);
 
-function CompareSection({ product, rounds }) {
+// Also used by the admin dashboard's product report ("Compare rounds").
+export function CompareSection({ product, rounds }) {
   const numbers = rounds.map((r) => r.number);
   const [pair, setPair] = useState(() => [numbers[numbers.length - 2], numbers[numbers.length - 1]]);
   const [state, reload] = useData(() => compareRounds(product.id, pair[0], pair[1]), [product.id, pair[0], pair[1]]);

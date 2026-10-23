@@ -62,6 +62,9 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   String _search = '';
   int? _categoryId;
   CatalogProduct? _product;
+  // The product version the customer tasted; null when the product has no version in
+  // fieldwork yet (the server then files the survey under its first round).
+  ProductVersion? _version;
   List<SurveyQuestionItem> _questions = [];
   bool _loadingQuestions = false;
 
@@ -189,8 +192,18 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   }
 
   Future<void> _chooseProduct(CatalogProduct p, {bool jump = true}) async {
+    // Several versions in fieldwork: ask which one the customer tasted (the one
+    // collecting now is suggested). One version: used without asking. When the product
+    // comes from "survey again" (jump: false) the suggestion is used; it can be changed
+    // from the product banner.
+    ProductVersion? version = p.defaultVersion;
+    if (jump && p.surveyVersions.length > 1) {
+      version = await _askVersion(p, current: version);
+      if (version == null || !mounted) return; // closed without choosing
+    }
     setState(() {
       _product = p;
+      _version = version;
       _loadingQuestions = true;
       _error = null;
     });
@@ -488,6 +501,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         },
         response: {
           'product_id': p.id,
+          // Saved with the survey (kept in the offline queue until it is sent).
+          if (_version != null) 'recipe_version': _version!.version,
           'executive_name': _executive.text.trim(),
           'usage_period': _usage,
           'location': _surveyLocation.text.trim(),
@@ -512,6 +527,64 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         });
       }
     }
+  }
+
+  /// "Which version did the customer taste?": the product's versions in fieldwork,
+  /// newest first. Returns the chosen version, or null if the sheet was closed.
+  Future<ProductVersion?> _askVersion(CatalogProduct p, {ProductVersion? current}) {
+    return showModalBottomSheet<ProductVersion>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Which version did the customer taste?',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 4),
+              Text(
+                '${p.name} has ${p.surveyVersions.length} versions. The survey is saved with the version you choose.',
+                style: TextStyle(fontSize: 13.5, color: AppColors.muted),
+              ),
+              const SizedBox(height: 8),
+              for (final v in p.surveyVersions.reversed)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    v.version == current?.version ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+                    color: AppColors.brand,
+                  ),
+                  title: Text('Version ${v.version}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(v.detail),
+                  onTap: () => Navigator.of(ctx).pop(v),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _changeVersion() async {
+    final p = _product;
+    if (p == null) return;
+    final v = await _askVersion(p, current: _version);
+    if (v != null && mounted) setState(() => _version = v);
+  }
+
+  /// The product banner on later steps: the chosen version beside the product name.
+  Widget _banner() {
+    final p = _product;
+    return _ProductBanner(
+      name: p?.name ?? '',
+      category: p == null ? '' : _categoryName(p),
+      version: _version == null ? null : 'Version ${_version!.version}',
+      onChangeVersion: (p != null && p.surveyVersions.length > 1) ? _changeVersion : null,
+    );
   }
 
   String _categoryName(CatalogProduct p) {
@@ -669,6 +742,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
                 title: p.name,
                 subtitle: p.surveyReady
                     ? '${p.questionCount} questions · ${p.responsesCollected} ${p.responsesCollected == 1 ? 'survey' : 'surveys'} so far'
+                        '${p.surveyVersions.length > 1 ? ' · ${p.surveyVersions.length} versions' : ''}'
                     : 'Not ready: needs 5–10 questions',
                 icon: Icons.shopping_bag_rounded,
                 enabled: p.surveyReady,
@@ -690,7 +764,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
-        _ProductBanner(name: _product?.name ?? '', category: _product == null ? '' : _categoryName(_product!)),
+        _banner(),
         const _SectionLabel('Customer'),
         _field(_name, 'Full name *', capitalization: TextCapitalization.words, autofill: const [AutofillHints.name]),
         _field(_mobile, 'Mobile (optional)', keyboard: TextInputType.phone),
@@ -846,7 +920,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
-        _ProductBanner(name: _product?.name ?? '', category: _product == null ? '' : _categoryName(_product!)),
+        _banner(),
         Padding(
           padding: const EdgeInsets.only(top: 4, bottom: 12),
           child: Row(
@@ -1267,10 +1341,12 @@ class _SectionLabel extends StatelessWidget {
 }
 
 class _ProductBanner extends StatelessWidget {
-  const _ProductBanner({required this.name, required this.category});
+  const _ProductBanner({required this.name, required this.category, this.version, this.onChangeVersion});
 
   final String name;
   final String category;
+  final String? version; // "Version 2": the version the customer tasted
+  final VoidCallback? onChangeVersion; // shown when the product has several versions
 
   @override
   Widget build(BuildContext context) {
@@ -1288,9 +1364,13 @@ class _ProductBanner extends StatelessWidget {
               children: [
                 Text(name, style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700)),
                 if (category.isNotEmpty) Text(category, style: TextStyle(fontSize: 13, color: AppColors.muted)),
+                if (version != null)
+                  Text(version!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.brand)),
               ],
             ),
           ),
+          if (onChangeVersion != null)
+            TextButton(onPressed: onChangeVersion, child: const Text('Change')),
         ],
       ),
     );

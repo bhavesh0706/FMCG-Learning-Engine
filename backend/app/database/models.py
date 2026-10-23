@@ -216,6 +216,10 @@ class SurveyResponse(Base):
     # The survey round this survey belongs to (survey_rounds.id). Set when the
     # survey is started: the product's live round (see services/rounds.py).
     round_id = Column(Integer, nullable=True, index=True)
+    # The product (recipe) version the customer tasted: recipe_versions.version.
+    # Chosen by the survey person when a product has several versions in fieldwork,
+    # otherwise the only one. Filled from the round for surveys made before this existed.
+    recipe_version = Column(Integer, nullable=True, index=True)
 
     # How long the customer has used the product: "last_week", "last_month", ...
     usage_period = Column(String(50), nullable=True)

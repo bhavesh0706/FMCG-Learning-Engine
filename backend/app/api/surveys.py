@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.api.ownership import account, response_or_404, respondent_or_404, respondent_usable_or_404
 from app.database.database import get_db
-from app.services.rounds import close_if_complete, round_for_new_survey
+from app.services.rounds import RoundError, close_if_complete, round_for_new_survey
 from app.database.models import (
     Product,
     Respondent,
@@ -210,6 +210,13 @@ class SurveyResponseCreate(BaseModel):
 
     respondent_id: int
 
+    # The product version the customer tasted (recipe_versions.version). Optional:
+    # without it the survey joins the product's live round, as before.
+    recipe_version: Optional[int] = Field(
+        default=None,
+        ge=1,
+    )
+
     executive_name: Optional[str] = Field(
         default=None,
         max_length=150,
@@ -348,7 +355,10 @@ def _response_out(
         "id": response.id,
         # The survey round it is filed under ("Round 2"), for the apps to show.
         "round": survey_round.number if survey_round else None,
-        "recipe_version": survey_round.recipe_version if survey_round else None,
+        "recipe_version": (
+            getattr(response, "recipe_version", None)
+            or (survey_round.recipe_version if survey_round else None)
+        ),
 
         "product": {
             "id": product.id if product else None,
@@ -474,11 +484,16 @@ def create_survey_response(
         )
 
     me = account(request)
-    # Filed under the product's live survey round automatically (services/rounds.py).
-    survey_round = round_for_new_survey(db, product.id)
+    # Filed under the round of the chosen version, or the product's live round when
+    # no version was chosen (services/rounds.py).
+    try:
+        survey_round = round_for_new_survey(db, product.id, body.recipe_version)
+    except RoundError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     response = SurveyResponse(
         product_id=product.id,
         round_id=survey_round.id if survey_round else None,
+        recipe_version=survey_round.recipe_version if survey_round else body.recipe_version,
         respondent_id=respondent.id,
         # The survey belongs to the signed-in account from the start
         # (before, the apps had to "claim" it in a second call).

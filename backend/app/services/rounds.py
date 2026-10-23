@@ -169,11 +169,99 @@ def ensure_first_version(db: Session, product: Product) -> Optional[int]:
 # Filing surveys
 # ============================================================
 
-def round_for_new_survey(db: Session, product_id: int) -> Optional[SurveyRound]:
+def survey_versions_from(rounds: list[SurveyRound]) -> list[dict]:
     """
-    The round a new survey of this product belongs to: the live round; else the
-    latest round; else Round 1 is created (started by the research team).
+    The product versions (recipe versions) that are or were in fieldwork, from a
+    product's rounds, oldest first: [{version, rounds: [1, 3], live: bool}].
+    These are the versions a survey person can choose when taking a survey.
     """
+    found: dict[int, dict] = {}
+    for r in sorted(rounds, key=lambda x: x.number):
+        if r.recipe_version is None:
+            continue
+        v = found.setdefault(r.recipe_version, {"version": r.recipe_version, "rounds": [], "live": False})
+        v["rounds"].append(r.number)
+        v["live"] = v["live"] or r.status == LIVE
+    return [found[k] for k in sorted(found)]
+
+
+def survey_versions(db: Session, product_id: int) -> list[dict]:
+    return survey_versions_from(rounds_of(db, product_id))
+
+
+def versions_by_product(db: Session, product_ids: Iterable[int]) -> dict[int, dict]:
+    """
+    {product_id: {"recipe_versions": [1, 2, 3], "survey_versions": [{version, rounds, live}]}}
+    in two queries. recipe_versions: every saved version; survey_versions: the ones
+    in fieldwork (they have a survey round), which survey persons can choose.
+    """
+    ids = [i for i in product_ids if i is not None]
+    if not ids:
+        return {}
+    saved: dict[int, list[int]] = {}
+    for pid, v in (
+        db.query(RecipeVersion.product_id, RecipeVersion.version)
+        .filter(RecipeVersion.product_id.in_(ids))
+        .order_by(RecipeVersion.product_id, RecipeVersion.version)
+        .all()
+    ):
+        saved.setdefault(pid, []).append(v)
+    by_rounds = rounds_by_product(db, ids)
+    # Analyzed surveys and their average rating per version (Home dashboard, version picker).
+    # Ratings come from the analyses (feedback_records), like every other average in the app.
+    from app.database.models import FeedbackRecord
+
+    counts = {
+        (pid, v): n
+        for pid, v, n in (
+            db.query(SurveyResponse.product_id, SurveyResponse.recipe_version, func.count(SurveyResponse.id))
+            .filter(SurveyResponse.product_id.in_(ids), SurveyResponse.status == "analyzed",
+                    SurveyResponse.recipe_version.isnot(None))
+            .group_by(SurveyResponse.product_id, SurveyResponse.recipe_version)
+            .all()
+        )
+    }
+    averages = {
+        (pid, v): avg
+        for pid, v, avg in (
+            db.query(SurveyResponse.product_id, SurveyResponse.recipe_version, func.avg(FeedbackRecord.overall_rating))
+            .join(FeedbackRecord, FeedbackRecord.response_id == SurveyResponse.id)
+            .filter(SurveyResponse.product_id.in_(ids), SurveyResponse.status == "analyzed",
+                    SurveyResponse.recipe_version.isnot(None), FeedbackRecord.overall_rating > 0)
+            .group_by(SurveyResponse.product_id, SurveyResponse.recipe_version)
+            .all()
+        )
+    }
+    stats = {key: (counts.get(key, 0), averages.get(key)) for key in set(counts) | set(averages)}
+    out = {}
+    for pid in ids:
+        versions = survey_versions_from(by_rounds.get(pid, []))
+        for v in versions:
+            n, avg = stats.get((pid, v["version"]), (0, None))
+            v["responses"] = int(n or 0)
+            v["rating"] = round(float(avg), 2) if avg is not None else None
+        out[pid] = {"recipe_versions": saved.get(pid, []), "survey_versions": versions}
+    return out
+
+
+def round_for_new_survey(db: Session, product_id: int, recipe_version: Optional[int] = None) -> Optional[SurveyRound]:
+    """
+    The round a new survey of this product belongs to.
+
+    recipe_version given (the survey person chose a version): that version's live
+    round, else its latest round; a version that was never in fieldwork is refused.
+    Not given (one version, or an older app): the live round; else the latest
+    round; else Round 1 is created (started by the research team).
+    """
+    if recipe_version is not None:
+        same = [r for r in rounds_of(db, product_id) if r.recipe_version == recipe_version]
+        if not same:
+            raise RoundError(
+                f"Version {recipe_version} of this product isn't being surveyed. Choose one of the versions offered.",
+                status=400,
+            )
+        live = [r for r in same if r.status == LIVE]
+        return (live or same)[-1]
     r = live_round(db, product_id) or latest_round(db, product_id)
     if r is not None:
         return r

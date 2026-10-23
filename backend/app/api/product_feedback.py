@@ -274,6 +274,9 @@ def products_with_feedback(db: Session = Depends(get_db)):
             "last_feedback_at": _iso(last),
             "can_consolidate": len(items) >= 1,
             "rounds": len(rounds.get(p.id, [])),
+            # Each round with the product version it tested (Survey history: "Feedback rounds").
+            "round_list": [{"number": r.number, "recipe_version": r.recipe_version, "status": r.status}
+                           for r in sorted(rounds.get(p.id, []), key=lambda x: x.number)],
             "live_round": None if not live.get(p.id) else {
                 "number": live[p.id].number, "done": live_done.get(live[p.id].id, 0), "target": live[p.id].target,
                 "recipe_version": live[p.id].recipe_version, "started_by_role": live[p.id].started_by_role,

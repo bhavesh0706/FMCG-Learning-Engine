@@ -187,9 +187,11 @@ def test_catalog_changes_keep_the_name_even_after_deletion(client, db, admin, pr
 
 
 def test_recipe_change_is_logged(client, db, admin, product):
+    # Recipes are changed by the organization (its portal); the change is logged with its version.
+    org = make_user(db, role="client")
     recipe = {"batch_size": "10 kg", "ingredients": [{"name": "Sugar", "quantity": "2", "unit": "kg"}],
               "steps": [{"title": "Mix"}, {"title": "Bake"}]}
-    assert client.put(f"/products/{product.id}/recipe", json=recipe, headers=auth(admin)).status_code == 200
+    assert client.put(f"/products/{product.id}/recipe", json=recipe, headers=auth(org)).status_code == 200
     entry = _entries(db, action="recipe.update", target_id=product.id)[-1]
     assert entry.details["version"] == 1
     assert entry.details["changes"] == ["Recipe added: 1 ingredients, 2 steps"]
