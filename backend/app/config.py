@@ -2,7 +2,7 @@
 Backend configuration, read once at startup.
 
 Values come from (highest priority first):
-    1. real environment variables (PowerShell $env:..., Docker, the hosting platform)
+1. real environment variables (PowerShell $env:..., Docker, the hosting platform)
     2. backend/.env          (this computer / this server; never committed)
     3. the defaults below    (same behaviour as before this file existed)
 
@@ -71,8 +71,11 @@ def _origins(name: str, default: str) -> list[str]:
                 f"{name} can't be '*': the API sends credentials, so browsers require exact origins."
             )
         parsed = urlparse(origin)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
-            raise ConfigError(f"{name}: {origin!r} must look like http://host:port.")
+        is_capacitor_origin = origin == "capacitor://localhost"
+        if not is_capacitor_origin and (
+            parsed.scheme not in ("http", "https") or not parsed.netloc
+        ):
+            raise ConfigError(f"{name}: {origin!r} must be a valid HTTP(S) or Capacitor origin.")
         if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
             raise ConfigError(f"{name}: {origin!r} must be an origin only (no path).")
         origins.append(f"{parsed.scheme}://{parsed.netloc}")  # drops a trailing slash
