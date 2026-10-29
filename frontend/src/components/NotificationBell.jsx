@@ -24,6 +24,7 @@ import {
     onOpenRecipe(id) optional, admins: open a product's recipe (and its version history)
                      from a "Recipe updated by the organization" notice
     onOpenRounds(id) optional, admins: open a product's survey rounds from a round notice
+    onOpenProduct(id) optional, admins: open a product the organization added or changed
 */
 
 const POLL_MS = 30000;
@@ -31,6 +32,7 @@ const POLL_MS = 30000;
 const MISSING_VIDEO = "survey_missing_video";
 const PRODUCT_ASSIGNED = "product_assigned";
 const CLIENT_RECIPE = "client_recipe_updated";
+const CLIENT_CATALOG = "client_catalog_changed";
 const ROUND_STARTED_BY_ORG = "client_round_started";
 const ROUND_ENDED_BY_ORG = "client_round_ended";
 const ROUND_STARTED = "round_started";
@@ -76,6 +78,15 @@ function KindIcon({ kind }) {
       </svg>
     );
   }
+  if (kind === CLIENT_CATALOG) {
+    return (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 8 12 4l8 4v8l-8 4-8-4z" />
+        <path d="m4 8 8 4 8-4M12 12v8" />
+      </svg>
+    );
+  }
   if (kind === CLIENT_RECIPE) {
     return (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -111,7 +122,7 @@ const dayOnly = (iso) => {
   return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "—";
 };
 
-function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onClose }) {
+function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onClose }) {
   const d = item.data || {};
   if (ROUND_KINDS.includes(item.kind)) {
     const ended = item.kind === ROUND_ENDED_BY_ORG;
@@ -156,6 +167,33 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
         {onOpenSurvey && item.kind === ROUND_STARTED && (
           <button type="button" className="btn btn-primary btn-sm" onClick={() => { onClose(); onOpenSurvey(); }}>
             Take a survey
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (item.kind === CLIENT_CATALOG) {
+    const isProduct = d.entity === "product";
+    return (
+      <div className="notif-details">
+        <dl>
+          <dt>{isProduct ? "Product" : "Category"}</dt>
+          <dd>{d.name || "—"}</dd>
+          <dt>Change</dt>
+          <dd>{d.action === "deleted" ? "Permanently deleted" : (d.action || "updated").replace(/^./, (c) => c.toUpperCase())}</dd>
+          <dt>Changed by</dt>
+          <dd>{d.client_name || "—"} <span className="notif-sub">Organization</span></dd>
+          <dt>Changed</dt>
+          <dd>{formatDate(d.changed_at || item.created_at)}</dd>
+        </dl>
+        {(d.changes || []).length > 0 && (
+          <ul className="notif-changes">
+            {d.changes.map((c) => <li key={c}>{c}</li>)}
+          </ul>
+        )}
+        {onOpenProduct && isProduct && d.product_id && d.action !== "deleted" && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { onClose(); onOpenProduct(d.product_id); }}>
+            Open product
           </button>
         )}
       </div>
@@ -257,7 +295,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
   return null;
 }
 
-export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds }) {
+export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [items, setItems] = useState([]);
@@ -407,7 +445,7 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
                       </span>
                     </button>
                     {isOpen && (
-                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onOpenRecipe={onOpenRecipe} onOpenRounds={onOpenRounds} onClose={() => setOpen(false)} />
+                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onOpenRecipe={onOpenRecipe} onOpenRounds={onOpenRounds} onOpenProduct={onOpenProduct} onClose={() => setOpen(false)} />
                     )}
                   </li>
                 );

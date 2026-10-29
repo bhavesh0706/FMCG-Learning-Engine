@@ -66,5 +66,9 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The microphone records the customer's spoken feedback during a survey.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>The camera records the customer's video feedback during a survey.</string>
 </dict>
 </plist>

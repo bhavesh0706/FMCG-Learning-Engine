@@ -1,21 +1,26 @@
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform, defaultTargetPlatform;
 
 import 'session.dart';
 
 /* ============================================================
    Where the backend is
    ============================================================
-   Android emulator  -> http://10.0.2.2:8000   (the default)
-   Real phone        -> your laptop's Wi-Fi IP, for example:
+   Android emulator  -> http://10.0.2.2:8000    (default on Android)
+   iOS Simulator     -> http://127.0.0.1:8000   (default on iOS: the Simulator runs on the Mac)
+   Real phone (Android or iPhone) -> the computer's Wi-Fi IP, for example:
      flutter run --dart-define=API_BASE_URL=http://192.168.1.20:8000
 */
 class ApiConfig {
-  static const String baseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:8000',
-  );
+  static const String _fromBuild = String.fromEnvironment('API_BASE_URL');
+
+  static final String baseUrl = _fromBuild.isNotEmpty
+      ? _fromBuild
+      : defaultTargetPlatform == TargetPlatform.iOS
+          ? 'http://127.0.0.1:8000'
+          : 'http://10.0.2.2:8000';
 }
 
 class ApiException implements Exception {

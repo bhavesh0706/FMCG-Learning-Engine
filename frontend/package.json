@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:staging": "vite build --mode staging",
-    "lint": "eslint .",
+    "lint": "eslint src",
     "preview": "vite preview"
   },
   "dependencies": {

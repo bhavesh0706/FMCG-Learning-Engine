@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.ownership import feedback_or_404
+from app.services.recordings import resolve_recording
 from app.database.database import get_db
 from app.database.models import FeedbackRecord
 
@@ -115,9 +116,11 @@ def get_feedback_video(
             detail="Recording path is not available.",
         )
 
-    video_path = Path(record.video_path)
+    # The stored path may come from another computer (data moved Windows -> Mac):
+    # resolve_recording finds the file in this computer's uploads folder.
+    video_path = resolve_recording(record.video_path)
 
-    if not video_path.is_file():
+    if video_path is None:
         raise HTTPException(
             status_code=404,
             detail="Original recording file could not be found.",
@@ -180,9 +183,9 @@ def delete_feedback(
             detail=f"Feedback record {feedback_id} not found.",
         )
 
-    video_path = Path(record.video_path or "")
+    video_path = resolve_recording(record.video_path)
 
-    if record.video_path and video_path.is_file():
+    if video_path is not None:
         try:
             video_path.unlink()
         except OSError as error:

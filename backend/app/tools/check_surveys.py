@@ -15,8 +15,8 @@ Checks every survey for:
 
 import argparse
 import json
-from pathlib import Path
 
+from app.services.recordings import resolve_recording
 from app.database.database import SessionLocal
 from app.database.models import FeedbackRecord, Product, SurveyAnswer, SurveyResponse
 
@@ -88,7 +88,7 @@ def main():
                     issues.append("analysis has no summary")
                 if not rec.overall_rating:
                     issues.append("analysis has no rating")
-                if rec.video_path and not Path(rec.video_path).is_file():
+                if rec.video_path and resolve_recording(rec.video_path) is None:
                     issues.append("recording file missing on disk")
 
             if issues:

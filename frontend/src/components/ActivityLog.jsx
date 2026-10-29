@@ -167,7 +167,7 @@ export default function ActivityLog() {
         <p className="muted table-empty">Nothing recorded for these filters.</p>
       ) : (
         <div className="table-wrap">
-          <table className="data-table activity-table">
+          <table className="data-table mobile-cards activity-table">
             <caption className="visually-hidden">Activity log, newest first</caption>
             <thead>
               <tr>

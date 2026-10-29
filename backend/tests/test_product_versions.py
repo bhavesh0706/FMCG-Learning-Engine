@@ -214,10 +214,12 @@ def test_question_changes_are_audited(client, db, org, product):
     assert entry is not None and f"#{qid}" in entry.summary
 
 
-def test_admins_create_products_without_starting_questions(client, db, admin, product):
+def test_only_the_organization_creates_products_without_starting_questions(client, db, admin, org, product):
     cat_id = product.category_id
-    blocked = client.post("/products", headers=auth(admin),
+    by_admin = client.post("/products", headers=auth(admin), json={"category_id": cat_id, "name": _unique("New ")})
+    assert by_admin.status_code == 403 and by_admin.json()["code"] == "organization_only"
+    blocked = client.post("/products", headers=auth(org),
                           json={"category_id": cat_id, "name": _unique("New "), "copy_questions_from_product_id": product.id})
     assert blocked.status_code == 403 and "organization" in blocked.json()["detail"]
-    created = client.post("/products", headers=auth(admin), json={"category_id": cat_id, "name": _unique("New ")})
+    created = client.post("/products", headers=auth(org), json={"category_id": cat_id, "name": _unique("New ")})
     assert created.status_code == 201 and created.json()["question_count"] == 0

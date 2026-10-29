@@ -5162,6 +5162,7 @@ function AppContent({ user }) {
               onOpenHistory={isAdminUser ? goHistory : undefined}
               onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
               onOpenRounds={isAdminUser ? (pid) => openCatalogProduct(pid, "rounds") : undefined}
+              onOpenProduct={isAdminUser ? (pid) => openCatalogProduct(pid, "details") : undefined}
             />
             <UserMenu user={user} />
           </div>

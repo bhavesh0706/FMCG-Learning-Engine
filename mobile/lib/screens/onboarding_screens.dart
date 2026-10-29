@@ -5,6 +5,9 @@ import 'package:permission_handler/permission_handler.dart';
 import '../main.dart';
 import '../services/session.dart';
 import '../services/survey_queue.dart';
+import 'admin_screens.dart';
+import 'change_password_screen.dart';
+import 'org_screens.dart';
 
 /*
   First launch:  Splash -> Welcome -> Log in -> Permissions -> Home
@@ -18,8 +21,19 @@ const appTagline = 'Customer feedback, captured in the field';
 /// Where to go after the splash (or after signing in).
 Widget nextScreen() {
   if (!Session.signedIn) return const WelcomeScreen();
-  if (!AppProfile.permissionsDone) return const PermissionsScreen();
-  return const HomeShell();
+  // The server refuses everything until a required new password is chosen.
+  if (Session.mustChangePassword) return const ChangePasswordScreen();
+  // The organization doesn't record surveys: no microphone/camera step.
+  if (Session.isClient) return const OrgShell();
+  // Admins get the admin dashboard (Home, History, Catalog, Team); they don't take
+  // surveys, so no Survey tab and no microphone/camera step.
+  if (Session.isAdmin) return const AdminShell();
+  if (Session.isExecutive) {
+    if (!AppProfile.permissionsDone) return const PermissionsScreen();
+    return const HomeShell();
+  }
+  // Unknown role: never open a dashboard by guessing (Session refuses such sign-ins).
+  return const WelcomeScreen();
 }
 
 Route<void> _fadeTo(Widget page) => PageRouteBuilder(
@@ -369,7 +383,9 @@ class _AuthScreenState extends State<AuthScreen> {
         await Session.login(_id.text, _password.text);
       }
       if (!mounted) return;
-      ServerHistory.refresh();
+      // Survey history exists for survey persons and admins (not the organization,
+      // and nothing works before a required password change).
+      if (!Session.isClient && !Session.mustChangePassword) ServerHistory.refresh();
       goReplacingAll(context, nextScreen());
     } catch (e) {
       if (mounted) setState(() => _error = '$e');

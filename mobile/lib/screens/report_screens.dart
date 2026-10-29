@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import '../services/survey_api.dart';
+import 'org_product_screens.dart' show RoundCompareView;
 
 /*
   Product reports on the phone: the same data and consolidated report as the
@@ -16,6 +17,25 @@ double? _d(dynamic v) => v is num ? v.toDouble() : double.tryParse('${v ?? ''}')
 int _i(dynamic v) => v is num ? v.toInt() : int.tryParse('${v ?? ''}') ?? 0;
 String _s(dynamic v) => v == null ? '' : '$v';
 Map<String, dynamic> _m(dynamic v) => v is Map ? Map<String, dynamic>.from(v) : <String, dynamic>{};
+
+/// "2 rounds · v1 → v2 · all complete" / "1 round · version 1 · Round 1 collecting"
+/// (the web Survey history's Feedback rounds column).
+String _roundsLine(Map<String, dynamic> p) {
+  final list = (p['round_list'] is List ? (p['round_list'] as List) : const []).map(_m).toList()
+    ..sort((a, b) => _i(a['number']).compareTo(_i(b['number'])));
+  if (list.isEmpty) return '';
+  final versions = <int>[];
+  for (final r in list) {
+    final v = _i(r['recipe_version']);
+    if (v > 0 && (versions.isEmpty || versions.last != v)) versions.add(v);
+  }
+  final live = list.where((r) => _s(r['status']) == 'live').toList();
+  return [
+    '${list.length} ${list.length == 1 ? 'round' : 'rounds'}',
+    if (versions.length > 1) versions.map((v) => 'v$v').join(' → ') else if (versions.isNotEmpty) 'version ${versions.first}',
+    live.isEmpty ? 'all complete' : 'Round ${_i(live.first['number'])} collecting',
+  ].join(' · ');
+}
 List<Map<String, dynamic>> _maps(dynamic v) =>
     v is List ? v.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList() : <Map<String, dynamic>>[];
 List<String> _strings(dynamic v) =>
@@ -386,6 +406,11 @@ class _ProductCard extends StatelessWidget {
                         children: [
                           Text(_s(p['name']), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
                           Text(_s(p['category_name']), style: TextStyle(fontSize: 13, color: AppColors.muted)),
+                          if (_roundsLine(p).isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 3),
+                              child: Text(_roundsLine(p), style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: AppColors.ink2)),
+                            ),
                         ],
                       ),
                     ),
@@ -444,6 +469,10 @@ class _ProductReportPageState extends State<ProductReportPage> {
   String? _genError;
   int _elapsed = 0;
   Timer? _timer;
+  // Like the web report: one round at a time (the latest when the page opens),
+  // Consolidated feedback or Customer feedback, and Compare rounds.
+  int? _round;
+  int _view = 0; // 0 consolidated, 1 customers
 
   @override
   void initState() {
@@ -459,7 +488,14 @@ class _ProductReportPageState extends State<ProductReportPage> {
 
   Future<void> _load() async {
     try {
-      final d = await _api.productFeedback(widget.productId);
+      var d = await _api.productFeedback(widget.productId, round: _round);
+      if (_round == null) {
+        final rounds = d['rounds'] is List ? (d['rounds'] as List) : const [];
+        if (rounds.isNotEmpty) {
+          _round = rounds.map((r) => _i(_m(r)['number'])).fold<int>(0, (a, b) => b > a ? b : a);
+          d = await _api.productFeedback(widget.productId, round: _round);
+        }
+      }
       if (mounted) {
         setState(() {
           _data = d;
@@ -481,7 +517,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
       if (mounted) setState(() => _elapsed++);
     });
     try {
-      final report = await _api.generateReport(widget.productId);
+      final report = await _api.generateReport(widget.productId, round: _round);
       if (mounted) setState(() => _data = {...?_data, 'report': report});
     } catch (e) {
       if (mounted) setState(() => _genError = apiErrorText(e));
@@ -517,8 +553,141 @@ class _ProductReportPageState extends State<ProductReportPage> {
     );
   }
 
+  void _pickRound(int number) {
+    if (number == _round) return;
+    setState(() {
+      _round = number;
+      _data = null; // spinner while the round loads
+    });
+    _load();
+  }
+
+  /// Round picker, the round's report line and the Consolidated / Customer switch.
+  List<Widget> _roundControls(Map<String, dynamic> d) {
+    final rounds = (d['rounds'] is List ? (d['rounds'] as List) : const []).map(_m).toList()
+      ..sort((a, b) => _i(a['number']).compareTo(_i(b['number'])));
+    if (rounds.isEmpty) return const [];
+    final current = rounds.firstWhere((r) => _i(r['number']) == _round, orElse: () => rounds.last);
+    final customers = d['responses'] is List ? (d['responses'] as List).length : 0;
+    final live = _s(current['status']) == 'live';
+    return [
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          if (rounds.length >= 2)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: ActionChip(
+                avatar: const Icon(Icons.compare_arrows, size: 18),
+                label: const Text('Compare rounds'),
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                    backgroundColor: AppColors.bg,
+                    appBar: AppBar(title: Text('Compare rounds · ${widget.productName}')),
+                    body: RoundCompareView(productId: widget.productId),
+                  ),
+                )),
+              ),
+            ),
+          for (final r in rounds)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: ChoiceChip(
+                label: Text('Round ${_i(r['number'])}${_s(r['status']) == 'live' ? ' · live' : ''}'),
+                tooltip: 'Round ${_i(r['number'])}: version ${_i(r['recipe_version'])}',
+                selected: _i(r['number']) == _round,
+                onSelected: (_) => _pickRound(_i(r['number'])),
+              ),
+            ),
+        ]),
+      ),
+      const SizedBox(height: 10),
+      _Card(
+        title: 'Round ${_i(current['number'])} report',
+        child: Text(
+          [
+            'Recipe v${_i(current['recipe_version'])}',
+            '${_i(current['done'])} of ${_i(current['target'])} consumers',
+            if (_s(current['started_by_name']).isNotEmpty) 'started by ${_s(current['started_by_name'])}',
+            if (_s(current['note']).isNotEmpty) '“${_s(current['note'])}”',
+            live ? 'collecting' : (_s(current['closed_reason']) == 'ended' ? 'ended' : 'complete'),
+          ].join(' · '),
+          style: TextStyle(color: AppColors.muted, height: 1.45),
+        ),
+      ),
+      const SizedBox(height: 10),
+      SegmentedButton<int>(
+        segments: [
+          const ButtonSegment(value: 0, label: Text('Consolidated feedback')),
+          ButtonSegment(value: 1, label: Text('Customer feedback $customers')),
+        ],
+        selected: {_view},
+        showSelectedIcon: false,
+        onSelectionChanged: (v) => setState(() => _view = v.first),
+      ),
+      const SizedBox(height: 10),
+    ];
+  }
+
+  /// Customer feedback of the round: each customer's rating and summary; tap for the analysis.
+  Widget _customersView(Map<String, dynamic> d) {
+    final product = _m(d['product']);
+    final list = (d['responses'] is List ? (d['responses'] as List) : const []).map(_m).toList();
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
+      children: [
+        Text(_s(product['category_name']).toUpperCase(),
+            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: AppColors.brand)),
+        const SizedBox(height: 10),
+        ..._roundControls(d),
+        if (list.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 32),
+            child: Text('No customer feedback in this round yet.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
+          ),
+        for (final r in list) ...[
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: _m(r['feedback']).isEmpty
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => FeedbackDetailPage(id: _i(_m(r['feedback'])['id'])))),
+            child: _Card(
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(_s(_m(r['respondent'])['name']).isEmpty ? 'Customer' : _s(_m(r['respondent'])['name']),
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 2),
+                    Text(
+                      [_s(_m(r['respondent'])['location']), if (_s(r['executive_name']).isNotEmpty) 'by ${_s(r['executive_name'])}']
+                          .where((x) => x.isNotEmpty)
+                          .join(' · '),
+                      style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+                    ),
+                    if (_s(_m(r['feedback'])['summary']).isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(_s(_m(r['feedback'])['summary']), maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(height: 1.4)),
+                    ],
+                  ]),
+                ),
+                const SizedBox(width: 8),
+                if (_d(_m(r['feedback'])['overall_rating']) != null)
+                  Text('${_d(_m(r['feedback'])['overall_rating'])!.toStringAsFixed(1)} ★', style: const TextStyle(fontWeight: FontWeight.w800))
+                else
+                  Text(_s(r['status']), style: TextStyle(color: AppColors.muted)),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+
   Widget _body() {
     final d = _data!;
+    if (_view == 1) return _customersView(d);
     final product = _m(d['product']);
     final summary = _m(d['summary']);
     final report = d['report'] is Map ? _m(d['report']) : null;
@@ -534,6 +703,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
         Text(_s(product['category_name']).toUpperCase(),
             style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, letterSpacing: 0.8, color: AppColors.brand)),
         const SizedBox(height: 10),
+        ..._roundControls(d),
 
         // Summary numbers
         _Card(

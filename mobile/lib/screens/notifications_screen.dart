@@ -163,6 +163,7 @@ class _NotificationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final n = notification;
     final missing = n.kind == AppNotification.missingVideo;
+    final catalog = n.kind == AppNotification.catalogChanged;
     final iconBg = n.resolved ? AppColors.posSoft : (missing ? AppColors.warnSoft : AppColors.brandSoft);
     final iconFg = n.resolved ? AppColors.pos : (missing ? AppColors.warn : AppColors.brand);
     return Material(
@@ -178,7 +179,7 @@ class _NotificationTile extends StatelessWidget {
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(color: iconBg, borderRadius: BorderRadius.circular(12)),
-                child: Icon(missing ? Icons.videocam_off_outlined : Icons.inventory_2_outlined, color: iconFg, size: 21),
+                child: Icon(missing ? Icons.videocam_off_outlined : (catalog ? Icons.edit_note_rounded : Icons.inventory_2_outlined), color: iconFg, size: 21),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -266,7 +267,27 @@ class _NotificationDetails extends StatelessWidget {
       add("Customer's city", n.text('respondent_location'));
       add('Submitted', formatDate(n.time('submitted_at')));
       if (received) add('Video received', formatDate(n.time('resolved_at')));
+    } else if (n.kind == AppNotification.catalogChanged) {
+      // The organization changed its catalog in its portal or app.
+      const actions = {
+        'added': 'Added',
+        'updated': 'Updated',
+        'deactivated': 'Deactivated',
+        'reactivated': 'Reactivated',
+        'deleted': 'Permanently deleted',
+      };
+      final action = n.text('action') ?? 'updated';
+      chip = actions[action] ?? 'Updated';
+      chipBg = action == 'deleted' || action == 'deactivated' ? AppColors.warnSoft : AppColors.brandSoft;
+      chipFg = action == 'deleted' || action == 'deactivated' ? AppColors.warn : AppColors.brand;
+      add(n.text('entity') == 'category' ? 'Category' : 'Product', n.text('name'));
+      final who = n.text('client_name');
+      add('Changed by', who == null ? null : '$who (Organization)');
+      add('Changed', formatDate(n.time('changed_at') ?? n.createdAt));
     }
+    final changes = n.data['changes'] is List
+        ? (n.data['changes'] as List).map((c) => '$c').where((c) => c.trim().isNotEmpty).toList()
+        : const <String>[];
 
     return SafeArea(
       child: Padding(
@@ -287,6 +308,16 @@ class _NotificationDetails extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 16),
+            for (final c in changes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Padding(padding: const EdgeInsets.only(top: 6), child: Icon(Icons.circle, size: 6, color: AppColors.brand)),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(c, style: TextStyle(fontSize: 14.5, height: 1.4, color: AppColors.ink))),
+                ]),
+              ),
+            if (changes.isNotEmpty) const SizedBox(height: 10),
             for (final r in rows)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 5),

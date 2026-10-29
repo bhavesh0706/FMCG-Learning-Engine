@@ -312,16 +312,19 @@ class SurveyApi {
   }
 
   /// One product: summary, responses and the latest consolidated report.
-  Future<Map<String, dynamic>> productFeedback(int productId) async {
-    final r = await _dio.get('/product-feedback/$productId');
+  /// One product's feedback; with [round], that round's report and responses
+  /// (without it: all rounds together, as before).
+  Future<Map<String, dynamic>> productFeedback(int productId, {int? round}) async {
+    final r = await _dio.get('/product-feedback/$productId', queryParameters: {if (round != null) 'round': round});
     final d = _decode(r.data);
     return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
   }
 
   /// Generates a new consolidated report (usually under a minute).
-  Future<Map<String, dynamic>> generateReport(int productId) async {
+  Future<Map<String, dynamic>> generateReport(int productId, {int? round}) async {
     final r = await _dio.post(
       '/product-feedback/$productId/consolidate',
+      queryParameters: {if (round != null) 'round': round},
       options: Options(receiveTimeout: const Duration(minutes: 15)),
     );
     final d = _decode(r.data);

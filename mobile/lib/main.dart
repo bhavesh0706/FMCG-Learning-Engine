@@ -19,7 +19,8 @@ Future<void> main() async {
   await AppProfile.load();
   await Session.load();
   SurveyQueue.load(); // also resumes any uploads left from last time
-  if (Session.signedIn) ServerHistory.refresh(); // surveys from the server (web, other phones)
+  // Surveys from the server (web, other phones); the organization has no survey history.
+  if (Session.signedIn && !Session.isClient && !Session.mustChangePassword) ServerHistory.refresh();
   runApp(const FmcgLearningApp());
 }
 

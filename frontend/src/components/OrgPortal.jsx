@@ -16,7 +16,7 @@ import {
   startRound,
 } from "../services/orgApi";
 import { downloadComparisonPdf } from "../services/comparisonPdf";
-import { QuestionsTab, RecipeTab } from "./CatalogPage";
+import CatalogPage, { QuestionsTab, RecipeTab } from "./CatalogPage";
 import { ConfirmHost, confirmDialog } from "./ConfirmDialog";
 import Modal from "./Modal";
 
@@ -277,7 +277,7 @@ function PortalShell({ user, ReportView }) {
   }, [refreshUnread, page]);
 
   useEffect(() => {
-    if (!window.location.hash || !["overview", "products", "updates", "account"].includes(parts[0])) {
+    if (!window.location.hash || !["overview", "products", "catalog", "updates", "account"].includes(parts[0])) {
       window.history.replaceState(null, "", "#/overview");
     }
     document.title = `${user?.name || "Organization"} · Consumer insights`;
@@ -287,6 +287,9 @@ function PortalShell({ user, ReportView }) {
   if (page === "products" && parts[1]) {
     body = <ProductPage key={parts[1]} productId={Number(parts[1])} tab={parts[2] || "report"} round={parts[3] ? Number(parts[3]) : null} ReportView={ReportView} />;
   } else if (page === "products") body = <ProductsPage />;
+  // Products and categories: the same Catalog page as the admin dashboard, with the
+  // organization's add / change / deactivate / delete (each change notifies the admins).
+  else if (page === "catalog") body = <CatalogPage mode="organization" />;
   else if (page === "updates") body = <UpdatesPage onSeen={() => setUnread(0)} />;
   else if (page === "account") body = <AccountPage />;
   else body = <OverviewPage user={user} />;
@@ -294,6 +297,7 @@ function PortalShell({ user, ReportView }) {
   const nav = [
     ["overview", "Overview"],
     ["products", "Products"],
+    ["catalog", "Catalog"],
     ["updates", "Updates"],
   ];
   return (
@@ -833,7 +837,7 @@ function QuestionsSection({ product, onNotice }) {
           Survey persons ask these questions, in this order, before recording the consumer. Changes apply to new surveys
           straight away; answers already collected are kept. Keep the questions the same between rounds you want to compare.
         </p>
-        <QuestionsTab product={product} onNotice={onNotice} allowTemplates={false} />
+        <QuestionsTab product={product} onNotice={onNotice} />
       </section>
     </div>
   );

@@ -176,9 +176,11 @@ def test_password_reset_is_logged_without_the_password(client, db, admin):
 
 
 def test_catalog_changes_keep_the_name_even_after_deletion(client, db, admin, product):
+    # Products are managed by the organization (its portal's Catalog).
+    org = make_user(db, role="client")
     name, pid = product.name, product.id
-    assert client.delete(f"/products/{pid}", headers=auth(admin)).status_code == 200
-    assert client.delete(f"/products/{pid}/permanent", headers=auth(admin)).status_code == 200
+    assert client.delete(f"/products/{pid}", headers=auth(org)).status_code == 200
+    assert client.delete(f"/products/{pid}/permanent", headers=auth(org)).status_code == 200
     db.expire_all()
     assert db.get(Product, pid) is None
     deactivated = _entries(db, action="product.deactivate", target_id=pid)[-1]

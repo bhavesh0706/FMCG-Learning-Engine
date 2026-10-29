@@ -84,6 +84,18 @@ ORG_CONTENT = [
     ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
 ]
 
+# Products and categories are managed by the ORGANIZATION (its portal's Catalog):
+# adding, changing, deactivating and deleting them. Admins and survey persons can read
+# the catalog but not change it; each organization change notifies the admins.
+ORG_CATALOG = [
+    ({"POST"}, r"^/categories$"),
+    ({"PUT", "PATCH", "DELETE"}, r"^/categories/\d+$"),
+    ({"DELETE"}, r"^/categories/\d+/permanent$"),
+    ({"POST"}, r"^/products$"),
+    ({"PUT", "PATCH", "DELETE"}, r"^/products/\d+$"),
+    ({"DELETE"}, r"^/products/\d+/permanent$"),
+]
+
 # The organization's login may use ONLY these routes; every other route answers
 # 403 for it. It sees every active product (ownership.check_product_access), but
 # only aggregated results: no customer details, survey persons or recordings.
@@ -97,7 +109,10 @@ CLIENT_ALLOWED = [
     ({"GET", "POST"}, r"^/products/\d+/questions$"),
     ({"PUT"}, r"^/products/\d+/questions/order$"),
     ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
-]
+    # Catalog: read it (the Catalog page) and manage products and categories (ORG_CATALOG)
+    ({"GET"}, r"^/categories(/\d+)?$"),
+    ({"GET"}, r"^/products(/\d+)?$"),
+] + ORG_CATALOG
 
 # While an account must choose a new password, only these work.
 PASSWORD_CHANGE_ALLOWED = [
@@ -111,6 +126,7 @@ _PUBLIC = [(m, re.compile(p)) for m, p in PUBLIC]
 _ADMIN = [(m, re.compile(p)) for m, p in ADMIN]
 _CLIENT = [(m, re.compile(p)) for m, p in CLIENT_ALLOWED]
 _ORG_CONTENT = [(m, re.compile(p)) for m, p in ORG_CONTENT]
+_ORG_CATALOG = [(m, re.compile(p)) for m, p in ORG_CATALOG]
 _PASSWORD_CHANGE = [(m, re.compile(p)) for m, p in PASSWORD_CHANGE_ALLOWED]
 
 
@@ -127,6 +143,11 @@ def client_may(method: str, path: str) -> bool:
 def organization_only(method: str, path: str) -> bool:
     """Recipe and survey-question changes: only the organization may make them."""
     return _matches(_ORG_CONTENT, method, path)
+
+
+def organization_catalog(method: str, path: str) -> bool:
+    """Adding / changing / deactivating / deleting products and categories: only the organization."""
+    return _matches(_ORG_CATALOG, method, path)
 
 
 def required_role(method: str, path: str) -> str:
@@ -240,6 +261,10 @@ def install_access_control(app):
         if account["role"] == "client":
             if not client_may(request.method, request.url.path):
                 return JSONResponse(status_code=403, content={"detail": "The organization portal can't open this page."})
+        elif organization_catalog(request.method, request.url.path):
+            return JSONResponse(status_code=403, content={
+                "detail": "Products and categories are managed by the organization in its portal.",
+                "code": "organization_only"})
         elif organization_only(request.method, request.url.path):
             return JSONResponse(status_code=403, content={
                 "detail": "Recipes and survey questions are managed by the organization in its portal.",

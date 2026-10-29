@@ -6,11 +6,8 @@ import {
   createCategory,
   createProduct,
   createQuestion,
-  createQuestionTemplate,
   deleteCategoryPermanently,
   deleteProductPermanently,
-  listQuestionTemplates,
-  removeQuestionTemplate,
   endProductRound,
   getProductExecutives,
   getProductRounds,
@@ -260,132 +257,6 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
 
 
 /* ================================================================
-   Question templates (stored in MySQL; offered when adding a product)
-   ================================================================ */
-
-function SaveTemplateDialog({ product, count, onClose, onSaved }) {
-  const [name, setName] = useState(`${product.name} questions`);
-  const [scope, setScope] = useState(product.category_id ? "category" : "any");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = async () => {
-    if (name.trim().length < 2) return;
-    setBusy(true);
-    setError("");
-    try {
-      const t = await createQuestionTemplate({
-        name: name.trim(),
-        from_product_id: product.id,
-        category_id: scope === "category" ? product.category_id : null,
-        description: `Created from ${product.name}.`,
-      });
-      onSaved(t);
-    } catch (err) {
-      setError(catalogError(err, "The template couldn't be saved."));
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal
-      title="Save as question template"
-      subtitle={`The ${count} current questions of ${product.name} become a template you can choose when adding a product.`}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" disabled={busy || name.trim().length < 2} onClick={save}>
-            {busy ? "Saving…" : "Save template"}
-          </button>
-        </>
-      }
-    >
-      <label className="field">
-        <span className="field-label">Template name *</span>
-        <input className="input" value={name} autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
-      </label>
-      <label className="field">
-        <span className="field-label">Suggest it for</span>
-        <select className="input" value={scope} onChange={(e) => setScope(e.target.value)}>
-          {product.category_id && <option value="category">New products in {product.category_name || "this category"}</option>}
-          <option value="any">Any category (choose it manually)</option>
-        </select>
-      </label>
-      {error && <p className="form-error" role="alert">{error}</p>}
-    </Modal>
-  );
-}
-
-function TemplatesDialog({ onClose, notify }) {
-  const [state, setState] = useState({ loading: true, error: "", items: [] });
-  const [open, setOpen] = useState(null);
-  const load = useCallback(() => {
-    listQuestionTemplates()
-      .then((d) => setState({ loading: false, error: "", items: listOf(d, "templates") }))
-      .catch((err) => setState({ loading: false, error: catalogError(err, "Templates couldn't be loaded."), items: [] }));
-  }, []);
-  useEffect(load, [load]);
-  const remove = async (t) => {
-    const ok = await confirmDialog({
-      title: `Remove "${t.name}"?`,
-      message: "It will no longer be offered when adding products. Products created from it keep their questions.",
-      confirmLabel: "Remove template",
-      cancelLabel: "Keep",
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await removeQuestionTemplate(t.id);
-      notify("ok", `Template "${t.name}" removed.`);
-      load();
-    } catch (err) {
-      notify("error", catalogError(err, "The template couldn't be removed."));
-    }
-  };
-  return (
-    <Modal
-      title="Question templates"
-      subtitle='Starting questions offered when adding a product. Create one with "Save as template" on any product&apos;s Survey questions tab.'
-      onClose={onClose}
-      footer={<button type="button" className="btn btn-secondary" onClick={onClose}>Close</button>}
-    >
-      {state.loading ? (
-        <p className="muted">Loading…</p>
-      ) : state.error ? (
-        <p className="form-error" role="alert">{state.error}</p>
-      ) : !state.items.length ? (
-        <p className="muted">No templates yet. Open a product, go to Survey questions and choose "Save as template".</p>
-      ) : (
-        <ul className="template-list">
-          {state.items.map((t) => (
-            <li key={t.id}>
-              <div className="template-row">
-                <button type="button" className="template-name" aria-expanded={open === t.id} onClick={() => setOpen(open === t.id ? null : t.id)}>
-                  <strong>{t.name}</strong>
-                  <span className="muted">
-                    {t.question_count} questions · {t.category_name ? `for ${t.category_name}` : "any category"}
-                  </span>
-                </button>
-                <button type="button" className="link-btn danger" onClick={() => remove(t)}>Remove</button>
-              </div>
-              {open === t.id && (
-                <ol className="template-questions">
-                  {t.questions.map((q, i) => (
-                    <li key={i}>
-                      {q.text} <span className={`qtype qtype-${q.question_type}`}>{TYPES[q.question_type] || q.question_type}</span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Modal>
-  );
-}
-
-
-/* ================================================================
    Permanent deletion: type the name to confirm (no accidental clicks)
    ================================================================ */
 
@@ -444,7 +315,11 @@ function LiveRoundChip({ round }) {
   );
 }
 
-export default function CatalogPage({ openRequest = null, onOpenRound = null }) {
+// mode "organization" (its portal): adds and changes products and categories.
+// mode "admin": reads the catalog and chooses who can survey each product; the server
+// refuses admin catalog changes too (access.py ORG_CATALOG).
+export default function CatalogPage({ openRequest = null, onOpenRound = null, mode = "admin" }) {
+  const canManage = mode === "organization";
   const [categories, setCategories] = useState([]);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -533,13 +408,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
       done: categories.some((c) => c.is_active),
       title: "Categories",
       text: categories.length ? `${categories.filter((c) => c.is_active).length} active` : "Group your products",
-      action: !categories.length ? { label: "Add category", run: () => setDialog({ type: "category" }) } : null,
+      action: canManage && !categories.length ? { label: "Add category", run: () => setDialog({ type: "category" }) } : null,
     },
     {
       done: activeProducts.length > 0,
       title: "Products",
       text: activeProducts.length ? `${activeProducts.length} active` : "Add what you want feedback on",
-      action: !activeProducts.length ? { label: "Add product", run: () => setDialog({ type: "product" }) } : null,
+      action: canManage && !activeProducts.length ? { label: "Add product", run: () => setDialog({ type: "product" }) } : null,
     },
     {
       done: activeProducts.length > 0 && readyCount === activeProducts.length,
@@ -571,12 +446,11 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
           }}
         />
       )}
-      {dialog?.type === "templates" && <TemplatesDialog onClose={() => setDialog(null)} notify={notify} />}
       {dialog?.type === "delete-category" && (
         <DeleteForeverDialog
           kind="category"
           name={dialog.category.name}
-          details={["It has no products, so no products, surveys or feedback are affected.", "Question templates suggested for it are kept (for any category)."]}
+          details={["It has no products, so no products, surveys or feedback are affected."]}
           onClose={() => setDialog(null)}
           onConfirm={async () => {
             const name = dialog.category.name;
@@ -645,7 +519,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
         </header>
         <Notice notice={notice} onClose={() => setNotice(null)} />
         <ProductPage key={`${product.id}-${openCount}`} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify}
-          onOpenRound={onOpenRound}
+          onOpenRound={onOpenRound} mode={mode}
           onDeleted={async (name) => {
             setProductId(null);
             await load();
@@ -662,18 +536,23 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
       <header className="home-head">
         <div className="page-heading">
           <h1 id="catalog-title">Catalog</h1>
-          <p className="home-sub">The products executives survey, their questions and recipes.</p>
+          <p className="home-sub">
+            {canManage
+              ? "Your products and categories. The research team is notified of every change."
+              : "The products executives survey. Products and categories are added and changed by the organization."}
+          </p>
         </div>
         <div className="catalog-head-actions">
-          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "templates" })}>
-            Question templates
-          </button>
-          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "category" })}>
-            Add category
-          </button>
-          <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>
-            Add product
-          </button>
+          {canManage && (
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "category" })}>
+                Add category
+              </button>
+              <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>
+                Add product
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -724,7 +603,9 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
                 </li>
               ))}
           </ul>
-          <button type="button" className="sidebar-add" onClick={() => setDialog({ type: "category" })}>+ Add category</button>
+          {canManage && (
+            <button type="button" className="sidebar-add" onClick={() => setDialog({ type: "category" })}>+ Add category</button>
+          )}
           <label className="sidebar-toggle">
             <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
             Show inactive
@@ -740,7 +621,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
                   (category ? `${countIn(category.id)} active products` : `${activeProducts.length} active products in ${categories.filter((c) => c.is_active).length} categories`)}
               </p>
             </div>
-            {category && (
+            {category && canManage && (
               <div className="catalog-main-actions">
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ type: "category", category })}>Edit</button>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => toggleCategory(category)}>
@@ -775,8 +656,10 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
           ) : visible.length === 0 ? (
             <div className="catalog-empty">
               <strong>{query ? "No products match your search" : category ? `No products in ${category.name} yet` : "No products yet"}</strong>
-              <p>{query ? "Try a different name or SKU." : "Add a product to start collecting feedback on it."}</p>
-              {!query && (
+              <p>{query ? "Try a different name or SKU." : canManage
+                ? "Add a product to start collecting feedback on it."
+                : "The organization adds products in its portal."}</p>
+              {!query && canManage && (
                 <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>Add product</button>
               )}
             </div>
@@ -863,13 +746,18 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null }) 
 // portal, so the admin product page has no Recipe or Survey questions tab.
 const ADMIN_PRODUCT_TABS = ["details", "access", "rounds"];
 
-function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted, onOpenRound }) {
-  const [tab, setTab] = useState(ADMIN_PRODUCT_TABS.includes(startTab) ? startTab : "details");
-  const tabs = [
-    ["details", "Product details"],
-    ["access", "Who can survey"],
-    ["rounds", product.live_round ? `Rounds · Round ${product.live_round.number} live` : "Rounds"],
-  ];
+function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted, onOpenRound, mode = "admin" }) {
+  const canManage = mode === "organization";
+  const [tab, setTab] = useState(canManage ? "details" : ADMIN_PRODUCT_TABS.includes(startTab) ? startTab : "details");
+  // The organization edits the product here; its recipe, survey questions and rounds
+  // are on its Products page. Admins: read-only details, Who can survey, Rounds.
+  const tabs = canManage
+    ? [["details", "Product details"]]
+    : [
+        ["details", "Product details"],
+        ["access", "Who can survey"],
+        ["rounds", product.live_round ? `Rounds · Round ${product.live_round.number} live` : "Rounds"],
+      ];
   return (
     <>
       <div className="product-tabs" role="tablist" aria-label="Product">
@@ -880,7 +768,9 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
         ))}
       </div>
       <section className="panel product-panel">
-        {tab === "details" && <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} onDeleted={onDeleted} />}
+        {tab === "details" && (
+          <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} onDeleted={onDeleted} readOnly={!canManage} />
+        )}
         {tab === "access" && <SurveyAccess product={product} notify={notify} />}
         {tab === "rounds" && <RoundsTab product={product} notify={notify} onChanged={onChanged} onOpenRound={onOpenRound} />}
       </section>
@@ -1027,7 +917,8 @@ function SurveyAccess({ product, notify }) {
   );
 }
 
-function DetailsTab({ product, categories, onChanged, notify, onDeleted }) {
+// readOnly: the admin dashboard (products are changed by the organization).
+function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnly = false }) {
   const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
     category_id: product.category_id,
@@ -1101,6 +992,12 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted }) {
           }}
         />
       )}
+      {readOnly && (
+        <p className="catalog-hint" role="note">
+          Products are added and changed by the organization in its portal. You'll get a notification for every change.
+        </p>
+      )}
+      <fieldset className="catalog-fieldset" disabled={readOnly}>
       <div className="catalog-row">
         <label className="field">
           <span className="field-label">Product name *</span>
@@ -1123,6 +1020,8 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted }) {
         <span className="field-label">Description</span>
         <textarea className="input" rows={3} value={form.description} onChange={set("description")} placeholder="Pack size, variant, target customers…" />
       </label>
+      </fieldset>
+      {!readOnly && (
       <div className="details-actions">
         <span className="details-actions-left">
           <button type="button" className="btn btn-secondary danger-outline" onClick={toggleActive}>
@@ -1138,6 +1037,7 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted }) {
           {busy ? "Saving…" : "Save changes"}
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -1158,9 +1058,7 @@ const REPORT_ROLES = {
 
 // readOnly: the admin dashboard lists the questions but can't change them (the
 // organization manages them in its portal; the server refuses admin changes too).
-// allowTemplates: "Save as template" (admin-only feature) is hidden in the portal.
-export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false, allowTemplates = true }) {
-  const [savingTemplate, setSavingTemplate] = useState(false);
+export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false }) {
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null); // { id|null, ...form }
@@ -1300,17 +1198,6 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
         </div>
         {!readOnly && (
         <span className="tab-intro-actions">
-          {allowTemplates && (
-          <button
-            type="button"
-            className="btn btn-secondary"
-            disabled={count === 0 || Boolean(editing)}
-            title={count === 0 ? "Add questions first" : "Reuse these questions when adding new products"}
-            onClick={() => setSavingTemplate(true)}
-          >
-            Save as template
-          </button>
-          )}
           <button
             type="button"
             className="btn btn-primary"
@@ -1328,17 +1215,6 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
           Survey questions are added and changed by the organization in its portal. Changes appear here and in the
           survey workflow straight away.
         </p>
-      )}
-      {savingTemplate && (
-        <SaveTemplateDialog
-          product={product}
-          count={count}
-          onClose={() => setSavingTemplate(false)}
-          onSaved={(t) => {
-            setSavingTemplate(false);
-            onNotice({ tone: "ok", text: `Template "${t.name}" saved with ${t.question_count} questions. Choose it when adding a product.` });
-          }}
-        />
       )}
       {editing && !editing.id && editor}
       <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>

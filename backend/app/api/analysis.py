@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.api.auth import optional_user
 from app.api.ownership import job_or_404, response_or_404
 from app.api.uploads_limit import safe_name, save_upload
+from app.services.recordings import resolve_recording
 from app.database.database import get_db
 from app.database.models import AnalysisJob, FeedbackRecord, User
 from app.services import analysis_worker
@@ -165,8 +166,8 @@ def _queue_reanalysis(feedback_id: int, user: Optional[User], db: Session) -> An
     if running:
         return running  # already being re-analyzed: don't start a second one
 
-    source = Path(record.video_path or "")
-    if not record.video_path or not source.is_file():
+    source = resolve_recording(record.video_path)
+    if source is None:
         raise HTTPException(
             status_code=409,
             detail="The original recording is no longer stored on the server, so it can't be re-analyzed.",

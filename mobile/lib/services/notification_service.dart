@@ -37,6 +37,8 @@ class AppNotification {
 
   static const productAssigned = 'product_assigned';
   static const missingVideo = 'survey_missing_video';
+  // Admins: the organization added / changed / deactivated a product or category.
+  static const catalogChanged = 'client_catalog_changed';
 
   final int id;
   final String kind;

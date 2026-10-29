@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth import optional_user
-from app.api.ownership import check_product_access, is_client
+from app.api.ownership import account, check_product_access, is_client
 from app.database.database import get_db
 from app.services.product_access import hidden_product_ids
 from app.database.models import Category, Product, SurveyQuestion, SurveyResponse
@@ -341,6 +341,31 @@ def list_categories(include_inactive: bool = False, user=Depends(optional_user),
     return {"categories": [_category_out(c, counts.get(c.id, 0)) for c in categories]}
 
 
+# ------------------------------------------------------------
+# Organization catalog changes -> admin bell (access.py ORG_CATALOG)
+# ------------------------------------------------------------
+
+def _shown(value) -> str:
+    return "—" if value in (None, "") else str(value)
+
+
+def _diff(label: str, old, new) -> str:
+    return f"{label}: {_shown(old)} → {_shown(new)}" if _shown(old) != _shown(new) else ""
+
+
+def _tell_admins(db: Session, request: Request, entity: str, action: str, name: str, **extra) -> None:
+    """The organization changed the catalog: notify every active admin (never blocks the change)."""
+    if not is_client(request):
+        return
+    from app.services.notifications import notify_admins_of_catalog_change
+
+    who = (account(request) or {}).get("name") or "The organization"
+    try:
+        notify_admins_of_catalog_change(db, who, entity, action, name, **extra)
+    except Exception:  # the change itself is saved; a failed notification must not undo it
+        db.rollback()
+
+
 @router.post("/categories", status_code=201)
 def create_category(body: CategoryIn, request: Request, db: Session = Depends(get_db)):
     category = Category(name=body.name, description=body.description)
@@ -348,6 +373,7 @@ def create_category(body: CategoryIn, request: Request, db: Session = Depends(ge
     _commit(db, f'A category named "{body.name}" already exists.')
     db.refresh(category)
     audit.note(request, target_id=category.id, summary=f"Added category #{category.id} ({category.name})")
+    _tell_admins(db, request, "category", "added", category.name, category_id=category.id)
     return _category_out(category)
 
 
@@ -367,9 +393,10 @@ def get_category(category_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/categories/{category_id}")
-def update_category(category_id: int, body: CategoryUpdate, db: Session = Depends(get_db)):
+def update_category(category_id: int, body: CategoryUpdate, request: Request, db: Session = Depends(get_db)):
     category = _get_or_404(db, Category, category_id, "Category")
     data = body.model_dump(exclude_unset=True)
+    before = {"name": category.name, "description": category.description, "is_active": bool(category.is_active)}
     if "name" in data and data["name"]:
         category.name = data["name"]
     if "description" in data:
@@ -378,19 +405,30 @@ def update_category(category_id: int, body: CategoryUpdate, db: Session = Depend
         category.is_active = 1 if data["is_active"] else 0
     _commit(db, f'A category named "{data.get("name")}" already exists.')
     db.refresh(category)
+    changes = [_diff("Name", before["name"], category.name), _diff("Description", before["description"], category.description)]
+    changes = [c for c in changes if c]
+    if before["is_active"] != bool(category.is_active):
+        action = "updated" if changes else ("reactivated" if category.is_active else "deactivated")
+        if changes:
+            changes.append("Active: " + ("no → yes" if category.is_active else "yes → no"))
+    else:
+        action = "updated"
+    if changes or action != "updated":
+        _tell_admins(db, request, "category", action, category.name, category_id=category.id, changes=changes)
     return _category_out(category)
 
 
 @router.delete("/categories/{category_id}")
-def deactivate_category(category_id: int, db: Session = Depends(get_db)):
+def deactivate_category(category_id: int, request: Request, db: Session = Depends(get_db)):
     category = _get_or_404(db, Category, category_id, "Category")
     category.is_active = 0
     db.commit()
+    _tell_admins(db, request, "category", "deactivated", category.name, category_id=category.id)
     return {"id": category_id, "is_active": False, "message": "Category deactivated. Collected feedback is kept."}
 
 
 @router.delete("/categories/{category_id}/permanent")
-def delete_category_permanently(category_id: int, db: Session = Depends(get_db)):
+def delete_category_permanently(category_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Permanently delete a category created by mistake. It must be deactivated and have
     no products left (move them, or permanently delete products created by mistake).
@@ -420,6 +458,7 @@ def delete_category_permanently(category_id: int, db: Session = Depends(get_db))
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail=f"{name} is still referenced by other records, so it was not deleted.")
+    _tell_admins(db, request, "category", "deleted", name, category_id=category_id)
     return {"id": category_id, "deleted": True, "message": f"{name} was permanently deleted."}
 
 
@@ -517,6 +556,8 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
     _commit(db, conflict)
     db.refresh(product)
     audit.note(request, target_id=product.id, summary=f"Added product #{product.id} ({product.name}) in {category.name}")
+    _tell_admins(db, request, "product", "added", product.name, product_id=product.id, category_id=category.id,
+                 changes=[f"Category: {category.name}"] + ([f"SKU: {product.sku}"] if product.sku else []))
     return _product_out(db, product, category, with_questions=True)
 
 
@@ -533,9 +574,14 @@ def get_product(product_id: int, user=Depends(optional_user), db: Session = Depe
 
 
 @router.put("/products/{product_id}")
-def update_product(product_id: int, body: ProductUpdate, db: Session = Depends(get_db)):
+def update_product(product_id: int, body: ProductUpdate, request: Request, db: Session = Depends(get_db)):
     product = _get_or_404(db, Product, product_id, "Product")
     data = body.model_dump(exclude_unset=True)
+    labels = {"name": "Name", "sku": "SKU", "description": "Description", "launch_date": "Launch date",
+              "min_responses": "Surveys needed per report"}
+    before = {f: getattr(product, f) for f in labels}
+    before_category = db.get(Category, product.category_id)
+    was_active = bool(product.is_active)
     if data.get("category_id"):
         _get_or_404(db, Category, data["category_id"], "Category")
     for field in ("category_id", "name", "sku", "description", "launch_date", "min_responses"):
@@ -545,14 +591,29 @@ def update_product(product_id: int, body: ProductUpdate, db: Session = Depends(g
         product.is_active = 1 if data["is_active"] else 0
     _commit(db, "Another product in this category has that name, or the SKU is already used.")
     db.refresh(product)
+    changes = [_diff(label, before[f], getattr(product, f)) for f, label in labels.items()]
+    if before_category and before_category.id != product.category_id:
+        new_category = db.get(Category, product.category_id)
+        changes.append(_diff("Category", before_category.name, new_category.name if new_category else None))
+    changes = [c for c in changes if c]
+    action = "updated"
+    if was_active != bool(product.is_active):
+        if changes:
+            changes.append("Active: " + ("no → yes" if product.is_active else "yes → no"))
+        else:
+            action = "reactivated" if product.is_active else "deactivated"
+    if changes or action != "updated":
+        _tell_admins(db, request, "product", action, product.name, product_id=product.id,
+                     category_id=product.category_id, changes=changes)
     return _product_out(db, product, with_questions=True)
 
 
 @router.delete("/products/{product_id}")
-def deactivate_product(product_id: int, db: Session = Depends(get_db)):
+def deactivate_product(product_id: int, request: Request, db: Session = Depends(get_db)):
     product = _get_or_404(db, Product, product_id, "Product")
     product.is_active = 0
     db.commit()
+    _tell_admins(db, request, "product", "deactivated", product.name, product_id=product.id, category_id=product.category_id)
     return {"id": product_id, "is_active": False, "message": "Product deactivated. Collected feedback is kept."}
 
 
@@ -562,7 +623,7 @@ def _all_surveys(db: Session, product_id: int) -> int:
 
 
 @router.delete("/products/{product_id}/permanent")
-def delete_product_permanently(product_id: int, db: Session = Depends(get_db)):
+def delete_product_permanently(product_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Permanently delete a product created by mistake, with its questions, recipe,
     executive assignments and any (empty) report, in one transaction.
@@ -596,6 +657,7 @@ def delete_product_permanently(product_id: int, db: Session = Depends(get_db)):
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail=f"{name} is still referenced by other records, so it was not deleted.")
+    _tell_admins(db, request, "product", "deleted", name, product_id=product_id)
     return {"id": product_id, "deleted": True, "questions_deleted": questions, "message": f"{name} was permanently deleted."}
 
 

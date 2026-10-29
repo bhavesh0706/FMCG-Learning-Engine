@@ -660,6 +660,14 @@ class _SurveyHistoryListState extends State<SurveyHistoryList> {
                   child: Text('My surveys',
                       style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.3, color: AppColors.ink)),
                 )
+              // Admins manage the team and products and don't take surveys: every
+              // survey of the team, no "Mine" switch.
+              else if (Session.isAdmin)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text('Every survey by the team',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.ink2)),
+                )
               else
               SegmentedButton<bool>(
                 segments: const [
@@ -731,14 +739,20 @@ class _SurveyHistoryListState extends State<SurveyHistoryList> {
                       Text(_mineOnly || widget.ownOnly ? 'No surveys by you yet' : 'No surveys yet',
                           style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
                       const SizedBox(height: 4),
-                      Text('Submitted surveys appear here with their analysis.',
+                      Text(
+                          Session.isAdmin
+                              ? "The survey executives' submitted surveys appear here with their analysis."
+                              : 'Submitted surveys appear here with their analysis.',
                           textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
-                      const SizedBox(height: 16),
-                      FilledButton.icon(
-                        onPressed: () => openSurvey(context),
-                        icon: const Icon(Icons.add_rounded),
-                        label: const Text('Start a survey'),
-                      ),
+                      // Only survey persons take surveys.
+                      if (Session.isExecutive) ...[
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: () => openSurvey(context),
+                          icon: const Icon(Icons.add_rounded),
+                          label: const Text('Start a survey'),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -844,7 +858,8 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
                       Text(user?.name ?? 'Not signed in',
                           style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.ink)),
                       Text(user?.contact ?? '', style: TextStyle(fontSize: 13.5, color: AppColors.muted)),
-                      Text('Survey executive', style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+                      Text(Session.roleLabel,
+                          style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
                     ],
                   ),
                 ),
@@ -868,6 +883,8 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
           ),
 
           _section('Phone'),
+          // Recording permissions and the upload queue concern survey persons only.
+          if (Session.isExecutive)
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.verified_user_outlined, color: AppColors.muted),
@@ -879,6 +896,7 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
             ),
           ),
           _InfoRow(icon: Icons.dns_outlined, label: 'Server', value: ApiConfig.baseUrl),
+          if (Session.isExecutive) ...[
           _InfoRow(icon: Icons.sd_storage_outlined, label: 'Recordings waiting on this phone', value: mb),
           const SizedBox(height: 8),
           OutlinedButton.icon(
@@ -895,6 +913,7 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
             icon: const Icon(Icons.cleaning_services_outlined),
             label: const Text('Clear analyzed surveys from this phone'),
           ),
+          ],
 
           _section('Account'),
           OutlinedButton.icon(

@@ -10920,3 +10920,32 @@ input[type="radio"] {
   text-overflow: clip;
   text-align: left;
 }
+
+/* Catalog product details: the fields sit in a fieldset (disabled = read-only for
+   admins) that keeps the form's existing layout */
+.catalog-fieldset {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+/* ============================================================
+   Page width: uses the extra room on large screens (Mac),
+   unchanged on smaller ones (Windows at 150% scaling).
+   Must stay at the end of the file so it wins over the
+   earlier .topbar-inner / .container rules.
+   ============================================================ */
+
+:root {
+  --page-max: 1560px;                     /* widest the content may get */
+  --page-gutter: clamp(16px, 2vw, 32px);  /* side space: 16px on phones, up to 32px on big screens */
+}
+
+.topbar-inner,
+.container,
+.access-banner {
+  max-width: var(--page-max);
+  padding-left: var(--page-gutter);
+  padding-right: var(--page-gutter);
+}

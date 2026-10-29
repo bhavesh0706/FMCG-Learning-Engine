@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, load_only
 
+from app.services.recordings import resolve_recording
 from app.database.database import get_db
 from app.database.models import (
     Category,
@@ -466,7 +467,8 @@ def delete_survey(response_id: int, db: Session = Depends(get_db)):
     files = []
     for rec in db.query(FeedbackRecord).filter(FeedbackRecord.response_id == response_id).all():
         if rec.video_path:
-            files.append(rec.video_path)
+            found = resolve_recording(rec.video_path)  # also when the data came from another computer
+            files.append(str(found) if found else rec.video_path)
         db.delete(rec)
     db.query(SurveyAnswer).filter(SurveyAnswer.response_id == response_id).delete(synchronize_session=False)
     db.query(AnalysisJob).filter(AnalysisJob.response_id == response_id).delete(synchronize_session=False)

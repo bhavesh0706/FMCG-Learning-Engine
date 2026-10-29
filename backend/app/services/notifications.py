@@ -18,6 +18,9 @@ The kinds:
       The organization changed the recipe of a product in its portal
       (created by services/recipe_versions.py, with the version and what changed).
 
+  client_catalog_changed to every active admin
+      The organization added, changed, deactivated, reactivated or deleted a product
+      or a category in its portal's Catalog (catalog.py), with what changed.
   client_round_started   to every active admin
   client_round_ended     to every active admin
       The organization started a survey round (recipe version, target, wanted-by
@@ -56,6 +59,7 @@ from app.database.models import (
 
 MISSING_VIDEO = "survey_missing_video"
 PRODUCT_ASSIGNED = "product_assigned"
+CLIENT_CATALOG_CHANGED = "client_catalog_changed"
 
 # Minutes to wait after a survey is submitted before reporting a missing video.
 GRACE_MINUTES = max(0, int(os.environ.get("FMCG_MISSING_VIDEO_MINUTES", "10") or 10))
@@ -119,6 +123,36 @@ def notify(
         db.rollback()
         return 0
     return len(recipients)
+
+
+def notify_admins_of_catalog_change(
+    db: Session,
+    who: str,
+    entity: str,
+    action: str,
+    name: str,
+    product_id: Optional[int] = None,
+    category_id: Optional[int] = None,
+    changes: Optional[list] = None,
+) -> int:
+    """
+    Bell notification to every active admin when the organization changed the catalog.
+    entity: "product" | "category"; action: added | updated | deactivated | reactivated | deleted.
+    """
+    verbs = {"added": "added", "updated": "updated", "deactivated": "deactivated",
+             "reactivated": "reactivated", "deleted": "permanently deleted"}
+    verb = verbs.get(action, action)
+    changes = [c for c in (changes or []) if c]
+    detail = f": {'; '.join(changes)}" if changes else ""
+    admins = [uid for (uid,) in db.query(User.id).filter(User.role == "admin", User.is_active == 1).all()]
+    return notify(
+        db, admins, CLIENT_CATALOG_CHANGED,
+        title=f"{entity.capitalize()} {verb} by {who}",
+        message=f"{who} {verb} the {entity} {name}{detail}.",
+        data={"entity": entity, "action": action, "name": name, "product_id": product_id,
+              "category_id": category_id, "changes": changes, "client_name": who,
+              "changed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},
+    )
 
 
 def _product_info(db: Session, product_id: int) -> dict:
