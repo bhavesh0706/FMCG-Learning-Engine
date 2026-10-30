@@ -10994,6 +10994,55 @@ input[type="radio"] {
   color: var(--neg-strong);
 }
 
+/* Team > Manage: compact one-line rows */
+.assign-list {
+  gap: 8px;
+  max-height: 52vh;
+}
+
+.assign-group {
+  gap: 4px;
+}
+
+.assign-group legend {
+  margin-bottom: 2px;
+  font-size: 11.5px;
+}
+
+.assign-item {
+  gap: 8px;
+  padding: 6px 10px;
+  border-width: 1px;
+}
+
+.assign-item .assign-item-text {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.assign-item .assign-item-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assign-item .assign-item-text .muted {
+  flex-shrink: 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.assign-item .audience {
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+
+.assign-result {
+  padding: 8px 12px;
+}
+
 /* ============================================================
    Page width: uses the extra room on large screens (Mac),
    unchanged on smaller ones (Windows at 150% scaling).

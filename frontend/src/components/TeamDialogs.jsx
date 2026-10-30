@@ -301,7 +301,7 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
   return (
     <Modal
       title={`What can ${member.name} survey?`}
-      subtitle={`Tick what ${first} surveys. Only the people you assign see a product; existing products are open to everyone until you assign people, and each new round the Super Admin starts is assigned again.`}
+      subtitle={`Tick the products ${first} surveys.`}
       onClose={onClose}
       footer={
         <>
@@ -332,13 +332,18 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
                       <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                       <span className="assign-item-text">
                         <strong>{p.name}</strong>
-                        <span className="muted">
-                          {p.live_round ? `Round ${p.live_round.number}` : "Existing product · open to everyone unless you assign people"}
-                          {p.sku ? ` · ${p.sku}` : ""}
+                        <span className="muted" title={p.live_round ? `Round ${p.live_round.number} (started by the Super Admin)` : "Existing product: open to everyone until you assign people"}>
+                          {p.live_round ? `Round ${p.live_round.number}` : "Existing"}
                         </span>
                       </span>
-                      <span className={`audience audience-${also.length ? "other" : "open"}`} title="Also assigned">
-                        {also.length ? `Also: ${also.join(", ")}` : p.live_round ? "Nobody else yet" : "Everyone"}
+                      <span className={`audience audience-${also.length ? "other" : selected.has(p.id) ? "mine" : "open"}`} title="Who can survey it">
+                        {also.length
+                          ? `Also: ${also.join(", ")}`
+                          : selected.has(p.id)
+                          ? `Only ${first}`
+                          : p.live_round
+                          ? "Nobody yet"
+                          : "Everyone"}
                       </span>
                     </label>
                   );
@@ -350,8 +355,7 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
 
           <div className="assign-result" role="status" aria-live="polite">
             <p className="assign-result-main">
-              <strong>{first} is assigned {chosen.length} of {state.products.length} open {state.products.length === 1 ? "product" : "products"}</strong>
-              {chosen.length > 0 && <span className="muted">: {chosen.map((p) => p.name).join(", ")}</span>}
+              <strong>{first}: {chosen.length} of {state.products.length} {state.products.length === 1 ? "product" : "products"}</strong>
             </p>
           </div>
         </>
