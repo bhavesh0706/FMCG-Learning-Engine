@@ -285,7 +285,7 @@ class _OrgShellState extends State<OrgShell> {
 
   @override
   Widget build(BuildContext context) {
-    final name = Session.user.value?.name ?? 'Organization';
+    final name = Session.user.value?.name ?? 'Super Admin';
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(

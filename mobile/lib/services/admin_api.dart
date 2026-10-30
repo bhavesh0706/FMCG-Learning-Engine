@@ -86,11 +86,9 @@ class AdminApi {
   static Future<List<Json>> products() async =>
       asJsonList((await _send('GET', '/products', query: {'include_inactive': false}))['products']);
 
-  /// Who can survey a product (Catalog → product): user ids; empty = every survey executive.
-  static Future<List<int>> productExecutives(int productId) async {
-    final ids = (await _send('GET', '/admin/products/$productId/executives'))['user_ids'];
-    return ids is List ? ids.map((e) => (e as num).toInt()).toList() : <int>[];
-  }
+  /// Who surveys the product's LIVE round (Catalog → product → Who can survey):
+  /// {round: {id, number, ...} | null, user_ids: [...]}. round null = no live round.
+  static Future<Json> productExecutives(int productId) => _send('GET', '/admin/products/$productId/executives');
 
   static Future<Json> saveProductExecutives(int productId, List<int> userIds) =>
       _send('PUT', '/admin/products/$productId/executives', body: {'user_ids': userIds});
@@ -119,7 +117,7 @@ class AdminApi {
   /// Ends every sign-in of the member (lost or shared phone); the password stays.
   static Future<Json> signOutMember(int id) => _send('POST', '/admin/users/$id/sign-out', body: <String, dynamic>{});
 
-  /// Products the member may survey; empty = every product not assigned to someone else.
+  /// Products whose live round is assigned to the member (nothing is open to everyone).
   static Future<List<int>> memberProducts(int id) async {
     final ids = (await _send('GET', '/admin/users/$id/products'))['product_ids'];
     return ids is List ? ids.map((e) => (e as num).toInt()).toList() : <int>[];

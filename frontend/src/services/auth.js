@@ -65,7 +65,7 @@ export function recentAccounts() {
 function rememberAccount(user) {
   const identifier = user.mobile || user.email;
   if (!identifier) return;
-  const role = user.role === "admin" ? "Admin" : user.role === "client" ? "Organization" : "Survey person";
+  const role = user.role === "admin" ? "Admin" : user.role === "client" ? "Super Admin" : "Survey person";
   const entry = { identifier, name: user.name, role };
   try {
     const rest = recentAccounts().filter((a) => a.identifier !== identifier);

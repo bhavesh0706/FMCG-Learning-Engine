@@ -10,7 +10,7 @@ Catalog management belongs to the organization (its portal's Catalog page).
 """
 
 import pytest
-from conftest import _unique, auth, make_user
+from conftest import _unique, auth, make_user, open_round
 
 from app.database.models import Category, Notification, Product
 
@@ -48,9 +48,13 @@ def test_admins_and_survey_persons_cannot_change_products_or_categories(client, 
     assert db.get(Category, cat_id).is_active
 
 
-def test_admins_still_read_the_catalog_and_choose_who_can_survey(client, db, admin, alice, product):
+def test_admins_see_a_product_once_its_round_starts_and_assign_it(client, db, admin, alice, product):
     assert client.get("/categories", headers=auth(admin)).status_code == 200
     assert client.get("/products", headers=auth(admin)).status_code == 200
+    # Before the Super Admin starts a round, admins don't see the product.
+    assert client.get(f"/products/{product.id}", headers=auth(admin)).status_code == 403
+    assert client.put(f"/admin/products/{product.id}/executives", headers=auth(admin), json={"user_ids": [alice.id]}).status_code == 404
+    open_round(db, product)
     assert client.get(f"/products/{product.id}", headers=auth(admin)).status_code == 200
     r = client.put(f"/admin/products/{product.id}/executives", headers=auth(admin), json={"user_ids": [alice.id]})
     assert r.status_code == 200
@@ -85,6 +89,7 @@ def test_every_organization_change_notifies_the_admins_with_what_changed(client,
     other_admin = make_user(db, role="admin")
     cid = client.post("/categories", headers=auth(org), json={"name": _unique("Drinks ")}).json()["id"]
     pid = client.post("/products", headers=auth(org), json={"category_id": cid, "name": "Mango Lassi", "sku": _unique("LAS-")}).json()["id"]
+    open_round(db, db.get(Product, pid))  # admins see the product (and its changes) once a round has started
     client.put(f"/products/{pid}", headers=auth(org), json={"name": "Mango Lassi 200 ml", "category_id": product.category_id})
     client.delete(f"/products/{pid}", headers=auth(org))
     client.put(f"/products/{pid}", headers=auth(org), json={"is_active": True})
@@ -95,13 +100,13 @@ def test_every_organization_change_notifies_the_admins_with_what_changed(client,
         titles = [n.title for n in bell]
         assert titles == [
             f"Category added by {org.name}",
-            f"Product added by {org.name}",
+            # no "Product added": admins couldn't see the product before its first round
             f"Product updated by {org.name}",
             f"Product deactivated by {org.name}",
             f"Product reactivated by {org.name}",
             f"Category updated by {org.name}",
         ], titles
-    update = _bell(db, admin)[2]
+    update = _bell(db, admin)[1]
     assert "Name: Mango Lassi → Mango Lassi 200 ml" in update.data["changes"]
     assert any(c.startswith("Category: Drinks") for c in update.data["changes"])
     assert update.data["product_id"] == pid and update.data["action"] == "updated"
@@ -111,6 +116,7 @@ def test_every_organization_change_notifies_the_admins_with_what_changed(client,
 def test_deletions_are_reported_by_name(client, db, admin, org):
     cid = client.post("/categories", headers=auth(org), json={"name": _unique("Temp ")}).json()["id"]
     pid = client.post("/products", headers=auth(org), json={"category_id": cid, "name": "Typo Prodcut"}).json()["id"]
+    open_round(db, db.get(Product, pid))  # the admins had seen it
     client.delete(f"/products/{pid}", headers=auth(org))
     client.delete(f"/products/{pid}/permanent", headers=auth(org))
     last = _bell(db, admin)[-1]
@@ -134,6 +140,7 @@ def test_only_active_admins_are_notified(client, db, admin, org, alice, product)
     retired = make_user(db, role="admin")
     retired.is_active = 0
     db.commit()
+    open_round(db, product)
     client.put(f"/products/{product.id}", headers=auth(org), json={"description": "New pack"})
     assert len(_bell(db, admin)) == 1
     assert _bell(db, retired) == [] and _bell(db, alice) == [] and _bell(db, org) == []

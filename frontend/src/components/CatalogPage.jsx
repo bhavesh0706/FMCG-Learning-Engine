@@ -221,7 +221,7 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
   return (
     <Modal
       title="Add a product"
-      subtitle="The organization then adds its survey questions and recipe in its portal."
+      subtitle="The Super Admin then adds the survey questions and recipe in their portal."
       onClose={onClose}
       footer={
         <>
@@ -419,13 +419,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
     {
       done: activeProducts.length > 0 && readyCount === activeProducts.length,
       title: "Survey questions",
-      text: activeProducts.length ? `${readyCount} of ${activeProducts.length} products ready · added by the organization` : "5–10 per product, added by the organization",
+      text: activeProducts.length ? `${readyCount} of ${activeProducts.length} products ready · added by the Super Admin` : "5–10 per product, added by the Super Admin",
       action: null,
     },
     {
       done: activeProducts.length > 0 && recipeCount === activeProducts.length,
       title: "Recipes",
-      text: activeProducts.length ? `${recipeCount} of ${activeProducts.length} products have one · added by the organization` : "Added by the organization",
+      text: activeProducts.length ? `${recipeCount} of ${activeProducts.length} products have one · added by the Super Admin` : "Added by the Super Admin",
       action: null,
     },
   ];
@@ -472,7 +472,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           onCreated={async (p) => {
             setDialog(null);
             await load();
-            notify("ok", `"${p.name}" created. The organization adds its survey questions and recipe in its portal.`);
+            notify("ok", `"${p.name}" created. The Super Admin adds the survey questions and recipe in their portal.`);
             openProduct(p.id, "details");
           }}
         />
@@ -510,7 +510,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
             )}
             {clientRecipeChange(product) && (
               <span className="status-chip is-act client-change-chip">
-                Recipe updated by {clientRecipeChange(product).by_name || "the organization"} · {ago(clientRecipeChange(product).at)}
+                Recipe updated by {clientRecipeChange(product).by_name || "the Super Admin"} · {ago(clientRecipeChange(product).at)}
               </span>
             )}
             <LiveRoundChip round={product.live_round} />
@@ -539,7 +539,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           <p className="home-sub">
             {canManage
               ? "Your products and categories. The research team is notified of every change."
-              : "The products executives survey. Products and categories are added and changed by the organization."}
+              : "The products executives survey. Products and categories are added and changed by the Super Admin."}
           </p>
         </div>
         <div className="catalog-head-actions">
@@ -658,7 +658,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
               <strong>{query ? "No products match your search" : category ? `No products in ${category.name} yet` : "No products yet"}</strong>
               <p>{query ? "Try a different name or SKU." : canManage
                 ? "Add a product to start collecting feedback on it."
-                : "The organization adds products in its portal."}</p>
+                : "The Super Admin adds products in their portal."}</p>
               {!query && canManage && (
                 <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>Add product</button>
               )}
@@ -705,13 +705,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
                             <span className="recipe-cell">
                               <span className="recipe-yes">✓ {p.recipe_steps} steps</span>
                               {clientRecipeChange(p) && (
-                                <span className="client-change-badge" title="The organization changed the recipe (a new version)">
-                                  Updated by {clientRecipeChange(p).by_name || "the organization"} · {ago(clientRecipeChange(p).at)}
+                                <span className="client-change-badge" title="The Super Admin changed the recipe (a new version)">
+                                  Updated by {clientRecipeChange(p).by_name || "the Super Admin"} · {ago(clientRecipeChange(p).at)}
                                 </span>
                               )}
                             </span>
                           ) : (
-                            <span className="muted" title="Recipes are added by the organization in its portal">
+                            <span className="muted" title="Recipes are added by the Super Admin in their portal">
                               Added by the organization
                             </span>
                           )}
@@ -778,10 +778,11 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
   );
 }
 
-/* Who may survey this product: every executive, or only chosen ones. */
+/* Who surveys the product's LIVE round (services/product_access.py): the Super Admin
+   starts each round, an admin assigns it; nothing is open to everyone, and each new
+   round is assigned again. Disabled members can't be assigned. */
 function SurveyAccess({ product, notify }) {
-  const [state, setState] = useState({ loading: true, team: [], selected: new Set(), saved: "" });
-  const [mode, setMode] = useState("all"); // all | selected
+  const [state, setState] = useState({ loading: true, team: [], selected: new Set(), saved: "", round: null, open: false });
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -789,10 +790,10 @@ function SurveyAccess({ product, notify }) {
     Promise.all([listTeam(), getProductExecutives(product.id)])
       .then(([team, assigned]) => {
         if (!alive) return;
-        const people = listOf(team, "users").filter((u) => u.role === "executive"); // survey persons only (not admins or clients)
+        const people = listOf(team, "users").filter((u) => u.role === "executive"); // survey persons only
         const ids = assigned?.user_ids || [];
-        setState({ loading: false, team: people, selected: new Set(ids), saved: JSON.stringify([...ids].sort()) });
-        setMode(ids.length ? "selected" : "all");
+        setState({ loading: false, team: people, selected: new Set(ids), saved: JSON.stringify([...ids].sort((a, b) => a - b)),
+          round: assigned?.round || null, open: assigned?.needs_round === false });
       })
       .catch((err) => alive && setState((s) => ({ ...s, loading: false, error: catalogError(err) })));
     return () => {
@@ -800,6 +801,7 @@ function SurveyAccess({ product, notify }) {
     };
   }, [product.id]);
 
+  const active = state.team.filter((u) => u.is_active);
   const toggle = (id) =>
     setState((s) => {
       const next = new Set(s.selected);
@@ -807,19 +809,17 @@ function SurveyAccess({ product, notify }) {
       return { ...s, selected: next };
     });
 
-  const wanted = mode === "all" ? [] : [...state.selected].sort((a, b) => a - b);
+  const wanted = [...state.selected].sort((a, b) => a - b);
   const dirty = JSON.stringify(wanted) !== state.saved;
   const save = async () => {
-    if (mode === "selected" && !wanted.length) {
-      notify("error", "Choose at least one executive, or switch to Every executive.");
-      return;
-    }
     setBusy(true);
     try {
       const res = await saveProductExecutives(product.id, wanted);
       const ids = res?.user_ids || [];
       setState((s) => ({ ...s, saved: JSON.stringify([...ids].sort((a, b) => a - b)) }));
-      notify("ok", ids.length ? `${product.name} is now surveyed only by the ${ids.length} chosen ${ids.length === 1 ? "executive" : "executives"}.` : `${product.name} is open to every executive.`);
+      notify("ok", ids.length
+        ? `${product.name} is assigned to ${ids.length} ${ids.length === 1 ? "survey person" : "survey persons"}; only they see it now.`
+        : state.open ? `${product.name} is open to every survey person again.` : `Nobody is assigned to Round ${state.round.number} of ${product.name}.`);
     } catch (err) {
       notify("error", catalogError(err, "Couldn't save who surveys this product."));
     } finally {
@@ -830,79 +830,70 @@ function SurveyAccess({ product, notify }) {
   return (
     <section className="survey-access" aria-labelledby="access-title">
       <div className="tab-intro">
-        <strong id="access-title">Who can survey this product</strong>
-        <p className="muted">Decide which survey executives see {product.name} in their product list, on the web and in the app.</p>
+        <strong id="access-title">{state.round && !state.open ? `Who surveys Round ${state.round.number}` : "Who can survey this product"}</strong>
+        <p className="muted">
+          {state.open
+            ? `${product.name} was surveyed before rounds were needed, so it stays open: every survey person sees it until you choose specific people. A new recipe version needs the Super Admin to start its round.`
+            : `Only the survey persons you assign see ${product.name} in their product list, on the web and in the app, while the round is live. Each new round the Super Admin starts is assigned again.`}
+        </p>
       </div>
       {state.loading ? (
         <p className="muted">Loading…</p>
+      ) : state.error ? (
+        <p className="form-error" role="alert">{state.error}</p>
+      ) : !state.round ? (
+        <p className="muted">
+          No round of {product.name} is live, so there's nothing to assign. The Super Admin starts the next round; you can assign it here
+          once it has started. Earlier rounds keep their survey persons as history.
+        </p>
       ) : (
         <>
           <div className="access-step">
-            <h4 className="access-step-title"><span className="access-step-no">1</span>Who should see this product?</h4>
-            <div className="access-choice" role="radiogroup" aria-label="Who can survey this product">
-              {[
-                ["all", "👥", "Every executive", "The whole team can survey it"],
-                ["selected", "🔒", "Only the executives I choose", "Hidden from everyone else"],
-              ].map(([key, icon, title, hint]) => (
-                <button key={key} type="button" role="radio" aria-checked={mode === key}
-                  className={`access-option${mode === key ? " is-on" : ""}`} onClick={() => setMode(key)}>
-                  <span className="access-option-icon" aria-hidden="true">{icon}</span>
-                  <span className="access-option-text">
-                    <strong>{title}</strong>
-                    <span>{hint}</span>
-                  </span>
-                  <span className="access-option-dot" aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {mode === "selected" && (
-            <div className="access-step">
-              <div className="access-people-head">
-                <h4 className="access-step-title"><span className="access-step-no">2</span>Choose the executives</h4>
-                {state.team.length > 0 && (
-                  <span className="access-people-tools">
-                    <span className="muted">{state.selected.size} of {state.team.length} selected</span>
-                    <button type="button" className="link-btn"
-                      onClick={() => setState((x) => ({ ...x, selected: new Set(x.team.map((u) => u.id)) }))}>Select all</button>
-                    <button type="button" className="link-btn" onClick={() => setState((x) => ({ ...x, selected: new Set() }))}>Clear</button>
-                  </span>
-                )}
-              </div>
-              {state.team.length === 0 ? (
-                <p className="muted">No executives yet. Add them on the Team page.</p>
-              ) : (
-                <ul className="people-list">
-                  {state.team.map((u) => {
-                    const on = state.selected.has(u.id);
-                    return (
-                      <li key={u.id} className={on ? "is-on" : ""}>
-                        <span className="people-avatar" aria-hidden="true">{(u.name || "?").trim()[0]?.toUpperCase()}</span>
-                        <span className="people-text">
-                          <strong>{u.name}</strong>
-                          <span className="muted">{u.mobile || u.email}{u.is_active ? "" : " · inactive"}</span>
-                        </span>
-                        <span className={`people-state${on ? " is-on" : ""}`}>{on ? "Can survey" : "Hidden"}</span>
-                        <label className="toggle" aria-label={`${u.name} can survey ${product.name}`}>
-                          <input type="checkbox" role="switch" checked={on} onChange={() => toggle(u.id)} />
-                          <span className="toggle-track" aria-hidden="true"><span className="toggle-thumb" /></span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                </ul>
+            <div className="access-people-head">
+              <h4 className="access-step-title">
+                <span className="access-step-no">{state.round.number}</span>
+                {state.open ? "Choose survey persons (optional)" : `Choose the survey persons for Round ${state.round.number}`}
+              </h4>
+              {active.length > 0 && (
+                <span className="access-people-tools">
+                  <span className="muted">{state.selected.size} of {active.length} selected</span>
+                  <button type="button" className="link-btn" onClick={() => setState((x) => ({ ...x, selected: new Set(active.map((u) => u.id)) }))}>Select all</button>
+                  <button type="button" className="link-btn" onClick={() => setState((x) => ({ ...x, selected: new Set() }))}>Clear</button>
+                </span>
               )}
             </div>
-          )}
+            {state.team.length === 0 ? (
+              <p className="muted">No survey persons yet. Add them on the Team page.</p>
+            ) : (
+              <ul className="people-list">
+                {state.team.map((u) => {
+                  const on = state.selected.has(u.id);
+                  return (
+                    <li key={u.id} className={on ? "is-on" : ""}>
+                      <span className="people-avatar" aria-hidden="true">{(u.name || "?").trim()[0]?.toUpperCase()}</span>
+                      <span className="people-text">
+                        <strong>{u.name}</strong>
+                        <span className="muted">{u.mobile || u.email}{u.is_active ? "" : " · Disabled: reactivate on the Team page"}</span>
+                      </span>
+                      <span className={`people-state${on ? " is-on" : ""}`}>{!u.is_active ? "Disabled" : on ? "Assigned" : "Not assigned"}</span>
+                      <label className="toggle" aria-label={`${u.name} surveys Round ${state.round.number} of ${product.name}`}>
+                        <input type="checkbox" role="switch" checked={on} disabled={!u.is_active} onChange={() => toggle(u.id)} />
+                        <span className="toggle-track" aria-hidden="true"><span className="toggle-thumb" /></span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
 
           <div className="access-result">
             <span className="access-result-text">
-              {mode === "all"
-                ? <>Every executive will see <strong>{product.name}</strong>.</>
+              {state.selected.size === 0 && state.open
+                ? <>Nobody chosen: <strong>every survey person</strong> can survey {product.name}.</>
                 : state.selected.size === 0
-                ? <>Choose at least one executive, or switch to <strong>Every executive</strong>.</>
-                : <>Only <strong>{state.team.filter((u) => state.selected.has(u.id)).map((u) => u.name).join(", ")}</strong> will see {product.name}.</>}
+                ? <>Nobody is assigned: no survey person sees <strong>{product.name}</strong> yet.</>
+                : <>Only <strong>{state.team.filter((u) => state.selected.has(u.id)).map((u) => u.name).join(", ")}</strong> will see {product.name} (Round {state.round.number}).</>}
             </span>
             <span className="access-result-actions">
               {dirty && <span className="muted">Unsaved changes</span>}
@@ -994,7 +985,7 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnl
       )}
       {readOnly && (
         <p className="catalog-hint" role="note">
-          Products are added and changed by the organization in its portal. You'll get a notification for every change.
+          Products are added and changed by the Super Admin in their portal. You'll get a notification for every change.
         </p>
       )}
       <fieldset className="catalog-fieldset" disabled={readOnly}>
@@ -1219,7 +1210,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       {editing && !editing.id && editor}
       <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>
         {count} of 5–10 questions. {count < 5
-          ? (readOnly ? `The organization needs to add ${5 - count} more before it can be surveyed.` : `Add ${5 - count} more before it can be surveyed.`)
+          ? (readOnly ? `The Super Admin needs to add ${5 - count} more before it can be surveyed.` : `Add ${5 - count} more before it can be surveyed.`)
           : "Ready for surveys."}
       </p>
       {loading ? (
@@ -1618,7 +1609,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
    versions can be compared side by side.
    ================================================================ */
 
-const ROLE_NAMES = { admin: "Admin", client: "Organization", executive: "Survey person" };
+const ROLE_NAMES = { admin: "Admin", client: "Super Admin", executive: "Survey person" };
 const keyOf = (text) => String(text || "").trim().toLowerCase();
 const qty = (i) => [i?.quantity, i?.unit].filter((x) => String(x || "").trim()).join(" ") || "—";
 
@@ -1803,7 +1794,7 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
   const end = async (r) => {
     const ok = await confirmDialog({
       title: `End Round ${r.number} now?`,
-      message: `${r.done} of ${r.target} consumers have been surveyed. New surveys of ${product.name} will still be filed under this round until the organization starts the next one.`,
+      message: `${r.done} of ${r.target} consumers have been surveyed. New surveys of ${product.name} will still be filed under this round until the Super Admin starts the next one.`,
       confirmLabel: `End Round ${r.number}`,
       cancelLabel: "Keep collecting",
       danger: true,
@@ -1871,7 +1862,7 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
                   </td>
                   <td>
                     {r.started_by_name}
-                    {r.started_by_role === "client" && <span className="status-chip is-act">Organization</span>}
+                    {r.started_by_role === "client" && <span className="status-chip is-act">Super Admin</span>}
                     {r.note && <div className="muted small">“{r.note}”</div>}
                     {r.due_date && <div className="muted small">Wanted by {shortDate(r.due_date)}</div>}
                   </td>

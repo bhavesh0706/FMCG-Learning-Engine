@@ -29,7 +29,7 @@ from app.database.models import User
 # The one role contract shared by the backend, the web app and the mobile app.
 DASHBOARD = {
     "admin": "Admin (survey app + History with product reports; web: admin dashboard)",
-    "client": "Organization portal (mobile: Overview/Products/Catalog/Updates)",
+    "client": "Super Admin portal (mobile: Overview/Products/Catalog/Updates)",
     "executive": "Survey person (survey app)",
 }
 
@@ -95,7 +95,7 @@ def main(argv=None) -> None:
             print(f"Accounts whose name contains '{args.name}': {len(users)}")
         else:
             users = db.query(User).filter(User.role.in_(["admin", "client"])).order_by(User.role, User.id).all()
-            print(f"Admin and organization accounts: {len(users)}")
+            print(f"Admin and Super Admin accounts: {len(users)}")
         for u in users:
             print(_describe(u))
 

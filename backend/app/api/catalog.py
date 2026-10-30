@@ -283,6 +283,8 @@ def _product_out(
         "recipe_change": (recipe_changes if recipe_changes is not None else latest_changes(db, [p.id])).get(p.id),
         # The survey round collecting surveys now (organization portal starts rounds), or None.
         "live_round": (rounds if rounds is not None else live_rounds(db, [p.id])).get(p.id),
+        # False: an existing product that stays open without the Super Admin starting a round.
+        "needs_round": bool(getattr(p, "needs_round", 1)),
         # Product versions (= recipe versions). recipe_versions: every saved version
         # (Catalog); survey_versions: the ones in fieldwork, which a survey person can
         # choose when taking a survey ([{version, rounds, live}]).
@@ -358,8 +360,12 @@ def _tell_admins(db: Session, request: Request, entity: str, action: str, name: 
     if not is_client(request):
         return
     from app.services.notifications import notify_admins_of_catalog_change
+    from app.services.product_access import started_product_ids
 
-    who = (account(request) or {}).get("name") or "The organization"
+    if extra.get("product_id") and extra["product_id"] not in started_product_ids(db):
+        return  # admins don't see the product before its first round (they're told when it starts)
+
+    who = (account(request) or {}).get("name") or "The Super Admin"
     try:
         notify_admins_of_catalog_change(db, who, entity, action, name, **extra)
     except Exception:  # the change itself is saved; a failed notification must not undo it
@@ -491,8 +497,17 @@ def list_products(
     from app.services.rounds import versions_by_product
 
     versions = versions_by_product(db, [p.id for p, _ in rows])
-    return {"products": [_product_out(db, p, c, counts=counts, recipe_changes=changes, rounds=current, versions=versions)
-                         for p, c in rows]}
+    out = [_product_out(db, p, c, counts=counts, recipe_changes=changes, rounds=current, versions=versions) for p, c in rows]
+    if getattr(user, "role", None) == "executive":
+        # A survey person surveys the live round's version, or an existing open
+        # product's latest version (services/product_access.py).
+        for item in out:
+            versions = item.get("survey_versions") or []
+            live = [v for v in versions if v.get("live")]
+            if not live and not item.get("needs_round") and versions:
+                live = [max(versions, key=lambda v: v.get("version") or 0)]
+            item["survey_versions"] = live
+    return {"products": out}
 
 
 def question_dicts(questions) -> List[dict]:
@@ -538,7 +553,7 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
     if body.question_template_id or body.copy_questions_from_product_id:
         # Survey questions are managed by the organization (its portal), not on the
         # admin dashboard: a new product starts without questions.
-        raise HTTPException(status_code=403, detail="Survey questions are added by the organization in its portal. "
+        raise HTTPException(status_code=403, detail="Survey questions are added by the Super Admin in their portal. "
                             "Create the product without starting questions.")
     starting = _starting_questions(db, body)  # validated before anything is written
 

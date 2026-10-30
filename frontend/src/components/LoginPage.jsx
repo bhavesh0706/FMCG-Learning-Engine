@@ -40,6 +40,98 @@ function Feature({ icon, title, text }) {
   );
 }
 
+// One sign-in for every role; "Signing in as" only adapts the wording. The account's
+// role on the server always decides the dashboard, so picking the wrong one is harmless.
+const ROLE_COPY = {
+  executive: {
+    tab: "Survey person",
+    title: "Sign in to take surveys",
+    sub: "Use the mobile number and password your admin gave you.",
+    label: "Mobile number",
+    placeholder: "98765 43210",
+    inputMode: "tel",
+    forgot: <>Ask your admin to reset it on the <strong>Team</strong> page, then sign in with the new password.</>,
+    foot: "No account yet? Ask your admin to add you. The mobile app uses the same login.",
+  },
+  admin: {
+    tab: "Admin",
+    title: "Admin sign-in",
+    sub: "Manage products, your survey team and reports.",
+    label: "Email or mobile number",
+    placeholder: "name@company.com",
+    inputMode: "email",
+    forgot: <>Ask another admin to set a new password for you. If you're the only admin, contact whoever runs your server.</>,
+    foot: "Admin accounts are created at setup or by another admin.",
+  },
+  client: {
+    tab: "Super Admin",
+    title: "Super Admin sign-in",
+    sub: "See your consumer reports and manage your products, recipes and rounds.",
+    label: "Work email",
+    placeholder: "insights@company.com",
+    inputMode: "email",
+    forgot: <>Contact the research team. They'll give you a one-time password; you choose your own the first time you sign in.</>,
+    foot: "Your Super Admin login is created by the research team.",
+  },
+};
+// The brand panel (left) speaks to the person signing in. Every claim matches what the
+// product does for that role.
+const ROLE_BRAND = {
+  executive: {
+    headline: "Every survey, captured right in the field.",
+    line: "Pick the product, ask the questions, record the customer; the app does the rest.",
+    features: [
+      ["⚡", "Quick surveys", "Product, customer and questions in a few taps"],
+      ["☁️", "Works offline", "Surveys upload by themselves when you're back online"],
+      ["🎙️", "Any language", "Customers answer in English or Indian languages"],
+    ],
+    foot: "Your surveys are analyzed automatically by AI.",
+  },
+  admin: {
+    headline: "Your products, your team, one live view.",
+    line: "Follow every product's feedback, manage your survey team and read the AI reports.",
+    features: [
+      ["📊", "Live product reports", "Updated automatically after every analyzed survey"],
+      ["👥", "Team management", "Add survey persons and choose what they survey"],
+      ["⚖️", "Compare recipe rounds", "See how consumers reacted to each recipe version"],
+    ],
+    foot: "You're notified of every product and recipe change by the Super Admin.",
+  },
+  client: {
+    headline: "What consumers really think of your products.",
+    line: "Consumer reports for every round, so you can see what each recipe change achieved.",
+    features: [
+      ["📈", "Consumer reports", "Ratings, sentiment and what consumers liked or disliked"],
+      ["🧪", "Recipe versions", "Every recipe change becomes a new version to test"],
+      ["⚖️", "Compare rounds", "See whether a change improved the product"],
+    ],
+    foot: "Reports update automatically as new surveys are analyzed.",
+  },
+};
+const ROLE_KEY = "fmcg.loginRole";
+// "Organization" = accounts remembered before the role was renamed Super Admin.
+const ROLE_FROM_LABEL = { Admin: "admin", "Super Admin": "client", Organization: "client", "Survey person": "executive" };
+
+function savedRole() {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("as");
+    const asUrl = { admin: "admin", superadmin: "client", "super-admin": "client", organization: "client", org: "client", surveyor: "executive", survey: "executive" }[fromUrl || ""];
+    if (asUrl) return asUrl;
+    const stored = localStorage.getItem(ROLE_KEY);
+    return ROLE_COPY[stored] ? stored : "executive";
+  } catch {
+    return "executive";
+  }
+}
+
+function rememberRole(role) {
+  try {
+    if (ROLE_COPY[role]) localStorage.setItem(ROLE_KEY, role);
+  } catch {
+    /* private mode: the choice just isn't remembered */
+  }
+}
+
 export default function LoginPage({ apiBase, onSignedIn }) {
   const [mode, setMode] = useState("loading"); // loading | login | setup
   const [name, setName] = useState("");
@@ -54,8 +146,18 @@ export default function LoginPage({ apiBase, onSignedIn }) {
   const firstField = useRef(null);
   const passwordField = useRef(null);
   const [recent, setRecent] = useState(recentAccounts);
+  const [role, setRole] = useState(savedRole);
+  const copy = ROLE_COPY[role];
+
+  const chooseRole = (r) => {
+    setRole(r);
+    rememberRole(r);
+    setForgot(false);
+    setError("");
+  };
 
   const pickAccount = (a) => {
+    if (ROLE_FROM_LABEL[a.role]) chooseRole(ROLE_FROM_LABEL[a.role]);
     setIdentifier(a.identifier);
     setPassword("");
     setError("");
@@ -97,6 +199,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
         mode === "setup"
           ? await createFirstAdmin(apiBase, name, identifier, password)
           : await signIn(apiBase, identifier, password);
+      rememberRole(user?.role); // next time the page opens on the account's real role
       onSignedIn(user);
     } catch (err) {
       setError(err.message);
@@ -105,6 +208,8 @@ export default function LoginPage({ apiBase, onSignedIn }) {
   };
 
   const setup = mode === "setup";
+  // The first-time setup creates the admin, so it shows the admin's panel.
+  const brand = ROLE_BRAND[setup ? "admin" : role] || ROLE_BRAND.executive;
 
   return (
     <div className="login-page">
@@ -116,16 +221,16 @@ export default function LoginPage({ apiBase, onSignedIn }) {
           </span>
           <span className="login-brand-name">FMCG Video Learning Engine</span>
         </div>
-        <div className="login-brand-body">
-          <h2>Customer feedback, from the field to insight.</h2>
-          <p>Surveys taken on the phone, recordings analyzed by AI, and one always-current report for every product.</p>
+        <div className="login-brand-body" aria-live="polite">
+          <h2>{brand.headline}</h2>
+          <p>{brand.line}</p>
           <ul className="login-features">
-            <Feature icon="🎙️" title="Field surveys" text="Voice or video feedback in English and Indian languages" />
-            <Feature icon="✨" title="AI analysis" text="Transcripts, ratings and what customers liked or disliked" />
-            <Feature icon="📊" title="Product reports" text="Updated automatically after every new survey" />
+            {brand.features.map(([icon, title, text]) => (
+              <Feature key={title} icon={icon} title={title} text={text} />
+            ))}
           </ul>
         </div>
-        <p className="login-brand-foot">Admins manage products and the team. Survey persons take surveys.</p>
+        <p className="login-brand-foot">{brand.foot}</p>
         <span className="login-orb login-orb-a" aria-hidden="true" />
         <span className="login-orb login-orb-b" aria-hidden="true" />
       </aside>
@@ -137,12 +242,26 @@ export default function LoginPage({ apiBase, onSignedIn }) {
             <div className="login-loading"><span className="spinner" aria-hidden="true" /> Loading…</div>
           ) : (
             <>
+              {!setup && (
+                <div className="login-roles">
+                  <span className="login-roles-label" id="login-roles-label">Signing in as</span>
+                  <div className="login-roles-seg" role="radiogroup" aria-labelledby="login-roles-label">
+                    {Object.entries(ROLE_COPY).map(([key, c]) => (
+                      <button key={key} type="button" role="radio" aria-checked={role === key}
+                        className={role === key ? "is-on" : ""} onClick={() => chooseRole(key)}>
+                        {c.tab}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="login-head">
-                <h1 id="login-title">{setup ? "Set up your workspace" : "Welcome back"}</h1>
+                <h1 id="login-title">{setup ? "Set up your workspace" : copy.title}</h1>
                 <p>
                   {setup
                     ? "Create the admin account. You'll add products and your survey team next."
-                    : "Sign in with the mobile number or email your admin gave you."}
+                    : copy.sub}
                 </p>
               </div>
 
@@ -157,10 +276,11 @@ export default function LoginPage({ apiBase, onSignedIn }) {
               )}
 
               <label className="login-field">
-                <span>Mobile number or email</span>
+                <span>{setup ? "Mobile number or email" : copy.label}</span>
                 <input ref={setup ? undefined : firstField} className="login-input" value={identifier}
-                  inputMode="email" autoComplete="username"
-                  onChange={(e) => setIdentifier(e.target.value)} placeholder="98765 43210 or name@company.com" />
+                  inputMode={setup ? "email" : copy.inputMode} autoComplete="username"
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  placeholder={setup ? "98765 43210 or name@company.com" : copy.placeholder} />
               </label>
 
               <div className="login-field">
@@ -185,9 +305,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
               </div>
 
               {forgot && !setup && (
-                <p className="login-help" role="note">
-                  Ask your admin to reset it: they can set a new password for you on the <strong>Team</strong> page.
-                </p>
+                <p className="login-help" role="note">{copy.forgot}</p>
               )}
 
               {setup && (
@@ -208,7 +326,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
               <p className="login-foot">
                 {setup
                   ? "This setup appears only once, before the first admin exists."
-                  : "Survey persons use the same login as in the mobile app."}
+                  : copy.foot}
               </p>
 
               {!setup && recent.length > 0 && (

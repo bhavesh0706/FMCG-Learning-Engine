@@ -260,14 +260,14 @@ def install_access_control(app):
                                                           "code": "password_change_required"})
         if account["role"] == "client":
             if not client_may(request.method, request.url.path):
-                return JSONResponse(status_code=403, content={"detail": "The organization portal can't open this page."})
+                return JSONResponse(status_code=403, content={"detail": "The Super Admin portal can't open this page."})
         elif organization_catalog(request.method, request.url.path):
             return JSONResponse(status_code=403, content={
-                "detail": "Products and categories are managed by the organization in its portal.",
+                "detail": "Products and categories are managed by the Super Admin in their portal.",
                 "code": "organization_only"})
         elif organization_only(request.method, request.url.path):
             return JSONResponse(status_code=403, content={
-                "detail": "Recipes and survey questions are managed by the organization in its portal.",
+                "detail": "Recipes and survey questions are managed by the Super Admin in their portal.",
                 "code": "organization_only"})
         elif need == "admin" and account["role"] != "admin":
             return JSONResponse(status_code=403, content={"detail": "This is only available to admins."})

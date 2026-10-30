@@ -314,6 +314,20 @@ class SurveyApi {
   /// One product: summary, responses and the latest consolidated report.
   /// One product's feedback; with [round], that round's report and responses
   /// (without it: all rounds together, as before).
+  /// GPS position -> a readable place for "Survey location" (GET /geo/reverse).
+  /// Returns {label, locality, city, state, country}; throws a readable message.
+  Future<Map<String, dynamic>> reverseGeocode(double latitude, double longitude) async {
+    try {
+      final r = await _dio.get('/geo/reverse', queryParameters: {'lat': latitude, 'lng': longitude});
+      final d = _decode(r.data);
+      return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      final detail = data is Map ? data['detail'] : null;
+      throw detail is String && detail.isNotEmpty ? detail : "Couldn't find the address. Type the survey location.";
+    }
+  }
+
   Future<Map<String, dynamic>> productFeedback(int productId, {int? round}) async {
     final r = await _dio.get('/product-feedback/$productId', queryParameters: {if (round != null) 'round': round});
     final d = _decode(r.data);

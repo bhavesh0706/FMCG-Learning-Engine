@@ -32,6 +32,7 @@ from app.database.models import (
     SurveyQuestion,
     SurveyResponse,
     SurveyRound,
+    User,
 )
 
 
@@ -484,10 +485,11 @@ def create_survey_response(
         )
 
     me = account(request)
-    # Filed under the round of the chosen version, or the product's live round when
-    # no version was chosen (services/rounds.py).
+    # Only the product's live round assigned to this person (services/product_access.py);
+    # rounds are started by the Super Admin, never here.
+    me_user = db.get(User, me.get("id")) if me.get("id") else None
     try:
-        survey_round = round_for_new_survey(db, product.id, body.recipe_version)
+        survey_round = round_for_new_survey(db, product.id, body.recipe_version, user=me_user)
     except RoundError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
     response = SurveyResponse(

@@ -125,6 +125,7 @@ def save_version(db: Session, product: Product, old: Optional[dict], new: Option
         created_at=datetime.utcnow(),
     )
     db.add(version)
+    product.needs_round = 1  # a new version is surveyed only once the Super Admin starts its round
     db.commit()
     db.refresh(version)
     return version

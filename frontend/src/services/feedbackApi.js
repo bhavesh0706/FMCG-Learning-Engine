@@ -107,6 +107,12 @@ export async function getCategories() {
 
 
 // GET /products
+// GET /geo/reverse: the phone/computer position -> a readable place for "Survey location".
+export async function reverseGeocode(latitude, longitude) {
+  const res = await api.get("/geo/reverse", { params: { lat: latitude, lng: longitude } });
+  return res.data; // { label, locality, city, state, country, latitude, longitude }
+}
+
 export async function getProducts() {
   const res = await api.get(
     "/products"

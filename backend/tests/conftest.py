@@ -45,7 +45,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.main import app  # noqa: E402
 from app.api.auth import hash_password, make_token  # noqa: E402
 from app.database.database import SessionLocal  # noqa: E402
-from app.database.models import Category, Product, SurveyQuestion, User  # noqa: E402
+from app.database.models import Category, Product, ProductAssignment, SurveyQuestion, SurveyRound, User  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -107,6 +107,27 @@ def bob(db):
     return make_user(db, name=_unique("Bob "))
 
 
+def open_round(db, product: Product, number: int = 1, recipe_version=None, target: int = 30, status: str = "live") -> SurveyRound:
+    """The Super Admin starts a round (round workflow: services/product_access.py)."""
+    r = SurveyRound(product_id=product.id, number=number, recipe_version=recipe_version, target=target, status=status,
+                    started_by_name="Super Admin", started_by_role="client")
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+def assign(db, product: Product, *users: User) -> None:
+    """An Admin assigns the product's live round to these survey persons."""
+    r = (db.query(SurveyRound).filter(SurveyRound.product_id == product.id, SurveyRound.status == "live")
+         .order_by(SurveyRound.number.desc()).first())
+    assert r is not None, "start a round first (open_round)"
+    for u in users:
+        if not db.query(ProductAssignment).filter_by(round_id=r.id, user_id=u.id).first():
+            db.add(ProductAssignment(user_id=u.id, product_id=product.id, round_id=r.id))
+    db.commit()
+
+
 @pytest.fixture()
 def product(db):
     category = Category(name=_unique("Category "), is_active=1)
@@ -120,11 +141,23 @@ def product(db):
                               question_type="text", required=1, is_active=1))
     db.commit()
     db.refresh(item)
-    return item
+    return item  # no round yet: start_survey opens one, round tests start their own
 
 
 def start_survey(client, user: User, product: Product) -> dict:
-    """Respondent + survey created through the API, as the apps do."""
+    """Respondent + survey created through the API, as the apps do (the survey
+    person is assigned to the live round first, as an Admin would)."""
+    if user.role == "executive":
+        from app.database.database import SessionLocal
+
+        s = SessionLocal()
+        try:
+            if not s.query(SurveyRound).filter(SurveyRound.product_id == product.id, SurveyRound.status == "live").first():
+                numbers = [n for (n,) in s.query(SurveyRound.number).filter(SurveyRound.product_id == product.id).all()]
+                open_round(s, product, number=max(numbers, default=0) + 1)  # the Super Admin starts a round
+            assign(s, product, user)
+        finally:
+            s.close()
     r = client.post(
         "/surveys/respondents",
         headers=auth(user),

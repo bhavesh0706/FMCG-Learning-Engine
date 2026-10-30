@@ -280,7 +280,7 @@ function PortalShell({ user, ReportView }) {
     if (!window.location.hash || !["overview", "products", "catalog", "updates", "account"].includes(parts[0])) {
       window.history.replaceState(null, "", "#/overview");
     }
-    document.title = `${user?.name || "Organization"} · Consumer insights`;
+    document.title = `${user?.name || "Super Admin"} · Consumer insights`;
   }, [parts, user]);
 
   let body;
@@ -348,11 +348,11 @@ function OrgMenu({ user }) {
   return (
     <div className="user-menu" ref={ref}>
       <button type="button" className="user-chip" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}
-        aria-label={`${user?.name}, organization. Account menu`}>
+        aria-label={`${user?.name}, Super Admin. Account menu`}>
         <span className="user-avatar" aria-hidden="true">{initial}</span>
         <span className="user-chip-text">
           <strong>{user?.name}</strong>
-          <span>Organization</span>
+          <span>Super Admin</span>
         </span>
       </button>
       {open && (
@@ -362,7 +362,7 @@ function OrgMenu({ user }) {
             <span>
               <strong>{user?.name}</strong>
               <span>{user?.email || user?.mobile}</span>
-              <span className="status-chip is-act user-role">Organization</span>
+              <span className="status-chip is-act user-role">Super Admin</span>
             </span>
           </div>
           <button type="button" role="menuitem" className="user-pop-item" onClick={() => { setOpen(false); go("account"); }}>
@@ -1201,7 +1201,7 @@ function AccountPage() {
     try {
       await changePassword(API_BASE_URL, form.current, form.next);
       setForm({ current: "", next: "", repeat: "" });
-      setMsg({ tone: "ok", text: "Password changed. Every other sign-in of your organization has ended." });
+      setMsg({ tone: "ok", text: "Password changed. Every other sign-in of this Super Admin account has ended." });
     } catch (err) {
       setMsg({ tone: "error", text: err.message });
     } finally {
@@ -1212,7 +1212,7 @@ function AccountPage() {
   const everywhere = async () => {
     const ok = await confirmDialog({
       title: "Sign out everywhere?",
-      message: "Every sign-in of your organization ends, on every computer, including this one.",
+      message: "Every sign-in of this Super Admin account ends, on every computer, including this one.",
       confirmLabel: "Sign out everywhere",
       danger: true,
     });
@@ -1232,7 +1232,7 @@ function AccountPage() {
       </header>
       <div className="org-two is-even">
         <section className="panel org-panel">
-          <h2 className="org-panel-title">Organization</h2>
+          <h2 className="org-panel-title">Super Admin</h2>
           <dl className="org-dl">
             <dt>Name</dt>
             <dd>{a.name}</dd>

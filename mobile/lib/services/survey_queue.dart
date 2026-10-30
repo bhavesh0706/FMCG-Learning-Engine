@@ -536,6 +536,10 @@ class AppProfile {
 
   /// True once the permissions screen has been shown after sign-in.
   static bool permissionsDone = false;
+
+  /// "Signing in as" on the login screen (executive | admin | client): only the
+  /// wording; the server's role decides where the account goes.
+  static String loginRole = 'executive';
   static bool _loaded = false;
 
   static Future<File> _file() async {
@@ -554,6 +558,8 @@ class AppProfile {
           executiveName.value = '${j['executiveName'] ?? ''}';
           themeMode.value = '${j['themeMode'] ?? 'system'}';
           permissionsDone = j['permissionsDone'] == true;
+          final role = '${j['loginRole'] ?? ''}';
+          if (const {'executive', 'admin', 'client'}.contains(role)) loginRole = role;
           lastSurveyLocation.value = '${j['lastSurveyLocation'] ?? ''}';
           recentProducts.value = ((j['recentProducts'] as List?) ?? const [])
               .whereType<Map>()
@@ -572,6 +578,7 @@ class AppProfile {
       'executiveName': executiveName.value,
       'themeMode': themeMode.value,
       'permissionsDone': permissionsDone,
+      'loginRole': loginRole,
       'lastSurveyLocation': lastSurveyLocation.value,
       'recentProducts': recentProducts.value.map((p) => p.toJson()).toList(),
     }));

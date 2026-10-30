@@ -182,7 +182,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
           <dt>Change</dt>
           <dd>{d.action === "deleted" ? "Permanently deleted" : (d.action || "updated").replace(/^./, (c) => c.toUpperCase())}</dd>
           <dt>Changed by</dt>
-          <dd>{d.client_name || "—"} <span className="notif-sub">Organization</span></dd>
+          <dd>{d.client_name || "—"} <span className="notif-sub">Super Admin</span></dd>
           <dt>Changed</dt>
           <dd>{formatDate(d.changed_at || item.created_at)}</dd>
         </dl>
@@ -209,7 +209,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
             {d.category_name && <span className="notif-sub">{d.category_name}</span>}
           </dd>
           <dt>Changed by</dt>
-          <dd>{d.client_name || "—"} <span className="notif-sub">Organization</span></dd>
+          <dd>{d.client_name || "—"} <span className="notif-sub">Super Admin</span></dd>
           <dt>Recipe version</dt>
           <dd>v{d.version}</dd>
           <dt>Changed</dt>

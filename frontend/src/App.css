@@ -10930,6 +10930,70 @@ input[type="radio"] {
   padding: 0;
   min-width: 0;
 }
+
+
+/* Login: "Signing in as" (wording per role; the server's role decides the dashboard) */
+.login-roles {
+  margin-bottom: 18px;
+}
+
+.login-roles-label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.login-roles-seg {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--brand-soft);
+}
+
+.login-roles-seg button {
+  min-height: 38px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-2, #33475a);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.login-roles-seg button.is-on {
+  background: var(--surface, #fff);
+  color: var(--brand, #0a4174);
+  box-shadow: 0 1px 3px rgba(0, 29, 57, 0.14);
+}
+
+.login-roles-seg button:focus-visible {
+  outline: 2px solid var(--brand, #0a4174);
+  outline-offset: 2px;
+}
+
+.gps-status.is-error {
+  color: var(--neg);
+}
+
+.member-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.status-chip.is-neg {
+  background: var(--neg-soft);
+  color: var(--neg-strong);
+}
+
 /* ============================================================
    Page width: uses the extra room on large screens (Mac),
    unchanged on smaller ones (Windows at 150% scaling).

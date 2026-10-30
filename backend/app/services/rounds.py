@@ -4,16 +4,18 @@ target number of surveys is reached. Every round has its own report, so the
 organization can change the recipe, start a new round and compare the two.
 
 Who does what
-  organization  starts a round (portal: Start new round), can end it early
-  admin         sees rounds everywhere (bell, badges, Catalog > Rounds, history)
-  field app     nothing to do: a new survey is filed under the product's live
-                round automatically (round_for_new_survey, called by surveys.py)
+  Super Admin   starts every round (portal: Start new round), can end it early
+  admin         sees the product once a round has started, and assigns each live
+                round to survey persons (services/product_access.py)
+  survey person sees and surveys only the live rounds assigned to them; a new
+                survey is filed under that round (round_for_new_survey)
 
 Rules
-  - one live round per product; the next round starts when it is complete
+  - one live round per product; the next round starts only when the Super Admin
+    starts it (never automatically)
   - a round closes by itself when its submitted surveys reach the target
-  - a survey started when no round is live goes into the latest round; the very
-    first survey of a product creates Round 1 (started by the research team)
+  - a survey can only go into the live round assigned to its survey person
+    (surveys recorded offline may upload up to 7 days after the round closed)
   - products that already had surveys get Round 1 holding them (create_first_rounds)
 """
 
@@ -115,7 +117,7 @@ def done_counts(db: Session, round_ids: Iterable[int]) -> dict[int, int]:
 def starter_name(r: SurveyRound, viewer_role: Optional[str]) -> str:
     """Organizations never see the names of the research team's admins."""
     if r.started_by_role == "client":
-        return r.started_by_name or "Organization"
+        return r.started_by_name or "Super Admin"
     if r.started_by_role == "admin" and viewer_role != "client":
         return r.started_by_name or RESEARCH_TEAM
     return RESEARCH_TEAM
@@ -244,42 +246,25 @@ def versions_by_product(db: Session, product_ids: Iterable[int]) -> dict[int, di
     return out
 
 
-def round_for_new_survey(db: Session, product_id: int, recipe_version: Optional[int] = None) -> Optional[SurveyRound]:
+def round_for_new_survey(db: Session, product_id: int, recipe_version: Optional[int] = None, user=None) -> SurveyRound:
     """
-    The round a new survey of this product belongs to.
+    The round a new survey by this person goes into: the product's live round, if
+    an Admin assigned it to them. Rounds are never created here: only the Super
+    Admin starts rounds. A version that isn't the live round's version is refused.
+    """
+    from app.services.product_access import round_for_survey
 
-    recipe_version given (the survey person chose a version): that version's live
-    round, else its latest round; a version that was never in fieldwork is refused.
-    Not given (one version, or an older app): the live round; else the latest
-    round; else Round 1 is created (started by the research team).
-    """
-    if recipe_version is not None:
-        same = [r for r in rounds_of(db, product_id) if r.recipe_version == recipe_version]
-        if not same:
-            raise RoundError(
-                f"Version {recipe_version} of this product isn't being surveyed. Choose one of the versions offered.",
-                status=400,
-            )
-        live = [r for r in same if r.status == LIVE]
-        return (live or same)[-1]
-    r = live_round(db, product_id) or latest_round(db, product_id)
-    if r is not None:
-        return r
-    product = db.get(Product, product_id)
-    if product is None:
-        return None
-    r = SurveyRound(
-        product_id=product_id, number=1, recipe_version=ensure_first_version(db, product),
-        target=max(DEFAULT_TARGET, int(product.min_responses or 0)), status=LIVE,
-        started_by=None, started_by_name=RESEARCH_TEAM, started_by_role="system", started_at=datetime.utcnow(),
-    )
-    db.add(r)
-    try:
-        db.commit()
-    except Exception:
-        db.rollback()  # created by a parallel request at the same moment
-        return latest_round(db, product_id)
-    db.refresh(r)
+    r = round_for_survey(db, user, product_id)
+    if r is None:
+        raise RoundError(
+            "This product has no survey round assigned to you. The Super Admin starts rounds and your admin assigns them.",
+            status=409,
+        )
+    if recipe_version is not None and r.recipe_version is not None and int(recipe_version) != int(r.recipe_version):
+        raise RoundError(
+            f"Version {recipe_version} of this product isn't being surveyed now. Use version {r.recipe_version}.",
+            status=400,
+        )
     return r
 
 
@@ -382,6 +367,7 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
         started_at=datetime.utcnow(),
     )
     db.add(r)
+    product.needs_round = 1  # from now on every round is started by the Super Admin
     db.commit()
     db.refresh(r)
     _notify_round_started(db, product, r)
@@ -406,13 +392,14 @@ def _admins(db: Session) -> list[int]:
 
 
 def _survey_people(db: Session, product_id: int) -> list[int]:
-    """Survey persons who may survey the product (no assignment = every executive)."""
+    """Active survey persons assigned to the product's live round (none right after the
+    Super Admin starts it: they're notified when an Admin assigns them)."""
     from app.services.product_access import assignees_for_product
 
     assigned = assignees_for_product(db, product_id)
-    q = db.query(User.id).filter(User.role == "executive", User.is_active == 1)
-    if assigned:
-        q = q.filter(User.id.in_(assigned))
+    if not assigned:
+        return []
+    q = db.query(User.id).filter(User.role == "executive", User.is_active == 1, User.id.in_(assigned))
     return [uid for (uid,) in q.all()]
 
 
@@ -425,7 +412,7 @@ def _notify_round_started(db: Session, product: Product, r: SurveyRound) -> None
             "started_at": _iso(r.started_at)}
     due = f" by {r.due_date.strftime('%d %b %Y')}" if r.due_date else ""
     if r.started_by_role == "client":
-        who = r.started_by_name or "The organization"
+        who = r.started_by_name or "The Super Admin"
         notify(
             db, _admins(db), ROUND_STARTED_BY_ORG,
             title=f"{who} started Round {r.number} of {info['product_name']}",
@@ -446,7 +433,7 @@ def notify_round_ended(db: Session, product: Product, r: SurveyRound, account: d
     from app.services.notifications import _product_info, notify
 
     info = _product_info(db, product.id)
-    who = account.get("name") or "The organization"
+    who = account.get("name") or "The Super Admin"
     done = done_counts(db, [r.id]).get(r.id, 0)
     notify(
         db, _admins(db), ROUND_ENDED_BY_ORG,
@@ -455,4 +442,3 @@ def notify_round_ended(db: Session, product: Product, r: SurveyRound, account: d
         data={**info, "round": r.number, "round_id": r.id, "done": done, "target": r.target},
         dedupe_key=f"round:{r.id}:ended",
     )
-

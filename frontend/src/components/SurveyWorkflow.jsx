@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { getCategories, getProducts, getProductQuestions } from "../services/feedbackApi";
+import { getCategories, getProducts, getProductQuestions, reverseGeocode } from "../services/feedbackApi";
 import { CATALOG_CHANGED, DATA_CHANGED } from "../services/appEvents";
 import { getSession } from "../services/auth";
 import { API_BASE_URL } from "../config";
@@ -69,7 +69,7 @@ function VersionCard({ round, version = null }) {
           ? `The recipe has changed: consumers taste recipe v${round.recipe_version}. This survey counts toward Round ${round.number}.`
           : `This survey counts toward Round ${round.number}.`}
       </p>
-      {round.note && <p className="version-note">Note from the organization: “{round.note}”</p>}
+      {round.note && <p className="version-note">Note from the Super Admin: “{round.note}”</p>}
     </div>
   );
 }
@@ -191,7 +191,10 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   const [usagePeriod, setUsagePeriod] = useState(initialContext?.usagePeriod ?? "");
   const [surveyLocation, setSurveyLocation] = useState(initialContext?.surveyLocation ?? "");
   const [coords, setCoords] = useState(initialContext?.coords ?? null);
-  const [gpsState, setGpsState] = useState("idle"); // idle | locating | error
+  const [gpsState, setGpsState] = useState("idle"); // idle | locating | resolving | error
+  const [gpsMessage, setGpsMessage] = useState("");
+  // The Survey location text came from GPS (so a new GPS reading may replace it, but typed text never is).
+  const [autoFilled, setAutoFilled] = useState(false);
 
   const [answers, setAnswers] = useState({});
   const [error, setError] = useState("");
@@ -438,21 +441,44 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   /* ---------- GPS ---------- */
 
   function captureLocation() {
+    setGpsMessage("");
     if (!navigator.geolocation) {
       setGpsState("error");
+      setGpsMessage("This browser can't share its location. Type the survey location.");
       return;
     }
     setGpsState("locating");
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCoords({
+      async (pos) => {
+        const found = {
           latitude: Number(pos.coords.latitude.toFixed(6)),
           longitude: Number(pos.coords.longitude.toFixed(6)),
           accuracy: Math.round(pos.coords.accuracy),
-        });
-        setGpsState("idle");
+        };
+        setCoords(found);
+        setGpsState("resolving");
+        try {
+          const place = await reverseGeocode(found.latitude, found.longitude);
+          if (place?.label && (!surveyLocation.trim() || autoFilled)) {
+            setSurveyLocation(place.label);
+            setAutoFilled(true);
+          }
+          setGpsState("idle");
+        } catch (err) {
+          setGpsState("error");
+          setGpsMessage(err?.response?.data?.detail || "Couldn't find the address right now. Type the survey location.");
+        }
       },
-      () => setGpsState("error"),
+      (err) => {
+        setGpsState("error");
+        setGpsMessage(
+          err?.code === 1
+            ? "Location access is blocked. Allow it in the browser's site settings, or type the location."
+            : err?.code === 3
+            ? "Finding the location took too long. Try again, or type the location."
+            : "Location is turned off or unavailable. Turn it on, or type the location."
+        );
+      },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
     );
   }
@@ -686,8 +712,11 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   )}
                   <Field label="Survey location" required>
                     {(id) => (
-                      <input id={id} className="input" placeholder="e.g. D-Mart, Andheri West" value={surveyLocation}
-                        onChange={(e) => setSurveyLocation(e.target.value)} />
+                      <input id={id} className="input" placeholder="e.g. D-Mart, Andheri West, or use GPS below" value={surveyLocation}
+                        onChange={(e) => {
+                          setAutoFilled(false); // typed by hand: GPS won't overwrite it
+                          setSurveyLocation(e.target.value);
+                        }} />
                     )}
                   </Field>
                   <div className="field is-wide">
@@ -699,15 +728,17 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   <div className="field is-wide">
                     <span className="field-label">GPS location (optional)</span>
                     <div className="gps-row">
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={captureLocation} disabled={gpsState === "locating"}>
-                        {gpsState === "locating" ? "Finding location…" : coords ? "Update location" : "Use my current location"}
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={captureLocation}
+                        disabled={gpsState === "locating" || gpsState === "resolving"}>
+                        {gpsState === "locating" ? "Finding location…" : gpsState === "resolving" ? "Finding the address…"
+                          : coords ? "Update location" : "Use my current location"}
                       </button>
-                      <span className="muted gps-status" aria-live="polite">
-                        {coords
-                          ? `${coords.latitude}, ${coords.longitude} (±${coords.accuracy} m)`
-                          : gpsState === "error"
-                          ? "Location unavailable: allow access, or skip."
-                          : ""}
+                      <span className={`gps-status ${gpsState === "error" ? "is-error" : "muted"}`} aria-live="polite">
+                        {gpsState === "error"
+                          ? gpsMessage
+                          : coords
+                          ? `${coords.latitude}, ${coords.longitude} (±${coords.accuracy} m)${autoFilled ? " · Survey location filled in" : ""}`
+                          : "Fills in the survey location for you."}
                       </span>
                     </div>
                   </div>

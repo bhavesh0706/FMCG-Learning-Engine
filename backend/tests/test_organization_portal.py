@@ -5,10 +5,10 @@ reports, comparing rounds, and the admin dashboard updating by itself.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
-from conftest import _unique, answers_payload, auth, make_user, start_survey
+from conftest import _unique, answers_payload, assign, auth, make_user, open_round, start_survey
 
 from app.database.models import (
     Category,
@@ -142,19 +142,38 @@ def test_organization_sees_every_active_product_and_nothing_else(client, db, org
 # Rounds
 # ------------------------------------------------------------
 
-def test_first_survey_opens_round_1_and_the_target_closes_it(client, db, alice, product):
+def _raw_survey(client, person, product):
+    """POST /surveys/responses directly (start_survey would open and assign a round)."""
+    rid = client.post("/surveys/respondents", headers=auth(person),
+                      json={"name": "Late Customer", "location": "Pune", "consent_given": True}).json()["id"]
+    return client.post("/surveys/responses", headers=auth(person), json={"product_id": product.id, "respondent_id": rid})
+
+
+def test_surveys_need_a_started_assigned_round_and_the_target_closes_it(client, db, alice, product):
+    # No round started by the Super Admin: nothing to survey, and no round is created.
+    assert product.id not in {p["id"] for p in client.get("/products", headers=auth(alice)).json()["products"]}
+    assert _raw_survey(client, alice, product).status_code == 403
+    assert _rounds(db, product) == []
+    open_round(db, product, target=2)
+    assert _raw_survey(client, alice, product).status_code == 403, "started but not assigned to alice"
+    assign(db, product, alice)
     rid = _submit(client, db, alice, product)
-    rounds = _rounds(db, product)
-    assert len(rounds) == 1 and rounds[0].number == 1 and rounds[0].status == "live" and rounds[0].started_by_role == "system"
-    assert db.get(SurveyResponse, rid).round_id == rounds[0].id
-    rounds[0].target = 2
-    db.commit()
+    r1 = _rounds(db, product)[0]
+    assert db.get(SurveyResponse, rid).round_id == r1.id and r1.started_by_role == "client"
     _submit(client, db, alice, product)
+    db.expire_all()
     r1 = _rounds(db, product)[0]
     assert r1.status == "closed" and r1.closed_reason == "target"
-    # No live round: later surveys still belong to the latest round.
-    rid3 = _submit(client, db, alice, product)
-    assert db.get(SurveyResponse, rid3).round_id == r1.id
+    # The next round never starts by itself; the product leaves alice's list.
+    assert len(_rounds(db, product)) == 1
+    assert product.id not in {p["id"] for p in client.get("/products", headers=auth(alice)).json()["products"]}
+    # A survey recorded offline before the round closed may still upload for 7 days...
+    late = _raw_survey(client, alice, product)
+    assert late.status_code == 201 and db.get(SurveyResponse, late.json()["id"]).round_id == r1.id
+    # ...but not later.
+    r1.closed_at = datetime.utcnow() - timedelta(days=8)
+    db.commit()
+    assert _raw_survey(client, alice, product).status_code == 403
 
 
 def test_organization_starts_a_round_and_everyone_is_told(client, db, admin, org, alice, product):
@@ -172,8 +191,14 @@ def test_organization_starts_a_round_and_everyone_is_told(client, db, admin, org
     bell = client.get("/notifications", headers=auth(admin)).json()["notifications"]
     note = next(n for n in bell if n["kind"] == "client_round_started" and n["data"]["product_id"] == product.id)
     assert note["data"]["round"] == 1 and note["data"]["note"] == "Less sugar" and org.name in note["title"]
+    # Survey persons aren't told yet: the round appears for them once an admin assigns it.
     field = client.get("/notifications", headers=auth(alice)).json()["notifications"]
-    assert any(n["kind"] == "round_started" and n["data"]["product_id"] == product.id for n in field)
+    assert not any(n["data"].get("product_id") == product.id for n in field)
+    assert product.id not in {p["id"] for p in client.get("/products", headers=auth(alice)).json()["products"]}
+    assert client.put(f"/admin/products/{product.id}/executives", headers=auth(admin), json={"user_ids": [alice.id]}).status_code == 200
+    field = client.get("/notifications", headers=auth(alice)).json()["notifications"]
+    assert any(n["kind"] == "product_assigned" for n in field)
+    assert product.id in {p["id"] for p in client.get("/products", headers=auth(alice)).json()["products"]}
 
     rid = _submit(client, db, alice, product)
     assert db.get(SurveyResponse, rid).round_id == rnd["id"]
@@ -297,13 +322,14 @@ def test_survey_persons_see_the_recipe_version_being_tested(client, db, admin, o
     client.put(f"/products/{product.id}/recipe", headers=auth(org), json=LESS_SUGAR)
     client.post(f"/org/products/{product.id}/rounds", headers=auth(org), json={"target": 5, "note": "Less sweet version"})
 
+    # Round 2 appears for alice once an admin assigns it (Round 1's assignment doesn't carry over).
+    assert product.id not in {p["id"] for p in client.get("/products", headers=auth(alice)).json()["products"]}
+    assert client.put(f"/admin/products/{product.id}/executives", headers=auth(admin), json={"user_ids": [alice.id]}).status_code == 200
     listed = {p["id"]: p for p in client.get("/products", headers=auth(alice)).json()["products"]}
     live = listed[product.id]["live_round"]
     assert live["number"] == 2 and live["recipe_version"] == 2 and live["new_version"] is True
     assert live["note"] == "Less sweet version"
-    note = next(n for n in client.get("/notifications", headers=auth(alice)).json()["notifications"]
-                if n["kind"] == "round_started" and n["data"]["round"] == 2)
-    assert "recipe v2" in note["title"] and "recipe v2" in note["message"]
+    assert [v["version"] for v in listed[product.id]["survey_versions"]] == [2], "only the live round's version"
 
     ids = start_survey(client, alice, product)
     one = client.get(f"/surveys/responses/{ids['response_id']}", headers=auth(alice)).json()

@@ -46,14 +46,18 @@ from app.api.auth import (
     surveys_of,
 )
 from app.database.database import get_db
-from app.database.models import AuditLog, Product, ProductAssignment, User
+from app.database.models import AuditLog, Product, User
 from app.services import audit
 from app.services.notifications import notify_product_assigned
 from app.services.product_access import (
+    AssignmentError,
     assignees_for_product,
     assignments_for_user,
+    current_round_of,
     set_product_users,
     set_user_products,
+    started_product_ids,
+    visible_product_ids,
 )
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -84,9 +88,9 @@ def list_users(
         like = f"%{q.strip().lower()}%"
         query = query.filter((User.name.ilike(like)) | (User.mobile.ilike(like)) | (User.email.ilike(like)))
     users = query.order_by(User.created_at.desc()).all()
-    assigned = {}
-    for uid, pid in db.query(ProductAssignment.user_id, ProductAssignment.product_id).all():
-        assigned.setdefault(uid, []).append(pid)
+    # What each survey person can survey now: assigned current rounds, plus existing
+    # products open to everyone (services/product_access.py).
+    assigned = {u.id: sorted(visible_product_ids(db, u) or []) for u in users if u.role == "executive"}
     return {
         "users": [
             {
@@ -134,7 +138,10 @@ def save_user_products(user_id: int, body: ProductIds, request: Request, db: Ses
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown product id(s): {sorted(unknown)}")
     before = set(assignments_for_user(db, user_id))
-    saved = set_user_products(db, user_id, body.product_ids)
+    try:
+        saved = set_user_products(db, user_id, body.product_ids)  # live rounds only
+    except AssignmentError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     audit.note(request, details={"added_products": _product_names(db, set(saved) - before),
                                  "removed_products": _product_names(db, before - set(saved))})
     # Tell the survey person about products they didn't have before.
@@ -144,23 +151,42 @@ def save_user_products(user_id: int, body: ProductIds, request: Request, db: Ses
     return {"user_id": user_id, "product_ids": saved}
 
 
+def _started_product_or_404(db: Session, product_id: int) -> Product:
+    """Admins see a product once the Super Admin has started its first round."""
+    product = db.get(Product, product_id)
+    if not product or product_id not in started_product_ids(db):
+        raise HTTPException(status_code=404, detail="Product not found.")
+    return product
+
+
 @router.get("/products/{product_id}/executives")
 def product_executives(product_id: int, db: Session = Depends(get_db)):
-    if not db.get(Product, product_id):
-        raise HTTPException(status_code=404, detail="Product not found.")
-    return {"product_id": product_id, "user_ids": assignees_for_product(db, product_id)}
+    """Who surveys the product's live round. round = null: no round is live (nothing to assign)."""
+    product = _started_product_or_404(db, product_id)
+    r = current_round_of(db, product_id)
+    ids = assignees_for_product(db, product_id)
+    return {"product_id": product_id,
+            "round": {"id": r.id, "number": r.number, "recipe_version": r.recipe_version, "target": r.target,
+                      "status": r.status} if r else None,
+            # Existing product surveyed before rounds were required: open to every
+            # survey person while nobody is assigned by name.
+            "needs_round": bool(product.needs_round),
+            "open_to_all": bool(r) and not product.needs_round and not ids,
+            "user_ids": ids}
 
 
 @router.put("/products/{product_id}/executives")
 def save_product_executives(product_id: int, body: UserIds, request: Request, db: Session = Depends(get_db)):
-    if not db.get(Product, product_id):
-        raise HTTPException(status_code=404, detail="Product not found.")
+    _started_product_or_404(db, product_id)
     known = {uid for (uid,) in db.query(User.id).filter(User.id.in_(body.user_ids), User.role != "client").all()} if body.user_ids else set()
     unknown = set(body.user_ids) - known
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown user id(s): {sorted(unknown)}")
     before = set(assignees_for_product(db, product_id))
-    saved = set_product_users(db, product_id, body.user_ids)
+    try:
+        saved = set_product_users(db, product_id, body.user_ids)  # the live round's people
+    except AssignmentError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     audit.note(request, details={"added_people": _user_names(db, set(saved) - before),
                                  "removed_people": _user_names(db, before - set(saved))})
     # Tell each newly added survey person about this product.

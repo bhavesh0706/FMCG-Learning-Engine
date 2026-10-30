@@ -237,39 +237,28 @@ export function ResetPasswordDialog({ member, onClose, onDone }) {
 
 /*
   "What can <person> survey?"
-  Rule: a product given to nobody is shown to EVERYONE. A product given to one or
-  more people is shown ONLY to them. The dialog shows each product's current
-  audience and, before saving, exactly what changes for this person and the others.
+  Rule (services/product_access.py): the Super Admin starts each round; an admin
+  assigns the LIVE round to survey persons, and only they see the product. Nothing
+  is open to everyone, a new round is assigned again, and assigning one person
+  never changes what the others can survey.
 */
 
 const firstName = (name) => (name || "").trim().split(/\s+/)[0] || name;
-
-// Who can survey each product, from everyone's assignments.
-function ownersMap(team, products, member, selected) {
-  const map = {};
-  products.forEach((p) => (map[p.id] = new Set()));
-  team.forEach((u) => {
-    if (u.role === "admin" || u.id === member.id) return;
-    (u.assigned_products || []).forEach((pid) => map[pid]?.add(u.id));
-  });
-  if (member && selected) selected.forEach((pid) => map[pid]?.add(member.id));
-  return map;
-}
-
-const canSee = (owners, userId) => owners.size === 0 || owners.has(userId);
 
 export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
   const [state, setState] = useState({ loading: true, error: "", products: [] });
   const [selected, setSelected] = useState(() => new Set(member.assigned_products || []));
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
+  const disabled = member.is_active === false;
 
   useEffect(() => {
     let alive = true;
     Promise.all([listProducts(undefined, false), getMemberProducts(member.id)])
       .then(([p, mine]) => {
         if (!alive) return;
-        const products = (Array.isArray(p) ? p : p?.products || []).filter((x) => x.is_active);
+        // Products with a live round, and existing products that stay open without one.
+        const products = (Array.isArray(p) ? p : p?.products || []).filter((x) => x.is_active && (x.live_round || x.needs_round === false));
         setState({ loading: false, error: "", products });
         setSelected(new Set(mine?.product_ids || [])); // the server's current truth
       })
@@ -279,10 +268,9 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
     };
   }, [member.id]);
 
-  const people = team.filter((u) => u.role !== "admin");
-  const nameOf = (id) => (id === member.id ? firstName(member.name) : firstName(people.find((u) => u.id === id)?.name || "Someone"));
-  const before = ownersMap(team, state.products, member, new Set(member.assigned_products || []));
-  const after = ownersMap(team, state.products, member, selected);
+  // Others already assigned to each live round (from the team list).
+  const others = (pid) =>
+    team.filter((u) => u.role === "executive" && u.id !== member.id && (u.assigned_products || []).includes(pid)).map((u) => firstName(u.name));
 
   const toggle = (id) =>
     setSelected((cur) => {
@@ -291,30 +279,12 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
       return next;
     });
 
-  // What this person will see, and what changes for everyone else.
-  const willSee = state.products.filter((p) => canSee(after[p.id], member.id));
-  const changes = people
-    .filter((u) => u.id !== member.id)
-    .map((u) => ({
-      user: u,
-      lose: state.products.filter((p) => canSee(before[p.id], u.id) && !canSee(after[p.id], u.id)),
-      gain: state.products.filter((p) => !canSee(before[p.id], u.id) && canSee(after[p.id], u.id)),
-    }))
-    .filter((c) => c.lose.length || c.gain.length);
-
-  const audience = (pid) => {
-    const owners = after[pid] || new Set();
-    if (!owners.size) return { tone: "open", text: "Everyone" };
-    const names = [...owners].map(nameOf);
-    const mine = owners.has(member.id);
-    return { tone: mine ? "mine" : "other", text: mine ? names.join(", ") : `Only ${names.join(", ")}` };
-  };
-
   const query = q.trim().toLowerCase();
   const groups = {};
   state.products
     .filter((p) => !query || `${p.name} ${p.sku || ""} ${p.category_name || ""}`.toLowerCase().includes(query))
     .forEach((p) => (groups[p.category_name || "Other"] ||= []).push(p));
+  const chosen = state.products.filter((p) => selected.has(p.id));
 
   const save = async () => {
     setBusy(true);
@@ -331,37 +301,44 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
   return (
     <Modal
       title={`What can ${member.name} survey?`}
-      subtitle={`Tick the products you give to ${first}. A product given to someone is shown only to them; products given to nobody are shown to everyone.`}
+      subtitle={`Tick what ${first} surveys. Only the people you assign see a product; existing products are open to everyone until you assign people, and each new round the Super Admin starts is assigned again.`}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" disabled={busy || state.loading} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+          <button type="button" className="btn btn-primary" disabled={busy || state.loading || disabled} onClick={save}>{busy ? "Saving…" : "Save"}</button>
         </>
       }
     >
+      {disabled && (
+        <p className="form-error" role="alert">{member.name} is disabled. Reactivate them on the Team page to assign products.</p>
+      )}
       <input className="input" type="search" placeholder="Search products" value={q} onChange={(e) => setQ(e.target.value)} />
       {state.error && <p className="form-error" role="alert">{state.error}</p>}
       {state.loading ? (
         <p className="muted">Loading…</p>
+      ) : !state.products.length ? (
+        <p className="muted">No product has a live round. The Super Admin starts rounds; you can assign them here once started.</p>
       ) : (
         <>
           <div className="assign-list">
             {Object.entries(groups).map(([cat, items]) => (
-              <fieldset key={cat} className="assign-group">
+              <fieldset key={cat} className="assign-group" disabled={disabled}>
                 <legend>{cat}</legend>
                 {items.map((p) => {
-                  const a = audience(p.id);
+                  const also = others(p.id);
                   return (
                     <label key={p.id} className={`assign-item${selected.has(p.id) ? " is-on" : ""}`}>
                       <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                       <span className="assign-item-text">
                         <strong>{p.name}</strong>
-                        <span className="muted">{p.sku || "No SKU"}</span>
+                        <span className="muted">
+                          {p.live_round ? `Round ${p.live_round.number}` : "Existing product · open to everyone unless you assign people"}
+                          {p.sku ? ` · ${p.sku}` : ""}
+                        </span>
                       </span>
-                      <span className={`audience audience-${a.tone}`} title="Who can survey this product">
-                        {a.tone === "open" ? "👥 " : "🔒 "}
-                        {a.text}
+                      <span className={`audience audience-${also.length ? "other" : "open"}`} title="Also assigned">
+                        {also.length ? `Also: ${also.join(", ")}` : p.live_round ? "Nobody else yet" : "Everyone"}
                       </span>
                     </label>
                   );
@@ -373,22 +350,9 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
 
           <div className="assign-result" role="status" aria-live="polite">
             <p className="assign-result-main">
-              <strong>{first} will see {willSee.length} of {state.products.length} {state.products.length === 1 ? "product" : "products"}</strong>
-              {willSee.length > 0 && willSee.length < state.products.length && (
-                <span className="muted">: {willSee.map((p) => p.name).join(", ")}</span>
-              )}
-              {willSee.length === state.products.length && <span className="muted"> (all of them)</span>}
+              <strong>{first} is assigned {chosen.length} of {state.products.length} open {state.products.length === 1 ? "product" : "products"}</strong>
+              {chosen.length > 0 && <span className="muted">: {chosen.map((p) => p.name).join(", ")}</span>}
             </p>
-            {changes.map((c) => (
-              <p key={c.user.id} className="assign-result-other">
-                {c.lose.length > 0 && (
-                  <span className="lose">⚠ {c.user.name} will no longer see: {c.lose.map((p) => p.name).join(", ")}</span>
-                )}
-                {c.gain.length > 0 && (
-                  <span className="gain">{c.user.name} will now also see: {c.gain.map((p) => p.name).join(", ")}</span>
-                )}
-              </p>
-            ))}
           </div>
         </>
       )}

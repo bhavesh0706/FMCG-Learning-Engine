@@ -282,7 +282,7 @@ class _NotificationDetails extends StatelessWidget {
       chipFg = action == 'deleted' || action == 'deactivated' ? AppColors.warn : AppColors.brand;
       add(n.text('entity') == 'category' ? 'Category' : 'Product', n.text('name'));
       final who = n.text('client_name');
-      add('Changed by', who == null ? null : '$who (Organization)');
+      add('Changed by', who == null ? null : '$who (Super Admin)');
       add('Changed', formatDate(n.time('changed_at') ?? n.createdAt));
     }
     final changes = n.data['changes'] is List

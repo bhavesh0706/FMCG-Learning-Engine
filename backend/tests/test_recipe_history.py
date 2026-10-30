@@ -7,7 +7,7 @@ Versions saved by admins before that rule exist in older databases: they are
 created here directly in the database (_legacy_admin_version).
 """
 
-from conftest import auth, make_user
+from conftest import auth, make_user, open_round
 
 from app.database.models import Notification, Product, RecipeVersion
 
@@ -109,6 +109,7 @@ def test_organization_change_rings_the_admin_bell(client, db, admin, alice, prod
 def test_catalog_shows_who_changed_the_recipe_last(client, db, admin, product):
     brand = _client_for(client, db, admin, product, name="Acme Badge")
     client.put(f"/products/{product.id}/recipe", headers=auth(brand), json=BASE)
+    open_round(db, product)  # admins see the product once a round has started
     listed = {p["id"]: p for p in client.get("/products?include_inactive=true", headers=auth(admin)).json()["products"]}
     change = listed[product.id]["recipe_change"]
     assert change["by_role"] == "client" and change["by_name"] == "Acme Badge" and change["version"] == 1 and change["at"]

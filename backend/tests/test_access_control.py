@@ -6,7 +6,7 @@ get 404 (not 403), so record IDs can't be probed.
 
 from datetime import datetime
 
-from conftest import answers_payload, auth, start_survey
+from conftest import answers_payload, assign, auth, start_survey
 
 from app.database.models import AnalysisJob, FeedbackRecord, SurveyResponse
 
@@ -52,8 +52,9 @@ def test_other_survey_person_cannot_write_answers_or_submit(client, db, alice, b
     assert client.post(f"/surveys/responses/{ids['response_id']}/submit", headers=auth(alice)).status_code == 200
 
 
-def test_cannot_start_a_survey_with_someone_elses_customer(client, alice, bob, product):
+def test_cannot_start_a_survey_with_someone_elses_customer(client, db, alice, bob, product):
     ids = start_survey(client, alice, product)
+    assign(db, product, bob)  # bob may survey the product, but not with alice's customer
     r = client.post(
         "/surveys/responses",
         headers=auth(bob),

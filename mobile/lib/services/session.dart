@@ -117,7 +117,7 @@ class Session {
   /// How the account's role is shown (Settings, profile).
   static String get roleLabel => switch (user.value?.role) {
         kRoleAdmin => 'Admin',
-        kRoleClient => 'Organization',
+        kRoleClient => 'Super Admin',
         kRoleExecutive => 'Survey executive',
         _ => 'Unknown role',
       };

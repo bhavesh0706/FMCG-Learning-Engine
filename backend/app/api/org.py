@@ -40,7 +40,7 @@ from app.database.models import Category, Product, RecipeVersion, SurveyResponse
 from app.services import rounds as R
 from app.services.recipe_versions import changes_between, version_out
 
-router = APIRouter(prefix="/org", tags=["Organization portal"])
+router = APIRouter(prefix="/org", tags=["Super Admin portal"])
 
 UPDATES_LIMIT = 200
 NEW_ACCOUNT_UNREAD_DAYS = 14

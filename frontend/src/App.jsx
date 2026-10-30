@@ -1767,7 +1767,7 @@ function ProductBadges({ product }) {
   return (
     <span className="product-badges">
       {r && <span className="round-chip is-live">Round {r.number} · {r.done} of {r.target}</span>}
-      {orgRecipe && <span className="status-chip is-act">Recipe v{c.version} by {c.by_name || "the organization"} · {timeAgo(c.at)}</span>}
+      {orgRecipe && <span className="status-chip is-act">Recipe v{c.version} by {c.by_name || "the Super Admin"} · {timeAgo(c.at)}</span>}
     </span>
   );
 }
@@ -2466,18 +2466,43 @@ function TeamPage() {
   const [notice, setNotice] = useState("");
   const [dialog, setDialog] = useState(null); // { type: "add" | "credentials" | "reset" | "products", member?, password?, linked? }
   const [productNames, setProductNames] = useState({}); // id -> name, for the Products column
+  const [liveIds, setLiveIds] = useState([]); // products with a live round (the Super Admin started it)
   useEffect(() => {
     getProducts()
-      .then((res) => setProductNames(Object.fromEntries(listOf(res, "products").map((p) => [p.id, p.name]))))
+      .then((res) => {
+        const products = listOf(res, "products");
+        setProductNames(Object.fromEntries(products.map((p) => [p.id, p.name])));
+        // Surveyable now: a live round, or an existing product open without a round.
+        setLiveIds(products.filter((p) => p.live_round || p.needs_round === false).map((p) => p.id));
+      })
       .catch(() => {});
   }, []);
 
-  // What each executive can actually survey: a product given to nobody is open to all;
-  // a product given to someone is shown only to the people it's given to.
-  const allProductIds = Object.keys(productNames).map(Number);
-  const owners = {};
-  data.users.forEach((u) => (u.role === "executive" ? u.assigned_products || [] : []).forEach((pid) => (owners[pid] ||= new Set()).add(u.id)));
-  const visibleTo = (u) => allProductIds.filter((pid) => !owners[pid] || owners[pid].has(u.id));
+  // What each survey person surveys: the live rounds an admin assigned to them.
+  // Nothing is open to everyone; each new round is assigned again.
+  const visibleTo = (u) => (u.assigned_products || []).filter((pid) => liveIds.includes(pid));
+
+  // Disable / reactivate a member (their account and surveys are always kept).
+  const toggleActive = async (user) => {
+    const disabling = !!user.is_active;
+    const ok = await confirmDialog(
+      disabling
+        ? {
+            title: `Disable ${user.name}?`,
+            message: `${user.name} is signed out everywhere and can't log in to the app or the web. They can't be assigned to products while disabled. Their surveys, assignments history and activity log are kept, and you can reactivate them at any time.`,
+            confirmLabel: "Disable",
+            cancelLabel: "Cancel",
+          }
+        : {
+            title: `Reactivate ${user.name}?`,
+            message: `${user.name} can log in again with their current password. Assign them to live rounds to give them products to survey.`,
+            confirmLabel: "Reactivate",
+            cancelLabel: "Cancel",
+          }
+    );
+    if (!ok) return;
+    change(user, { is_active: !disabling }, disabling ? `${user.name} is disabled and signed out everywhere.` : `${user.name} is active again and can log in.`);
+  };
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setData((d) => ({ ...d, loading: true, error: "" }));
@@ -2623,7 +2648,7 @@ function TeamPage() {
                   <th scope="col" className="col-category">Last login</th>
                   <th scope="col">Can survey</th>
                   <th scope="col">Survey history</th>
-                  <th scope="col">Active</th>
+                  <th scope="col">Status</th>
                   <th scope="col"><span className="visually-hidden">Actions</span></th>
                 </tr>
               </thead>
@@ -2663,13 +2688,13 @@ function TeamPage() {
                           <td className="cell-products">
                             {(() => {
                               const mine = visibleTo(u);
-                              const total = allProductIds.length;
+                              const total = liveIds.length;
                               const names = mine.map((pid) => productNames[pid]).filter(Boolean);
                               return (
                                 <button type="button" className="assign-btn" onClick={() => setDialog({ type: "products", member: u })}
-                                  title={names.length ? `Can survey: ${names.join(", ")}` : "Can't survey any product yet"}>
+                                  title={names.length ? `Can survey: ${names.join(", ")}` : "Nothing to survey yet"}>
                                   <strong className={mine.length ? "" : "assign-none"}>
-                                    {total && mine.length === total ? `All ${total} products` : `${mine.length} of ${total} products`}
+                                    {!total ? "Nothing open" : mine.length ? `${mine.length} of ${total} open` : "Not assigned"}
                                   </strong>
                                   <span className="assign-edit">Manage</span>
                                 </button>
@@ -2690,14 +2715,15 @@ function TeamPage() {
                       )}
 
                       <td>
-                        <Switch
-                          checked={!!u.is_active}
-                          disabled={saving[u.id]}
-                          label={`${u.name} active`}
-                          onChange={(v) =>
-                            change(u, { is_active: v }, v ? `${u.name} can log in again.` : `${u.name} is disabled and signed out of the app.`)
-                          }
-                        />
+                        <div className="member-status">
+                          <span className={`status-chip ${u.is_active ? "is-ok" : "is-neg"}`}>{u.is_active ? "Active" : "Disabled"}</span>
+                          {u.id !== getSession()?.user?.id && (
+                            <button type="button" className="link-btn" disabled={saving[u.id]} onClick={() => toggleActive(u)}
+                              aria-label={`${u.is_active ? "Disable" : "Reactivate"} ${u.name}`}>
+                              {u.is_active ? "Disable" : "Reactivate"}
+                            </button>
+                          )}
+                        </div>
                       </td>
                       <td className="cell-action">
                         <div className="team-actions">
@@ -2723,9 +2749,10 @@ function TeamPage() {
             On the web, executives always see the full analysis of the surveys they took (My surveys).
           </p>
           <p>
-            <strong>Active</strong> on: they can log in and take surveys. Off: their login is refused and they're signed out
-            of the app; their account and surveys are kept, and switching it back on restores access. Use it instead of
-            deleting someone who leaves or should be paused.
+            <strong>Disable</strong> a member who leaves or should be paused: they're signed out everywhere, can't log in
+            and can't be assigned. Their account, surveys and activity are kept; <strong>Reactivate</strong> restores access.
+            <strong> Can survey</strong> shows the live rounds assigned to each person: the Super Admin starts every round,
+            then you assign it (Manage, or Catalog → product → Who can survey).
           </p>
           <p>
             <strong>Sign out everywhere</strong> ends every sign-in of that person at once (a lost or shared phone) without
@@ -4335,7 +4362,7 @@ const SLUG_PAGE = Object.fromEntries(Object.entries(PAGE_SLUG).map(([k, v]) => [
 const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", catalog: "Catalog", team: "Team" };
 
 const roleOf = (user) => (user?.role === "admin" ? "admin" : user?.role === "client" ? "client" : "executive");
-const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Organization" };
+const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Super Admin" };
 const pageFromHash = () => SLUG_PAGE[(window.location.hash || "").replace(/^#\/?/, "").split(/[/?]/)[0]] || null;
 
 function UserMenu({ user }) {

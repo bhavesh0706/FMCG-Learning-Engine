@@ -92,10 +92,15 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   bool _silentConfirmed = false; // "use it anyway" for a recording that seems silent
 
   // GPS for this survey: locating | ok | off (service off) | denied | failed
-  String _gps = 'locating';
+  String _gps = 'locating'; // locating | resolving | ok | off | denied | deniedForever | failed
   double? _lat;
   double? _lng;
   double? _accuracy;
+  String? _place; // readable address from GPS (GET /geo/reverse)
+  String? _placeError;
+  // Survey location text that came from GPS or the previous survey: a new GPS
+  // address may replace it, but text the survey person typed is never replaced.
+  String? _autoLocationText;
 
   int _step = 0;
   String? _error;
@@ -118,6 +123,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     // Signed in: the survey is done by this account's executive.
     _executive.text = Session.user.value?.name ?? AppProfile.executiveName.value;
     _surveyLocation.text = AppProfile.lastSurveyLocation.value;
+    _autoLocationText = _surveyLocation.text;
     _usage = widget.keepUsage;
     _loadCatalog();
     _captureLocation();
@@ -135,7 +141,11 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       if (permission == LocationPermission.denied && ask) {
         permission = await Geolocator.requestPermission();
       }
-      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+      if (permission == LocationPermission.deniedForever) {
+        if (mounted) setState(() => _gps = 'deniedForever');
+        return;
+      }
+      if (permission == LocationPermission.denied) {
         if (mounted) setState(() => _gps = 'denied');
         return;
       }
@@ -147,10 +157,35 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         _lat = double.parse(pos.latitude.toStringAsFixed(6));
         _lng = double.parse(pos.longitude.toStringAsFixed(6));
         _accuracy = pos.accuracy;
-        _gps = 'ok';
+        _gps = 'resolving';
+        _placeError = null;
       });
     } catch (_) {
       if (mounted) setState(() => _gps = 'failed');
+      return;
+    }
+    // Coordinates -> readable address, filled into Survey location.
+    try {
+      final place = await _api.reverseGeocode(_lat!, _lng!);
+      final label = '${place['label'] ?? ''}'.trim();
+      if (!mounted) return;
+      setState(() {
+        _gps = 'ok';
+        _place = label.isEmpty ? null : label;
+        final current = _surveyLocation.text.trim();
+        if (label.isNotEmpty && (current.isEmpty || current == (_autoLocationText ?? '').trim())) {
+          _surveyLocation.text = label;
+          _autoLocationText = label;
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _gps = 'ok'; // the coordinates are still saved with the survey
+          _place = null;
+          _placeError = '$e';
+        });
+      }
     }
   }
 
@@ -885,11 +920,15 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
 
   Widget _locationRow() {
     final (IconData icon, Color color, String text, bool retry) = switch (_gps) {
-      'ok' => (Icons.location_on_rounded, AppColors.pos, 'Location added (±${(_accuracy ?? 0).round()} m)', false),
+      'ok' when _place != null => (Icons.location_on_rounded, AppColors.pos, '$_place (±${(_accuracy ?? 0).round()} m)', false),
+      'ok' => (Icons.location_on_rounded, AppColors.warn,
+          'Location added (±${(_accuracy ?? 0).round()} m). ${_placeError ?? 'Address not found: type the survey location.'}', false),
       'locating' => (Icons.my_location_rounded, AppColors.muted, 'Finding location…', false),
-      'off' => (Icons.location_off_rounded, AppColors.warn, 'Location is off on this phone', true),
-      'denied' => (Icons.location_disabled_rounded, AppColors.warn, 'Location not allowed (optional)', true),
-      _ => (Icons.location_searching_rounded, AppColors.warn, "Couldn't get the location (optional)", true),
+      'resolving' => (Icons.my_location_rounded, AppColors.muted, 'Finding the address…', false),
+      'off' => (Icons.location_off_rounded, AppColors.warn, 'Location is off on this phone. Turn it on, or type the location.', true),
+      'denied' => (Icons.location_disabled_rounded, AppColors.warn, 'Location not allowed. Allow it, or type the location.', true),
+      'deniedForever' => (Icons.location_disabled_rounded, AppColors.warn, 'Location is blocked for this app. Allow it in Settings, or type the location.', true),
+      _ => (Icons.location_searching_rounded, AppColors.warn, "Couldn't get the location. Try again, or type it.", true),
     };
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
@@ -899,11 +938,15 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           Icon(icon, size: 20, color: color),
           const SizedBox(width: 8),
           Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: AppColors.ink2))),
-          if (_gps == 'locating')
+          if (_gps == 'locating' || _gps == 'resolving')
             const Padding(
               padding: EdgeInsets.all(10),
               child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
             )
+          else if (_gps == 'off')
+            TextButton(onPressed: () async { await Geolocator.openLocationSettings(); }, child: const Text('Turn on'))
+          else if (_gps == 'deniedForever')
+            TextButton(onPressed: () async { await Geolocator.openAppSettings(); }, child: const Text('Settings'))
           else if (retry)
             TextButton(onPressed: () => _captureLocation(ask: true), child: const Text('Try again'))
           else

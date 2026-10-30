@@ -83,12 +83,96 @@ def run_migrations():
     _add_column("consolidated_reports", "round_id", "INT NULL", index=True)
     _add_column("users", "must_change_password", "INT NOT NULL DEFAULT 0")
     _add_column("users", "updates_seen_at", "DATETIME NULL")
+    # Assignments per survey round (the Admin assigns every round the Super Admin starts).
+    had_round_column = _has_column("product_assignments", "round_id")
+    _add_column("product_assignments", "round_id", "INT NULL", index=True)
+    _assignment_unique_per_round()
+    if not had_round_column:
+        scope_assignments_to_rounds()
+    # Products already surveyed before rounds were required stay open as before.
+    had_needs_round = _has_column("products", "needs_round")
+    _add_column("products", "needs_round", "INT NOT NULL DEFAULT 1")
+    if not had_needs_round:
+        with engine.begin() as conn:
+            done = conn.execute(text(
+                "UPDATE products SET needs_round = 0 WHERE id IN (SELECT DISTINCT product_id FROM survey_responses)"
+            )).rowcount
+        if done:
+            print(f"Database updated: {done} existing products stay open without a round")
 
     # 3. Data steps (each one does nothing once done).
     backfill_feedback_tone()
     link_unclaimed_surveys()
     create_first_rounds()
     backfill_survey_versions()
+
+
+def _assignment_unique_per_round():
+    """One row per (round, survey person) instead of per (survey person, product)."""
+    if _has_index("product_assignments", "uq_assignment_user_product"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE product_assignments DROP INDEX uq_assignment_user_product"))
+        except (OperationalError, ProgrammingError):
+            pass  # SQLite keeps table constraints; MySQL (production) drops it
+    if not _has_index("product_assignments", "uq_assignment_round_user"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE UNIQUE INDEX uq_assignment_round_user ON product_assignments (round_id, user_id)"))
+        except (OperationalError, ProgrammingError) as e:
+            if not _already_exists(e):
+                raise
+
+
+def scope_assignments_to_rounds() -> int:
+    """
+    Runs once, when product_assignments gets round_id. Before, a product with no
+    assignment was open to every executive and assignments were per product.
+    So that fieldwork in progress isn't interrupted:
+      - every LIVE round gets the people who could survey it until now: the product's
+        assigned executives, or every active executive if it was open to everyone;
+      - older assignment rows are kept as history on the product's latest round.
+    New rounds after this need an Admin's assignment.
+    """
+    from app.database.models import ProductAssignment, SurveyRound, User
+
+    db = SessionLocal()
+    try:
+        legacy = db.query(ProductAssignment).filter(ProductAssignment.round_id.is_(None)).all()
+        by_product: dict = {}
+        for row in legacy:
+            by_product.setdefault(row.product_id, set()).add(row.user_id)
+        active_execs = {uid for (uid,) in db.query(User.id).filter(User.role == "executive", User.is_active == 1).all()}
+        existing = {(rid, uid) for rid, uid in db.query(ProductAssignment.round_id, ProductAssignment.user_id)
+                    .filter(ProductAssignment.round_id.isnot(None)).all()}
+        added = 0
+        for r in db.query(SurveyRound).filter(SurveyRound.status == "live").all():
+            if any(rid == r.id for rid, _ in existing):
+                continue  # this round's people were already chosen
+            people = by_product.get(r.product_id) or active_execs
+            for uid in people:
+                if (r.id, uid) not in existing:
+                    db.add(ProductAssignment(user_id=uid, product_id=r.product_id, round_id=r.id))
+                    existing.add((r.id, uid))
+                    added += 1
+        for row in legacy:
+            db.delete(row)  # replaced above (live rounds) or kept below as history
+        db.flush()
+        for product_id, users in by_product.items():
+            latest = (db.query(SurveyRound).filter(SurveyRound.product_id == product_id)
+                      .order_by(SurveyRound.number.desc()).first())
+            if latest is None or latest.status == "live":
+                continue  # never started (no history) or already handled above
+            for uid in users:
+                if (latest.id, uid) not in existing:
+                    db.add(ProductAssignment(user_id=uid, product_id=product_id, round_id=latest.id))
+                    existing.add((latest.id, uid))
+        db.commit()
+        if added:
+            print(f"Database updated: {added} live-round assignments kept for survey persons")
+        return added
+    finally:
+        db.close()
 
 
 def backfill_survey_versions() -> int:

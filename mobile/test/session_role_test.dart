@@ -70,7 +70,7 @@ void main() {
       signInAs('admin');
       expect(Session.roleLabel, 'Admin');
       signInAs('client');
-      expect(Session.roleLabel, 'Organization');
+      expect(Session.roleLabel, 'Super Admin');
       signInAs('executive');
       expect(Session.roleLabel, 'Survey executive');
     });

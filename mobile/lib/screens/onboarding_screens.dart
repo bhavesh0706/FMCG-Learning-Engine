@@ -326,8 +326,47 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
+/// Wording per role on the login screen ("Signing in as"). It never decides access:
+/// the account's role on the server picks the dashboard (nextScreen()).
+class _RoleCopy {
+  const _RoleCopy(this.tab, this.title, this.sub, this.label, this.keyboard, this.forgot, this.foot);
+  final String tab, title, sub, label, forgot, foot;
+  final TextInputType keyboard;
+}
+
+const _roleCopy = <String, _RoleCopy>{
+  'executive': _RoleCopy(
+    'Survey person',
+    'Sign in to take surveys',
+    'Use the mobile number and password your admin gave you.',
+    'Mobile number',
+    TextInputType.phone,
+    'Ask your admin to reset it on the Team page, then sign in with the new password.',
+    'No account yet? Ask your admin to add you.',
+  ),
+  'admin': _RoleCopy(
+    'Admin',
+    'Admin sign-in',
+    'Manage products, your survey team and reports.',
+    'Email or mobile number',
+    TextInputType.emailAddress,
+    "Ask another admin to set a new password for you. If you're the only admin, contact whoever runs your server.",
+    'Admin accounts are created at setup or by another admin.',
+  ),
+  'client': _RoleCopy(
+    'Super Admin',
+    'Super Admin sign-in',
+    'See your consumer reports and manage your products, recipes and rounds.',
+    'Work email',
+    TextInputType.emailAddress,
+    "Contact the research team. They'll give you a one-time password; you choose your own the first time you sign in.",
+    "Your Super Admin login is created by the research team.",
+  ),
+};
+
 class _AuthScreenState extends State<AuthScreen> {
   late bool _signup = widget.signup;
+  String _role = AppProfile.loginRole;
   final _name = TextEditingController();
   final _id = TextEditingController();
   final _password = TextEditingController();
@@ -382,6 +421,12 @@ class _AuthScreenState extends State<AuthScreen> {
       } else {
         await Session.login(_id.text, _password.text);
       }
+      // Next time the screen opens on this account's real role.
+      final signedInRole = Session.user.value?.role;
+      if (signedInRole != null && _roleCopy.containsKey(signedInRole)) {
+        AppProfile.loginRole = signedInRole;
+        await AppProfile.save();
+      }
       if (!mounted) return;
       // Survey history exists for survey persons and admins (not the organization,
       // and nothing works before a required password change).
@@ -394,12 +439,21 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
+  void _chooseRole(String role) {
+    setState(() {
+      _role = role;
+      _error = null;
+    });
+    AppProfile.loginRole = role;
+    AppProfile.save();
+  }
+
   void _forgot() {
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Forgot your password?'),
-        content: const Text('Ask your supervisor or admin to reset it for you. Then log in with the new password.'),
+        content: Text(_roleCopy[_role]!.forgot),
         actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
       ),
     );
@@ -436,15 +490,14 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final copy = _roleCopy[_role] ?? _roleCopy['executive']!;
     return _SheetScaffold(
-      title: _signup ? 'Create account' : 'Log in',
-      subtitle: _signup
-          ? 'Your name is added to every survey you do.'
-          : 'Sign in with the mobile number or email your admin gave you.',
+      title: _signup ? 'Create account' : copy.title,
+      subtitle: _signup ? 'Your name is added to every survey you do.' : copy.sub,
       onBack: () => Navigator.of(context).maybePop(),
-      // Accounts are created by the admin (web Team page); self sign-up is off.
+      // Accounts are created by the admin (web Team page) or the research team; self sign-up is off.
       footer: Text(
-        'No account yet? Ask your admin to add you.',
+        _signup ? 'No account yet? Ask your admin to add you.' : copy.foot,
         textAlign: TextAlign.center,
         style: TextStyle(fontSize: 13.5, color: AppColors.muted),
       ),
@@ -452,9 +505,30 @@ class _AuthScreenState extends State<AuthScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            if (!_signup) ...[
+              Text('Signing in as',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.muted)),
+              const SizedBox(height: 6),
+              SegmentedButton<String>(
+                showSelectedIcon: false,
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                segments: [
+                  for (final e in _roleCopy.entries)
+                    ButtonSegment<String>(
+                      value: e.key,
+                      label: Text(e.value.tab, textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(fontSize: 12.5)),
+                    ),
+                ],
+                selected: {_role},
+                onSelectionChanged: (s) => _chooseRole(s.first),
+              ),
+              const SizedBox(height: 16),
+            ],
             if (_signup) _field(_name, 'Full name', keyboard: TextInputType.name, autofill: const [AutofillHints.name]),
-            _field(_id, 'Mobile number or email',
-                keyboard: TextInputType.emailAddress, autofill: const [AutofillHints.telephoneNumber, AutofillHints.email]),
+            _field(_id, _signup ? 'Mobile number or email' : copy.label,
+                keyboard: _signup ? TextInputType.emailAddress : copy.keyboard,
+                autofill: const [AutofillHints.telephoneNumber, AutofillHints.email]),
             _field(_password, _signup ? 'Password (8+ letters and numbers)' : 'Password',
                 password: true,
                 autofill: [_signup ? AutofillHints.newPassword : AutofillHints.password],

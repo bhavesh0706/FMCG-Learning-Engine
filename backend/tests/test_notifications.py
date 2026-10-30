@@ -5,7 +5,7 @@ product-assigned notices for survey persons, missing-video notices for admins.
 
 from datetime import datetime, timedelta
 
-from conftest import auth, make_user
+from conftest import auth, make_user, open_round
 
 import app.services.notifications as svc
 from app.database.models import AnalysisJob, Category, Notification, Product, Respondent, SurveyResponse
@@ -23,6 +23,8 @@ def _catalog(db):
     second = Product(category_id=category.id, name="Aam Jelly", is_active=1)
     db.add_all([first, second])
     db.commit()
+    open_round(db, first)  # the Super Admin has started a round of each (admins assign live rounds)
+    open_round(db, second)
     return category, first, second
 
 
@@ -45,8 +47,10 @@ def test_product_assignment_notifications(client, db):
     client.put(f"/admin/users/{riya.id}/products", json={"product_ids": [p1.id, p2.id]}, headers=auth(admin))
     assert _unread(client, riya) == 2, "a second product: one more"
 
-    # Catalog page: assign executives to a product
-    client.put(f"/admin/products/{p1.id}/executives", json={"user_ids": [riya.id, amit.id, other_admin.id]}, headers=auth(admin))
+    # Catalog page: assign survey persons to a product's live round (admins can't be assigned)
+    bad = client.put(f"/admin/products/{p1.id}/executives", json={"user_ids": [riya.id, amit.id, other_admin.id]}, headers=auth(admin))
+    assert bad.status_code == 400 and "survey persons" in bad.json()["detail"]
+    client.put(f"/admin/products/{p1.id}/executives", json={"user_ids": [riya.id, amit.id]}, headers=auth(admin))
     assert _unread(client, amit) == 1
     assert _unread(client, riya) == 2, "already had it: not notified again"
     assert _unread(client, other_admin) == 0, "admins are not notified about assignments"

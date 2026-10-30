@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, load_only
 
 from app.services.recordings import resolve_recording
@@ -223,6 +223,8 @@ def products_with_feedback(db: Session = Depends(get_db)):
         db.query(Product, Category)
         .join(Category, Category.id == Product.category_id)
         .filter(Product.is_active == 1, Category.is_active == 1)
+        # Admins see a product once the Super Admin has started its first round.
+        .filter(Product.id.in_(select(SurveyRound.product_id).distinct()))
         .all()
     )
     by_product = defaultdict(list)
@@ -511,7 +513,8 @@ def product_feedback(
     from app.services.rounds import round_by_number
 
     product = db.get(Product, product_id)
-    if not product:
+    if not product or not db.query(SurveyRound.id).filter(SurveyRound.product_id == product_id).first():
+        # Not visible to admins before the Super Admin starts its first round.
         raise HTTPException(status_code=404, detail="Product not found.")
     category = db.get(Category, product.category_id)
     selected = None

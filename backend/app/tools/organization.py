@@ -52,18 +52,18 @@ def _email(value: str) -> str:
 def _find(db, email: str) -> User:
     user = db.query(User).filter(User.email == email).first()
     if user is None or user.role != ROLE:
-        raise SystemExit(f"No organization login with the email {email}. See: python -m app.tools.organization list")
+        raise SystemExit(f"No Super Admin login with the email {email}. See: python -m app.tools.organization list")
     return user
 
 
 def _show_password(user: User, password: str) -> None:
     print()
-    print(f"  Organization : {user.name}")
+    print(f"  Super Admin : {user.name}")
     print(f"  Sign-in email: {user.email}")
     print(f"  Password     : {password}")
     print()
     print("  This password is shown only now. It works once: at the first sign-in")
-    print("  the organization must choose its own password.")
+    print("  the Super Admin must choose their own password.")
     print()
 
 
@@ -71,7 +71,7 @@ def create(args) -> None:
     email = _email(args.email)
     name = " ".join((args.name or "").split())
     if len(name) < 2:
-        raise SystemExit("Enter the organization's name with --name.")
+        raise SystemExit("Enter the Super Admin's name with --name.")
     db = SessionLocal()
     try:
         if db.query(User).filter(User.email == email).first():
@@ -82,7 +82,7 @@ def create(args) -> None:
         db.add(user)
         db.commit()
         db.refresh(user)
-        print("Organization login created.")
+        print("Super Admin login created.")
         _show_password(user, password)
     finally:
         db.close()
@@ -97,7 +97,7 @@ def reset_password(args) -> None:
         user.must_change_password = 1
         sign_out_everywhere(user)
         db.commit()
-        print("New starting password set. Every current sign-in of the organization has ended.")
+        print("New starting password set. Every current sign-in of the Super Admin has ended.")
         _show_password(user, password)
     finally:
         db.close()
@@ -108,7 +108,7 @@ def list_logins(args) -> None:
     try:
         users = db.query(User).filter(User.role == ROLE).order_by(User.name).all()
         if not users:
-            print("No organization login yet. Create one with: python -m app.tools.organization create --name ... --email ...")
+            print("No Super Admin login yet. Create one with: python -m app.tools.organization create --name ... --email ...")
             return
         for u in users:
             state = "active" if u.is_active else "disabled"
@@ -150,17 +150,17 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(prog="python -m app.tools.organization", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("create", help="create the organization's login and print a starting password")
+    p = sub.add_parser("create", help="create the Super Admin's login and print a starting password")
     p.add_argument("--name", required=True)
     p.add_argument("--email", required=True)
-    p = sub.add_parser("reset-password", help="print a new starting password (the organization chooses its own at sign-in)")
+    p = sub.add_parser("reset-password", help="print a new starting password (the Super Admin chooses their own at sign-in)")
     p.add_argument("--email", required=True)
-    sub.add_parser("list", help="show the organization logins")
-    p = sub.add_parser("rename", help="change the organization's name")
+    sub.add_parser("list", help="show the Super Admin logins")
+    p = sub.add_parser("rename", help="change the Super Admin's name")
     p.add_argument("--email", required=True)
     p.add_argument("--name", required=True)
     for cmd in ("disable", "enable"):
-        p = sub.add_parser(cmd, help=f"{cmd} the organization's login")
+        p = sub.add_parser(cmd, help=f"{cmd} the Super Admin's login")
         p.add_argument("--email", required=True)
     args = parser.parse_args(argv)
     run_migrations()  # the columns this needs exist even before the API was started once

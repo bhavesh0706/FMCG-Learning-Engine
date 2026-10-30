@@ -80,7 +80,7 @@ function when(iso) {
 function roleLabel(role) {
   if (role === "admin") return "Admin";
   if (role === "executive") return "Survey person";
-  if (role === "client") return "Organization";
+  if (role === "client") return "Super Admin";
   return "";
 }
 
@@ -167,7 +167,7 @@ export default function ActivityLog() {
         <p className="muted table-empty">Nothing recorded for these filters.</p>
       ) : (
         <div className="table-wrap">
-          <table className="data-table mobile-cards activity-table">
+          <table className="data-table activity-table">
             <caption className="visually-hidden">Activity log, newest first</caption>
             <thead>
               <tr>

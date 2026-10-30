@@ -175,7 +175,7 @@ class AdminHomePage extends StatelessWidget {
               label: surveyed >= d.products.length && d.products.isNotEmpty ? 'Products surveyed · every product has surveys' : 'Products surveyed',
             ),
             _sectionTitle('Products'),
-            if (rows.isEmpty) const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'The organization adds products in its portal.'),
+            if (rows.isEmpty) const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'The Super Admin adds products in their portal.'),
             for (final p in rows) ...[
               _HomeProductRow(
                 feedback: p,
@@ -273,7 +273,7 @@ class _HomeProductRowState extends State<_HomeProductRow> {
         ],
         if (change.isNotEmpty && str(change['by_role']) == 'client') ...[
           const SizedBox(height: 6),
-          Pill('Recipe v${intOf(change['version'])} by ${str(change['by_name'], 'the organization')} · ${agoText(change['at'])}'),
+          Pill('Recipe v${intOf(change['version'])} by ${str(change['by_name'], 'the Super Admin')} · ${agoText(change['at'])}'),
         ],
         const SizedBox(height: 8),
         Row(children: [
@@ -323,7 +323,7 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            Text('The products executives survey. Products and categories are added and changed by the organization.',
+            Text('The products executives survey. Products and categories are added and changed by the Super Admin.',
                 style: TextStyle(color: AppColors.muted, height: 1.4)),
             const SizedBox(height: 12),
             SingleChildScrollView(
@@ -374,7 +374,7 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
                   ]),
                   if (asJson(p['recipe_change']).isNotEmpty && str(asJson(p['recipe_change'])['by_role']) == 'client') ...[
                     const SizedBox(height: 6),
-                    Pill('Updated by ${str(asJson(p['recipe_change'])['by_name'], 'the organization')} · ${agoText(asJson(p['recipe_change'])['at'])}',
+                    Pill('Updated by ${str(asJson(p['recipe_change'])['by_name'], 'the Super Admin')} · ${agoText(asJson(p['recipe_change'])['at'])}',
                         tone: 'warn'),
                   ],
                 ]),
@@ -459,7 +459,7 @@ class _ProductDetailsTab extends StatelessWidget {
     return ListView(padding: const EdgeInsets.all(16), children: [
       Panel(
         color: AppColors.brandSoft,
-        child: Text('Products are added and changed by the organization in its portal. You get a notification for every change.',
+        child: Text('Products are added and changed by the Super Admin in their portal. You get a notification for every change.',
             style: TextStyle(color: AppColors.ink2, height: 1.4)),
       ),
       const SizedBox(height: 10),
@@ -489,10 +489,14 @@ class _WhoCanSurveyTab extends StatefulWidget {
   State<_WhoCanSurveyTab> createState() => _WhoCanSurveyTabState();
 }
 
+/// Who surveys the product's LIVE round: the Super Admin starts each round, an admin
+/// assigns it. Nothing is open to everyone; each new round is assigned again.
 class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
   List<Json>? _people;
+  Json? _round;
+  bool _open = false; // existing product: open to everyone while nobody is chosen
   Set<int> _chosen = {};
-  bool _everyone = true;
+  Set<int> _saved = {};
   bool _saving = false;
   String? _error;
 
@@ -506,11 +510,14 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
     try {
       final r = await Future.wait([AdminApi.team(), AdminApi.productExecutives(widget.productId)]);
       if (!mounted) return;
-      final ids = r[1] as List<int>;
+      final info = r[1] as Json;
+      final ids = (info['user_ids'] is List ? (info['user_ids'] as List) : const []).map((e) => (e as num).toInt()).toSet();
       setState(() {
         _people = (r[0] as List<Json>).where((u) => str(u['role']) == 'executive').toList();
-        _chosen = ids.toSet();
-        _everyone = ids.isEmpty;
+        _round = info['round'] is Map ? asJson(info['round']) : null;
+        _open = info['needs_round'] == false;
+        _chosen = {...ids};
+        _saved = {...ids};
         _error = null;
       });
     } catch (e) {
@@ -519,20 +526,21 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
   }
 
   Future<void> _save() async {
-    if (!_everyone && _chosen.isEmpty) {
-      setState(() => _error = 'Choose at least one executive, or let every executive survey it.');
-      return;
-    }
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      await AdminApi.saveProductExecutives(widget.productId, _everyone ? <int>[] : _chosen.toList());
-      if (mounted) {
-        setState(() => _saving = false);
-        showMessage(context, _everyone ? 'Every executive can survey ${widget.name}.' : 'Only the chosen executives can survey ${widget.name}.');
-      }
+      await AdminApi.saveProductExecutives(widget.productId, _chosen.toList());
+      if (!mounted) return;
+      setState(() {
+        _saving = false;
+        _saved = {..._chosen};
+      });
+      final n = intOf(_round?['number']);
+      showMessage(context, _chosen.isEmpty
+          ? (_open ? '${widget.name} is open to every survey person again.' : 'Nobody is assigned to Round $n of ${widget.name}.')
+          : '${widget.name} is assigned to ${_chosen.length} survey ${_chosen.length == 1 ? 'person' : 'persons'}.');
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -547,29 +555,52 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
   Widget build(BuildContext context) {
     final people = _people;
     if (people == null && _error == null) return const Center(child: CircularProgressIndicator());
+    final round = _round;
+    if (people != null && round == null) {
+      return ListView(padding: const EdgeInsets.all(16), children: [
+        EmptyNote(
+          icon: Icons.flag_outlined,
+          title: 'No live round',
+          text: 'The Super Admin starts the next round of ${widget.name}; you can assign it here once it has started. '
+              'Earlier rounds keep their survey persons as history.',
+        ),
+      ]);
+    }
+    final n = intOf(round?['number']);
+    final active = (people ?? const <Json>[]).where((u) => u['is_active'] != false).toList();
+    final dirty = _chosen.length != _saved.length || !_chosen.containsAll(_saved);
     return ListView(padding: const EdgeInsets.all(16), children: [
-      Text('Decide which survey executives see ${widget.name} in their product list, on the web and in the app.',
+      Text(_open ? 'Who can survey ${widget.name}' : 'Who surveys Round $n',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
+      const SizedBox(height: 4),
+      Text(
+          _open
+              ? 'Surveyed before rounds were needed, so it stays open: every survey person sees it until you choose people. A new recipe version needs the Super Admin to start its round.'
+              : 'Only the survey persons you assign see ${widget.name}, while Round $n is live. Each new round is assigned again.',
           style: TextStyle(color: AppColors.muted, height: 1.4)),
-      const SizedBox(height: 10),
-      SwitchListTile(
-        contentPadding: EdgeInsets.zero,
-        value: _everyone,
-        onChanged: (v) => setState(() => _everyone = v),
-        title: const Text('Every executive'),
-        subtitle: Text(_everyone ? 'The whole team can survey it' : 'Only the executives chosen below; hidden from everyone else'),
-      ),
-      if (!_everyone && people != null)
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(child: Text('${_chosen.length} of ${active.length} selected', style: TextStyle(color: AppColors.muted))),
+        TextButton(onPressed: () => setState(() => _chosen = active.map((u) => intOf(u['id'])).toSet()), child: const Text('Select all')),
+        TextButton(onPressed: () => setState(() => _chosen = {}), child: const Text('Clear')),
+      ]),
+      if (people != null && people.isEmpty) const EmptyNote(icon: Icons.groups_outlined, title: 'No survey persons yet', text: 'Add them on the Team tab.'),
+      if (people != null)
         for (final u in people)
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             value: _chosen.contains(intOf(u['id'])),
-            onChanged: (v) => setState(() => v == true ? _chosen.add(intOf(u['id'])) : _chosen.remove(intOf(u['id']))),
+            onChanged: u['is_active'] == false
+                ? null
+                : (v) => setState(() => v == true ? _chosen.add(intOf(u['id'])) : _chosen.remove(intOf(u['id']))),
             title: Text(str(u['name'])),
-            subtitle: Text(str(u['mobile'], str(u['email']))),
+            subtitle: Text(u['is_active'] == false
+                ? 'Disabled: reactivate on the Team tab to assign'
+                : str(u['mobile'], str(u['email']))),
           ),
       if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
       const SizedBox(height: 12),
-      FilledButton(onPressed: _saving || people == null ? null : _save, child: Text(_saving ? 'Saving…' : 'Save')),
+      FilledButton(onPressed: _saving || !dirty ? null : _save, child: Text(_saving ? 'Saving…' : 'Save')),
     ]);
   }
 }
@@ -586,10 +617,10 @@ class _ProductRoundsTab extends StatelessWidget {
       builder: (context, rounds, reload) {
         final list = [...rounds]..sort((a, b) => intOf(b['number']).compareTo(intOf(a['number'])));
         return ListView(padding: const EdgeInsets.all(16), children: [
-          Text('A round is one batch of consumer surveys for one recipe version. The organization starts and ends rounds.',
+          Text('A round is one batch of consumer surveys for one recipe version. The Super Admin starts and ends rounds.',
               style: TextStyle(color: AppColors.muted, height: 1.4)),
           const SizedBox(height: 10),
-          if (list.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No rounds yet', text: 'The organization starts the first round in its portal.'),
+          if (list.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No rounds yet', text: 'The Super Admin starts the first round in their portal.'),
           for (final r in list) ...[
             Panel(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -748,12 +779,30 @@ class _MemberCard extends StatelessWidget {
       if (ok) await run(() => AdminApi.signOutMember(id), '${str(u['name'])} is signed out everywhere.');
     }
 
+    Future<void> toggleActive() async {
+      final disabling = u['is_active'] != false;
+      final name = str(u['name']);
+      final ok = await confirmAction(
+        context,
+        title: disabling ? 'Disable $name?' : 'Reactivate $name?',
+        message: disabling
+            ? "$name is signed out everywhere and can't log in or be assigned. Their surveys and history are kept; you can reactivate them any time."
+            : '$name can log in again with their current password. Assign them to live rounds to give them products.',
+        confirmLabel: disabling ? 'Disable' : 'Reactivate',
+        cancelLabel: 'Cancel',
+      );
+      if (ok) {
+        await run(() => AdminApi.updateMember(id, {'is_active': !disabling}),
+            disabling ? '$name is disabled and signed out everywhere.' : '$name is active again.');
+      }
+    }
+
     Future<void> manageProducts() async {
       final saved = await showModalBottomSheet<bool>(
         context: context,
         isScrollControlled: true,
         useSafeArea: true,
-        builder: (_) => _ProductsSheet(userId: id, name: str(u['name'])),
+        builder: (_) => _ProductsSheet(userId: id, name: str(u['name']), active: u['is_active'] != false),
       );
       if (saved == true) await onChanged();
     }
@@ -789,7 +838,7 @@ class _MemberCard extends StatelessWidget {
         OutlinedButton.icon(
           onPressed: manageProducts,
           icon: const Icon(Icons.inventory_2_outlined, size: 18),
-          label: Text(assigned == 0 ? 'Can survey: all products · Manage' : 'Can survey: $assigned products · Manage'),
+          label: Text(assigned == 0 ? 'Nothing to survey · Manage' : 'Can survey $assigned ${assigned == 1 ? 'product' : 'products'} · Manage'),
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -799,14 +848,14 @@ class _MemberCard extends StatelessWidget {
           onChanged: (v) => run(() => AdminApi.updateMember(id, {'can_view_history': v}),
               v ? 'Survey history turned on.' : 'Survey history turned off.'),
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          dense: true,
-          title: const Text('Active'),
-          value: u['is_active'] != false,
-          onChanged: (v) => run(() => AdminApi.updateMember(id, {'is_active': v}),
-              v ? '${str(u['name'])} can sign in again.' : '${str(u['name'])} is disabled and signed out.'),
-        ),
+        Row(children: [
+          Text('Status', style: TextStyle(color: AppColors.ink2)),
+          const SizedBox(width: 8),
+          Pill(u['is_active'] == false ? 'Disabled' : 'Active', tone: u['is_active'] == false ? 'neg' : 'ok'),
+          const Spacer(),
+          if (id != Session.user.value?.id)
+            TextButton(onPressed: toggleActive, child: Text(u['is_active'] == false ? 'Reactivate' : 'Disable')),
+        ]),
         Wrap(spacing: 4, children: [
           TextButton(onPressed: resetPassword, child: const Text('Reset password')),
           TextButton(onPressed: signOut, child: const Text('Sign out everywhere')),
@@ -982,19 +1031,21 @@ class _ResetPasswordDialogState extends State<_ResetPasswordDialog> {
 }
 
 class _ProductsSheet extends StatefulWidget {
-  const _ProductsSheet({required this.userId, required this.name});
+  const _ProductsSheet({required this.userId, required this.name, required this.active});
 
   final int userId;
   final String name;
+  final bool active;
 
   @override
   State<_ProductsSheet> createState() => _ProductsSheetState();
 }
 
+/// The live rounds a survey person surveys (by product). Only products whose round
+/// the Super Admin has started; nothing is open to everyone.
 class _ProductsSheetState extends State<_ProductsSheet> {
   List<Json>? _products;
   Set<int> _selected = {};
-  bool _all = true;
   bool _saving = false;
   String? _error;
 
@@ -1008,11 +1059,10 @@ class _ProductsSheetState extends State<_ProductsSheet> {
     try {
       final r = await Future.wait([AdminApi.products(), AdminApi.memberProducts(widget.userId)]);
       if (!mounted) return;
-      final ids = r[1] as List<int>;
       setState(() {
-        _products = r[0] as List<Json>;
-        _selected = ids.toSet();
-        _all = ids.isEmpty;
+        // Products with a live round, and existing products open without one.
+        _products = (r[0] as List<Json>).where((p) => asJson(p['live_round']).isNotEmpty || p['needs_round'] == false).toList();
+        _selected = (r[1] as List<int>).toSet();
       });
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -1020,16 +1070,12 @@ class _ProductsSheetState extends State<_ProductsSheet> {
   }
 
   Future<void> _save() async {
-    if (!_all && _selected.isEmpty) {
-      setState(() => _error = 'Choose at least one product, or allow every product.');
-      return;
-    }
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      await AdminApi.saveMemberProducts(widget.userId, _all ? <int>[] : _selected.toList());
+      await AdminApi.saveMemberProducts(widget.userId, _selected.toList());
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
@@ -1047,35 +1093,42 @@ class _ProductsSheetState extends State<_ProductsSheet> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        Text('Products ${widget.name} can survey', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
-        const SizedBox(height: 10),
-        if (products == null && _error == null) const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator())),
-        if (products != null) ...[
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _all,
-            onChanged: (v) => setState(() => _all = v),
-            title: const Text('Every product'),
-            subtitle: const Text('Except products assigned only to other executives'),
-          ),
-          if (!_all)
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 320),
-              child: ListView(shrinkWrap: true, children: [
-                for (final p in products)
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _selected.contains(intOf(p['id'])),
-                    onChanged: (v) => setState(() => v == true ? _selected.add(intOf(p['id'])) : _selected.remove(intOf(p['id']))),
-                    title: Text(str(p['name'])),
-                    subtitle: Text(str(p['category_name'])),
-                  ),
-              ]),
-            ),
+        Text('What ${widget.name} surveys', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        Text('Only the people you assign see a product. Existing products are open to everyone until you assign people; each new round the Super Admin starts is assigned again.',
+            style: TextStyle(color: AppColors.muted, height: 1.4)),
+        if (!widget.active) ...[
+          const SizedBox(height: 8),
+          Text('${widget.name} is disabled. Reactivate them to assign products.', style: TextStyle(color: AppColors.neg)),
         ],
+        const SizedBox(height: 8),
+        if (products == null && _error == null) const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator())),
+        if (products != null && products.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: Text('No product has a live round. The Super Admin starts rounds; assign them here once started.'),
+          ),
+        if (products != null && products.isNotEmpty)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 360),
+            child: ListView(shrinkWrap: true, children: [
+              for (final p in products)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _selected.contains(intOf(p['id'])),
+                  onChanged: !widget.active
+                      ? null
+                      : (v) => setState(() => v == true ? _selected.add(intOf(p['id'])) : _selected.remove(intOf(p['id']))),
+                  title: Text(str(p['name'])),
+                  subtitle: Text(asJson(p['live_round']).isNotEmpty
+                      ? 'Round ${intOf(asJson(p['live_round'])['number'])} · ${str(p['category_name'])}'
+                      : 'Existing product · open to everyone unless you assign people'),
+                ),
+            ]),
+          ),
         if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
         const SizedBox(height: 12),
-        FilledButton(onPressed: _saving || products == null ? null : _save, child: Text(_saving ? 'Saving…' : 'Save')),
+        FilledButton(onPressed: _saving || products == null || !widget.active ? null : _save, child: Text(_saving ? 'Saving…' : 'Save')),
         TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
       ]),
     );

@@ -132,6 +132,11 @@ class Product(Base):
 
     is_active = Column(Integer, nullable=False, default=1)
 
+    # 1 = the Super Admin must start a round before anyone surveys it (new products,
+    # and any product after a new recipe version). 0 = an existing product surveyed
+    # before rounds were required: it stays open as before (services/product_access.py).
+    needs_round = Column(Integer, nullable=False, default=1)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
@@ -289,17 +294,19 @@ class QuestionTemplate(Base):
 
 
 # ============================================================
-# PRODUCT ASSIGNMENTS: which executives may survey which product.
-# A product with no rows here is open to every executive.
+# PRODUCT ASSIGNMENTS: which survey persons survey which ROUND of a product.
+# An Admin assigns each round after the Super Admin starts it; nothing is open
+# to everyone. Rows of earlier rounds stay as history (services/product_access.py).
 # ============================================================
 
 class ProductAssignment(Base):
     __tablename__ = "product_assignments"
-    __table_args__ = (UniqueConstraint("user_id", "product_id", name="uq_assignment_user_product"),)
+    __table_args__ = (UniqueConstraint("round_id", "user_id", name="uq_assignment_round_user"),)
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     product_id = Column(Integer, nullable=False, index=True)
+    round_id = Column(Integer, nullable=True, index=True)  # survey_rounds.id
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
