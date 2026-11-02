@@ -5,6 +5,7 @@ import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../services/session.dart';
 import 'home_screens.dart';
+import 'product_checks_screen.dart';
 
 /* ================================================================
    Bell button (app bar) and the notifications screen
@@ -267,6 +268,14 @@ class _NotificationDetails extends StatelessWidget {
       add("Customer's city", n.text('respondent_location'));
       add('Submitted', formatDate(n.time('submitted_at')));
       if (received) add('Video received', formatDate(n.time('resolved_at')));
+    } else if (n.kind == AppNotification.productMismatch) {
+      chip = 'Needs a product check';
+      chipBg = AppColors.warnSoft;
+      chipFg = AppColors.warn;
+      add('Survey', n.text('response_id') == null ? null : '#${n.text('response_id')}');
+      add('Selected product', n.text('selected_product'));
+      add('Detected product', n.text('detected_product'));
+      add('Received', formatDate(n.createdAt));
     } else if (n.kind == AppNotification.catalogChanged) {
       // The organization changed its catalog in its portal or app.
       const actions = {
@@ -335,6 +344,20 @@ class _NotificationDetails extends StatelessWidget {
                   ],
                 ),
               ),
+            if (n.kind == AppNotification.productMismatch && Session.isAdmin) ...[
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProductChecksPage()));
+                  },
+                  icon: const Icon(Icons.fact_check_outlined),
+                  label: const Text('Review in product checks'),
+                ),
+              ),
+            ],
             if (onStartSurvey != null) ...[
               const SizedBox(height: 18),
               SizedBox(

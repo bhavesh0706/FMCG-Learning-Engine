@@ -39,6 +39,7 @@ class AppNotification {
   static const missingVideo = 'survey_missing_video';
   // Admins: the organization added / changed / deactivated a product or category.
   static const catalogChanged = 'client_catalog_changed';
+  static const productMismatch = 'product_mismatch'; // feedback about another product than the selected one
 
   final int id;
   final String kind;

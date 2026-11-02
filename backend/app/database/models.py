@@ -578,3 +578,33 @@ class PasswordResetCode(Base):
     expires_at = Column(DateTime, nullable=False)
     attempts = Column(Integer, nullable=False, default=0)
     used_at = Column(DateTime, nullable=True)
+
+
+# ============================================================
+# PRODUCT CHECKS: does the recorded feedback talk about the product the survey
+# person selected? One row per survey (services/product_check.py).
+#   status:        match | mismatch | uncertain
+#   review_status: none | pending | confirmed | corrected | invalid
+# The survey keeps the selected product until an admin corrects it; the original
+# product and round are kept here (audit trail: audit_log "product_check.*").
+# ============================================================
+
+class ProductCheck(Base):
+    __tablename__ = "product_checks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    response_id = Column(Integer, nullable=False, unique=True, index=True)
+    feedback_id = Column(Integer, nullable=True)
+    selected_product_id = Column(Integer, nullable=False, index=True)
+    selected_round_id = Column(Integer, nullable=True)
+    detected_product_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, index=True)
+    confidence = Column(Float, nullable=True)
+    evidence = Column(JSON, nullable=True)
+    checked_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    review_status = Column(String(20), nullable=False, default="none", index=True)
+    reviewed_by = Column(Integer, nullable=True)
+    reviewed_by_name = Column(String(255), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    corrected_product_id = Column(Integer, nullable=True)
+    remarks = Column(Text, nullable=True)

@@ -278,6 +278,12 @@ def apply_reanalysis(new_id: int, target_id: int) -> int:
             survey = db.get(SurveyResponse, target.response_id)
             if survey:
                 survey.status = "analyzed"
+                try:  # same product check as a first analysis; a reviewer's decision is kept
+                    from app.services.product_check import run_check
+
+                    run_check(db, survey, target)
+                except Exception as check_error:
+                    print(f"Product check skipped for survey {survey.id}: {check_error}", flush=True)
                 db.commit()
                 return survey.product_id
         return None

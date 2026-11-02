@@ -635,6 +635,15 @@ def save_feedback_record(
 
             response.status = "analyzed"
             response.analyzed_at = datetime.utcnow()
+            # Is the feedback about the selected product? A clear mismatch keeps the
+            # survey out of every report until an admin reviews it (services/product_check.py).
+            try:
+                from app.services.product_check import run_check
+
+                db.flush()  # the record's id, so the check knows which recording it read
+                run_check(db, response, record)
+            except Exception as check_error:  # never lose the survey over the check
+                print(f"Product check skipped for survey {response.id}: {check_error}", flush=True)
 
         db.commit()
 

@@ -4,17 +4,18 @@ import { Component, useCallback, useEffect, useId, useMemo, useRef, useState } f
 import { useDropzone } from "react-dropzone";
 import "./App.css";
 import {
-  uploadVideo,
-  getFeedbackHistory,
-  getFeedbackById,
-  getFeedbackVideoUrl,
   API_BASE_URL,
-  getCategories,
-  getProducts,
   createRespondent,
   createSurveyResponse,
+  getCategories,
+  getFeedbackById,
+  getFeedbackHistory,
+  getFeedbackVideoUrl,
+  getProducts,
+  listProductChecks,
   saveSurveyAnswers,
   submitSurveyResponse,
+  uploadVideo,
 } from "./services/feedbackApi";
 import { downloadFeedbackPdf } from "./services/feedbackReport";
 import {
@@ -44,6 +45,7 @@ import NotificationBell from "./components/NotificationBell";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
 import axios from "axios";
 import { AddMemberDialog, AssignProductsDialog, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
+import ProductChecks from "./components/ProductChecks";
 import { startAnalysis, waitForAnalysis, announceDataChanged, DATA_CHANGED } from "./services/analysisApi";
 
 
@@ -2231,6 +2233,11 @@ const HISTORY_SORTS = {
 };
 
 function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "products", onTabChange }) {
+  // Product checks waiting for review (badge on the tab)
+  const [checkCounts, setCheckCounts] = useState({});
+  useEffect(() => {
+    listProductChecks("pending").then((r) => setCheckCounts(r?.counts || {})).catch(() => {});
+  }, [tab]);
   const [data, setData] = useState(() => pageCache.productHistory || { loading: true, error: "", products: [], unlinked: 0 });
   const [q, setQ] = useState("");
   const [categoryId, setCategoryId] = useState("all");
@@ -2307,6 +2314,10 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
           <button type="button" role="tab" aria-selected={tab === "surveys"} className={tab === "surveys" ? "is-on" : ""} onClick={() => onTabChange?.("surveys")}>
             All surveys
           </button>
+          <button type="button" role="tab" aria-selected={tab === "checks"} className={tab === "checks" ? "is-on" : ""} onClick={() => onTabChange?.("checks")}>
+            Product checks
+            {checkCounts.pending > 0 && <span className="seg-count" aria-label={`${checkCounts.pending} need review`}> {checkCounts.pending}</span>}
+          </button>
         </div>
         {tab === "products" && (
           <button type="button" className="btn btn-secondary" onClick={load} disabled={data.loading}>
@@ -2315,7 +2326,9 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
         )}
       </div>
 
-      {tab === "surveys" ? (
+      {tab === "checks" ? (
+        <ProductChecks onCounts={setCheckCounts} />
+      ) : tab === "surveys" ? (
         <AllSurveysList onOpenFeedback={onOpenFeedback} />
       ) : (
       <>
@@ -2806,6 +2819,10 @@ function TeamPage() {
    ================================================================ */
 
 function surveyStatus(sv) {
+  // Product check (backend services/product_check.py): the feedback seems to be about
+  // another product; kept out of the reports until an admin reviews it.
+  if (sv.status === "needs_review") return { tone: "warn", label: "Product check" };
+  if (sv.status === "invalid") return { tone: "neg", label: "Marked invalid" };
   if (sv.feedback) return { tone: "ok", label: "Analyzed" };
   const st = sv.analysis?.status;
   if (st === "processing") return { tone: "act", label: "Analyzing…", spin: true };

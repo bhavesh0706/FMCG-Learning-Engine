@@ -107,6 +107,22 @@ export async function getCategories() {
 
 
 // GET /products
+// Product checks (admins): feedback about another product than the one selected.
+export async function listProductChecks(status = "pending") {
+  const res = await api.get("/admin/product-checks", { params: { status } });
+  return res.data; // { counts: {pending, unverified}, checks: [...] }
+}
+
+export async function getProductCheck(responseId) {
+  const res = await api.get(`/admin/product-checks/${responseId}`);
+  return res.data;
+}
+
+export async function reviewProductCheck(responseId, body) {
+  const res = await api.post(`/admin/product-checks/${responseId}/review`, body);
+  return res.data;
+}
+
 // GET /geo/reverse: the phone/computer position -> a readable place for "Survey location".
 export async function reverseGeocode(latitude, longitude) {
   const res = await api.get("/geo/reverse", { params: { lat: latitude, lng: longitude } });

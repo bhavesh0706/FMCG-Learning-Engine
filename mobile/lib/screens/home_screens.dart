@@ -7,6 +7,7 @@ import '../services/survey_queue.dart';
 import 'onboarding_screens.dart';
 import 'report_screens.dart';
 import 'survey_flow.dart';
+import 'product_checks_screen.dart';
 
 /* ================================================================
    Shared bits
@@ -50,6 +51,15 @@ class StatusChip extends StatelessWidget {
       label = 'No recording';
       fg = AppColors.muted;
       bg = AppColors.neutralSoft;
+    } else if (entry.serverStatus == 'needs_review') {
+      // Product check: the feedback seems to be about another product (kept out of reports until reviewed).
+      label = 'Product check';
+      fg = AppColors.warn;
+      bg = AppColors.warnSoft;
+    } else if (entry.serverStatus == 'invalid') {
+      label = 'Marked invalid';
+      fg = AppColors.neg;
+      bg = AppColors.negSoft;
     } else {
       switch (entry.status) {
         case SurveyStatus.waiting:
@@ -560,7 +570,7 @@ class MobileHistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!Session.isAdmin) return const SurveyHistoryList(ownOnly: true);
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: Column(
         children: [
           Container(
@@ -574,6 +584,7 @@ class MobileHistoryPage extends StatelessWidget {
               tabs: [
                 Tab(text: 'Surveys'),
                 Tab(text: 'Products'),
+                Tab(text: 'Checks'), // product checks (web: Survey history > Product checks)
               ],
             ),
           ),
@@ -582,6 +593,7 @@ class MobileHistoryPage extends StatelessWidget {
               children: [
                 SurveyHistoryList(),
                 ProductReportsList(),
+                ProductChecksView(),
               ],
             ),
           ),

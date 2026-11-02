@@ -83,6 +83,22 @@ class AdminApi {
   static Future<List<Json>> categories() async =>
       asJsonList((await _send('GET', '/categories', query: {'include_inactive': false}))['categories']);
 
+  // ---- Product checks: feedback about another product than the one selected (web: Survey history > Product checks)
+
+  /// {counts: {pending, unverified}, checks: [...]}; status: pending | unverified | reviewed | all
+  static Future<Json> productChecks(String status) => _send('GET', '/admin/product-checks', query: {'status': status});
+
+  /// One check with transcript, AI summary and review history.
+  static Future<Json> productCheck(int responseId) => _send('GET', '/admin/product-checks/$responseId');
+
+  /// action: confirm | correct (with productId) | invalid. Returns the updated check.
+  static Future<Json> reviewProductCheck(int responseId, String action, {int? productId, String remarks = ''}) =>
+      _send('POST', '/admin/product-checks/$responseId/review', body: {
+        'action': action,
+        if (productId != null) 'product_id': productId,
+        if (remarks.trim().isNotEmpty) 'remarks': remarks.trim(),
+      });
+
   static Future<List<Json>> products() async =>
       asJsonList((await _send('GET', '/products', query: {'include_inactive': false}))['products']);
 

@@ -18,6 +18,7 @@ from app.api.notifications import router as notifications_router
 from app.api.org import router as org_router
 from app.api.rounds import router as rounds_router
 from app.api.geo import router as geo_router
+from app.api.product_checks import router as product_checks_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
 from app.services.audit import install_audit
@@ -159,6 +160,11 @@ app.include_router(
 # GPS position -> readable "Survey location" (web and mobile app)
 app.include_router(
     geo_router
+)
+
+# Product checks: feedback about another product than the one selected (admin review)
+app.include_router(
+    product_checks_router
 )
 
 
