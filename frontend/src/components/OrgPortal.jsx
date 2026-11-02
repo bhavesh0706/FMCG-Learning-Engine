@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL } from "../config";
-import { changePassword, signOut, signOutEverywhere } from "../services/auth";
+import { changePassword, changePasswordSimple, changePasswordWithCode, getSetupStatus, sendMyPasswordCode, signOut, signOutEverywhere } from "../services/auth";
 import {
   compareRounds,
   endRound,
@@ -127,6 +127,25 @@ function useData(loader, deps) {
 function Icon({ name, size = 16 }) {
   const paths = {
     check: <path d="M20 6 9 17l-5-5" />,
+    lock: (
+      <>
+        <rect x="4" y="11" width="16" height="10" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+      </>
+    ),
+    mail: (
+      <>
+        <rect x="3" y="5" width="18" height="14" rx="2" />
+        <path d="m3 7 9 6 9-6" />
+      </>
+    ),
+    logout: (
+      <>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <path d="m16 17 5-5-5-5" />
+        <path d="M21 12H9" />
+      </>
+    ),
     edit: (
       <>
         <path d="M12 20h9" />
@@ -1183,15 +1202,43 @@ function UpdatesPage({ onSeen }) {
 
 function AccountPage() {
   const [state, reload] = useData(getOrgAccount, []);
-  const [form, setForm] = useState({ current: "", next: "", repeat: "" });
+  // Password: simple mode (no real emails yet, never in production): new password + repeat.
+  // Email mode: 1. email a code (no current password needed), 2. code + new password + repeat.
+  const [simple, setSimple] = useState(false);
+  const [step, setStep] = useState(1);
+  useEffect(() => {
+    let alive = true;
+    getSetupStatus(API_BASE_URL)
+      .then((s) => alive && s?.password_reset === "simple" && (setSimple(true), setStep(2)))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const [form, setForm] = useState({ code: "", next: "", repeat: "" });
+  const [show, setShow] = useState(false);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
-  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const set = (k) => (e) => setForm({ ...form, [k]: k === "code" ? e.target.value.replace(/\D/g, "") : e.target.value });
+
+  const sendCode = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await sendMyPasswordCode(API_BASE_URL);
+      setStep(2);
+      setMsg({ tone: res.sent ? "info" : "warn", text: res.detail });
+    } catch (err) {
+      setMsg({ tone: "error", text: err.message });
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const change = async (e) => {
     e.preventDefault();
-    const problem = !form.current
-      ? "Enter your current password."
+    const problem = !simple && !/^\d{6}$/.test(form.code)
+      ? "Enter the 6-digit code from the email."
       : passwordProblem(form.next) || (form.next !== form.repeat ? "The two new passwords are different." : "");
     if (problem) {
       setMsg({ tone: "error", text: problem });
@@ -1199,8 +1246,10 @@ function AccountPage() {
     }
     setBusy(true);
     try {
-      await changePassword(API_BASE_URL, form.current, form.next);
-      setForm({ current: "", next: "", repeat: "" });
+      if (simple) await changePasswordSimple(API_BASE_URL, form.next);
+      else await changePasswordWithCode(API_BASE_URL, form.code, form.next);
+      setForm({ code: "", next: "", repeat: "" });
+      setStep(simple ? 2 : 1);
       setMsg({ tone: "ok", text: "Password changed. Every other sign-in of this Super Admin account has ended." });
     } catch (err) {
       setMsg({ tone: "error", text: err.message });
@@ -1222,53 +1271,100 @@ function AccountPage() {
   if (state.loading && !state.data) return <Loading />;
   if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
   const a = state.data;
+  const email = a.email || a.mobile || "";
   return (
-    <section aria-labelledby="org-account-title">
+    <section className="acct" aria-labelledby="org-account-title">
       <button type="button" className="back-link" onClick={() => window.history.back()}><Icon name="back" /> Back</button>
-      <header className="home-head">
-        <div className="page-heading">
-          <h1 id="org-account-title">Account</h1>
+
+      <header className="panel acct-hero">
+        <span className="acct-avatar" aria-hidden="true">{(a.name || "?").trim()[0]?.toUpperCase()}</span>
+        <div className="acct-id">
+          <h1 id="org-account-title">{a.name}</h1>
+          <p>
+            <span className="status-chip is-act">Super Admin</span>
+            <span className="acct-email">{email || "—"}</span>
+          </p>
         </div>
+        <dl className="acct-facts">
+          <div><dt>Products</dt><dd>{a.products}</dd></div>
+          <div><dt>Last sign-in</dt><dd>{fmtDateTime(a.last_login_at) || "—"}</dd></div>
+          <div><dt>Your contact</dt><dd>{a.contact}</dd></div>
+        </dl>
       </header>
-      <div className="org-two is-even">
-        <section className="panel org-panel">
-          <h2 className="org-panel-title">Super Admin</h2>
-          <dl className="org-dl">
-            <dt>Name</dt>
-            <dd>{a.name}</dd>
-            <dt>Sign-in email</dt>
-            <dd>{a.email || a.mobile || "—"}</dd>
-            <dt>Products</dt>
-            <dd>{a.products}</dd>
-            <dt>Last sign-in</dt>
-            <dd>{fmtDateTime(a.last_login_at) || "—"}</dd>
-            <dt>Your contact</dt>
-            <dd>{a.contact}</dd>
-          </dl>
-          <p className="muted small">To change the name or the sign-in email, contact {a.contact}.</p>
+
+      <div className="acct-grid">
+        <section className="panel acct-card" aria-labelledby="acct-password">
+          <div className="acct-card-head">
+            <span className="acct-icon"><Icon name="lock" size={20} /></span>
+            <div>
+              <h2 id="acct-password">Password</h2>
+              <p className="muted">
+                {simple ? (
+                  <>Choose a new password. Every other sign-in of this account ends; this browser stays signed in.</>
+                ) : (
+                  <>No need to remember the current one: we email a 6-digit code to <strong>{email}</strong>, then you choose the new password.</>
+                )}
+              </p>
+            </div>
+          </div>
+
+          {step === 1 ? (
+            <div className="acct-actions">
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={sendCode}>
+                <Icon name="mail" /> {busy ? "Sending…" : "Email me a code"}
+              </button>
+            </div>
+          ) : (
+            <form className="acct-form" onSubmit={change} noValidate>
+              {!simple && (
+                <label className="field">
+                  <span className="field-label">Code from the email</span>
+                  <input className="input acct-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                    placeholder="6 digits" value={form.code} onChange={set("code")} autoFocus />
+                </label>
+              )}
+              <div className="field-row">
+                <label className="field">
+                  <span className="field-label">New password</span>
+                  <input className="input" type={show ? "text" : "password"} autoComplete="new-password"
+                    placeholder="8+ letters and numbers" value={form.next} onChange={set("next")} />
+                </label>
+                <label className="field">
+                  <span className="field-label">Repeat new password</span>
+                  <input className="input" type={show ? "text" : "password"} autoComplete="new-password" value={form.repeat} onChange={set("repeat")} />
+                </label>
+              </div>
+              <label className="acct-show">
+                <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} /> Show passwords
+              </label>
+              <div className="acct-actions">
+                <button type="submit" className="btn btn-primary" disabled={busy}>{busy ? "Saving…" : "Save new password"}</button>
+                {!simple && (
+                  <>
+                    <button type="button" className="btn btn-secondary" disabled={busy} onClick={sendCode}>Send a new code</button>
+                    <button type="button" className="link-btn" disabled={busy} onClick={() => { setStep(1); setMsg(null); }}>Cancel</button>
+                  </>
+                )}
+              </div>
+            </form>
+          )}
+          {msg && (
+            <p className={`acct-msg is-${msg.tone}`} role={msg.tone === "error" ? "alert" : "status"}>{msg.text}</p>
+          )}
         </section>
-        <section className="panel org-panel">
-          <form onSubmit={change} noValidate>
-            <h2 className="org-panel-title">Password</h2>
-            <label className="field">
-              <span className="field-label">Current password</span>
-              <input className="input" type="password" autoComplete="current-password" value={form.current} onChange={set("current")} />
-            </label>
-            <label className="field">
-              <span className="field-label">New password</span>
-              <input className="input" type="password" autoComplete="new-password" placeholder="8+ letters and numbers" value={form.next} onChange={set("next")} />
-            </label>
-            <label className="field">
-              <span className="field-label">Repeat new password</span>
-              <input className="input" type="password" autoComplete="new-password" value={form.repeat} onChange={set("repeat")} />
-            </label>
-            {msg && <p className={msg.tone === "error" ? "form-error" : "form-ok"} role={msg.tone === "error" ? "alert" : "status"}>{msg.text}</p>}
-            <button type="submit" className="btn btn-primary btn-sm" disabled={busy}>{busy ? "Saving…" : "Change password"}</button>
-          </form>
-          <hr className="org-divider" />
-          <h2 className="org-panel-title">Sign-ins</h2>
-          <p className="muted small">Lost a laptop, or someone left the company? End every sign-in at once.</p>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={everywhere}>Sign out everywhere</button>
+
+        <section className="panel acct-card" aria-labelledby="acct-signins">
+          <div className="acct-card-head">
+            <span className="acct-icon is-neg"><Icon name="logout" size={20} /></span>
+            <div>
+              <h2 id="acct-signins">Sign-ins</h2>
+              <p className="muted">Lost a laptop, or someone left the company? End every sign-in of this account at once, including this one.</p>
+            </div>
+          </div>
+          <div className="acct-actions">
+            <button type="button" className="btn btn-secondary acct-danger" onClick={everywhere}>Sign out everywhere</button>
+          </div>
+          <p className="acct-note muted">To change the name or the sign-in email, contact {a.contact}.</p>
         </section>
       </div>
     </section>

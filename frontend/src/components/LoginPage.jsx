@@ -4,6 +4,9 @@ import {
   forgetAccount,
   getSetupStatus,
   recentAccounts,
+  requestPasswordCode,
+  resetPassword,
+  resetPasswordSimple,
   signIn,
   takeSignOutReason,
 } from "../services/auth";
@@ -132,6 +135,128 @@ function rememberRole(role) {
   }
 }
 
+/* Forgot password (Admin and Super Admin): 1. work email -> a 6-digit code is emailed;
+   2. code + new password + repeat. Survey persons are reset by their admin. */
+function ResetPasswordCard({ apiBase, roleName, initialEmail, simple = false, onDone, onCancel }) {
+  const [step, setStep] = useState(simple ? 2 : 1);
+  // Simple mode: the mobile number or email; email mode: the work email.
+  const [email, setEmail] = useState(simple || initialEmail.includes("@") ? initialEmail : "");
+  const [code, setCode] = useState("");
+  const [next, setNext] = useState("");
+  const [repeat, setRepeat] = useState("");
+  const [show, setShow] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+
+  const sendCode = async (e) => {
+    e?.preventDefault();
+    setError("");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) {
+      setError("Enter your work email.");
+      return;
+    }
+    setBusy(true);
+    try {
+      setInfo(await requestPasswordCode(apiBase, email));
+      setStep(2);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (simple && email.trim().length < 3) return setError("Enter your mobile number or email.");
+    if (!simple && !/^\d{6}$/.test(code.trim())) return setError("Enter the 6-digit code from the email.");
+    if (next.length < 8 || !/[A-Za-z]/.test(next) || !/\d/.test(next)) return setError("Use at least 8 characters with letters and numbers.");
+    if (next !== repeat) return setError("The two new passwords don't match.");
+    setBusy(true);
+    try {
+      if (simple) await resetPasswordSimple(apiBase, email, next);
+      else await resetPassword(apiBase, email, code, next);
+      onDone(email.trim());
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form className="login-card" onSubmit={step === 1 ? sendCode : save} noValidate aria-labelledby="reset-title">
+      <div className="login-head">
+        <h1 id="reset-title">Reset your password</h1>
+        <p>
+          {simple
+            ? `${roleName} account: enter your mobile number or email and choose a new password.`
+            : step === 1
+            ? `${roleName} account: we'll email you a 6-digit code to set a new password.`
+            : "Enter the code from the email and choose your new password."}
+        </p>
+      </div>
+      {!simple && (
+        <ol className="reset-steps" aria-label="Steps">
+          <li className={step === 1 ? "is-on" : "is-done"}><span>1</span>Work email</li>
+          <li className={step === 2 ? "is-on" : ""}><span>2</span>New password</li>
+        </ol>
+      )}
+
+      <label className="login-field">
+        <span>{simple ? "Mobile number or email" : "Work email"}</span>
+        <input className="login-input" type={simple ? "text" : "email"} value={email} autoComplete="username" inputMode="email"
+          readOnly={!simple && step === 2} onChange={(e) => setEmail(e.target.value)}
+          placeholder={simple ? "98765 43210 or name@company.com" : "name@company.com"} autoFocus={simple || step === 1} />
+      </label>
+
+      {step === 2 && (
+        <>
+          {info && <p className="login-help" role="status">{info}</p>}
+          {!simple && (
+            <label className="login-field">
+              <span>Code from the email</span>
+              <input className="login-input reset-code" value={code} inputMode="numeric" autoComplete="one-time-code" maxLength={6}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="6 digits" autoFocus />
+            </label>
+          )}
+          <div className="login-field">
+            <span className="login-field-row">
+              <label htmlFor="reset-new">New password</label>
+              <button type="button" className="login-link" aria-controls="reset-new reset-repeat" onClick={() => setShow((v) => !v)}>
+                {show ? "Hide passwords" : "Show passwords"}
+              </button>
+            </span>
+            <input id="reset-new" className="login-input" type={show ? "text" : "password"} value={next} autoComplete="new-password"
+              onChange={(e) => setNext(e.target.value)} placeholder="8+ characters, letters and numbers" />
+          </div>
+          <div className="login-field">
+            <label htmlFor="reset-repeat">Repeat new password</label>
+            <input id="reset-repeat" className="login-input" type={show ? "text" : "password"} value={repeat} autoComplete="new-password"
+              onChange={(e) => setRepeat(e.target.value)} />
+          </div>
+        </>
+      )}
+
+      {error && <p className="login-error" role="alert">{error}</p>}
+      <button type="submit" className="login-submit" disabled={busy}>
+        {busy ? <span className="spinner login-spinner" aria-hidden="true" /> : null}
+        {step === 1 ? "Email me a code" : "Set new password"}
+      </button>
+      <p className="login-foot reset-foot">
+        {step === 2 && !simple && (
+          <>
+            <button type="button" className="login-link" disabled={busy} onClick={() => sendCode()}>Send a new code</button>
+            {" · "}
+          </>
+        )}
+        <button type="button" className="login-link" onClick={onCancel}>Back to sign in</button>
+      </p>
+    </form>
+  );
+}
+
 export default function LoginPage({ apiBase, onSignedIn }) {
   const [mode, setMode] = useState("loading"); // loading | login | setup
   const [name, setName] = useState("");
@@ -143,6 +268,8 @@ export default function LoginPage({ apiBase, onSignedIn }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState(() => takeSignOutReason());
   const [forgot, setForgot] = useState(false);
+  const [resetting, setResetting] = useState(false); // Admin / Super Admin: Forgot password
+  const [resetMode, setResetMode] = useState("email"); // "simple" outside production (server decides)
   const firstField = useRef(null);
   const passwordField = useRef(null);
   const [recent, setRecent] = useState(recentAccounts);
@@ -167,7 +294,11 @@ export default function LoginPage({ apiBase, onSignedIn }) {
   useEffect(() => {
     let alive = true;
     getSetupStatus(apiBase)
-      .then((s) => alive && setMode(s?.needs_setup ? "setup" : "login"))
+      .then((s) => {
+        if (!alive) return;
+        setMode(s?.needs_setup ? "setup" : "login");
+        setResetMode(s?.password_reset === "simple" ? "simple" : "email");
+      })
       .catch(() => alive && setMode("login"));
     return () => {
       alive = false;
@@ -237,6 +368,21 @@ export default function LoginPage({ apiBase, onSignedIn }) {
 
       {/* Form side */}
       <main className="login-main">
+        {resetting ? (
+          <ResetPasswordCard
+            apiBase={apiBase}
+            roleName={copy.tab}
+            initialEmail={identifier}
+            simple={resetMode === "simple"}
+            onCancel={() => setResetting(false)}
+            onDone={(email) => {
+              setResetting(false);
+              setIdentifier(email);
+              setPassword("");
+              setNotice("Password changed. Sign in with your new password.");
+            }}
+          />
+        ) : (
         <form className="login-card" onSubmit={submit} noValidate aria-labelledby="login-title">
           {mode === "loading" ? (
             <div className="login-loading"><span className="spinner" aria-hidden="true" /> Loading…</div>
@@ -265,7 +411,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
                 </p>
               </div>
 
-              {notice && <p className="login-notice" role="status">{notice}</p>}
+              {notice && <p className={`login-notice${notice.startsWith("Password changed") ? " is-ok" : ""}`} role="status">{notice}</p>}
 
               {setup && (
                 <label className="login-field">
@@ -287,7 +433,8 @@ export default function LoginPage({ apiBase, onSignedIn }) {
                 <span className="login-field-row">
                   <label htmlFor="login-password">Password</label>
                   {!setup && (
-                    <button type="button" className="login-link" aria-expanded={forgot} onClick={() => setForgot((f) => !f)}>
+                    <button type="button" className="login-link" aria-expanded={forgot}
+                      onClick={() => (role === "executive" ? setForgot((f) => !f) : (setError(""), setResetting(true)))}>
                       Forgot password?
                     </button>
                   )}
@@ -359,6 +506,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
             </>
           )}
         </form>
+        )}
       </main>
     </div>
   );

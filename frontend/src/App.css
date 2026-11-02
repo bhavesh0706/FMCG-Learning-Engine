@@ -11043,6 +11043,442 @@ input[type="radio"] {
   padding: 8px 12px;
 }
 
+/* ================================================================
+   Forgot password (sign-in page): emailed code, then the new password
+   ================================================================ */
+
+.reset-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+}
+
+.reset-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.reset-steps li span {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--line);
+  font-size: 11.5px;
+}
+
+.reset-steps li.is-on {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.reset-steps li.is-on span {
+  background: var(--brand);
+  color: #fff;
+}
+
+.reset-steps li.is-done span {
+  background: var(--pos);
+  color: #fff;
+}
+
+.reset-code,
+.acct-code {
+  max-width: 220px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+}
+
+.login-input[readonly] {
+  background: var(--bg);
+  color: var(--ink-2);
+}
+
+.reset-foot .login-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.login-notice.is-ok {
+  background: var(--pos-soft);
+  color: var(--pos-ink);
+}
+
+/* ================================================================
+   Super Admin: Account page
+   ================================================================ */
+
+.acct {
+  display: grid;
+  gap: 16px;
+}
+
+.acct .back-link {
+  justify-self: start;
+  margin-bottom: 0;
+}
+
+.acct-hero {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 18px 24px;
+  padding: 22px 24px;
+  background: linear-gradient(135deg, var(--surface) 0%, var(--brand-soft) 100%);
+}
+
+.acct-avatar {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: 18px;
+  background: var(--brand);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(10, 65, 116, 0.25);
+}
+
+.acct-id {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.acct-id h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.acct-id p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 6px 0 0;
+}
+
+.acct-email {
+  color: var(--ink-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.acct-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, auto));
+  gap: 10px;
+  margin: 0;
+}
+
+.acct-facts > div {
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.acct-facts dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.acct-facts dd {
+  margin: 2px 0 0;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.acct-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.acct-card {
+  display: grid;
+  gap: 16px;
+  padding: 22px 24px;
+}
+
+.acct-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.acct-card-head h2 {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.acct-card-head .muted {
+  line-height: 1.5;
+}
+
+.acct-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.acct-icon.is-neg {
+  background: var(--neg-soft);
+  color: var(--neg);
+}
+
+.acct-form {
+  display: grid;
+  gap: 12px;
+}
+
+.acct-show {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+}
+
+.acct-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.acct-danger {
+  color: var(--neg);
+}
+
+.acct-danger:hover:not(:disabled) {
+  border-color: var(--neg);
+  background: var(--neg-soft);
+  color: var(--neg-strong);
+}
+
+.acct-msg {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.acct-msg.is-ok {
+  background: var(--pos-soft);
+  color: var(--pos-ink);
+}
+
+.acct-msg.is-info {
+  background: var(--brand-soft);
+  color: var(--ink-2);
+}
+
+.acct-msg.is-warn {
+  background: var(--act-soft);
+  color: var(--act-ink);
+}
+
+.acct-msg.is-error {
+  background: var(--neg-soft);
+  color: var(--neg-strong);
+}
+
+.acct-note {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .acct-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .acct-facts {
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .acct-facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   Spacing system: one vertical rhythm on every page
+   ------------------------------------------------------------
+     top bar -> page content ............ 20px
+     back link / breadcrumb -> title ..... 8px
+     page header -> next block .......... 16px
+     between sections (stats, tabs, ...)  16px
+   Placed after the page-specific rules so it wins; the Page
+   width block below still comes last.
+   ============================================================ */
+
+:root {
+  --space-page-top: 20px;
+  --space-nav: 8px;
+  --space-section: 16px;
+}
+
+.container,
+.container:has(.survey:not([hidden])) {
+  padding-top: var(--space-page-top);
+}
+
+/* index.css (Vite starter) gives every h1 "margin: 32px 0". Page titles get their
+   spacing from this system only, so no title floats 32px away from its eyebrow. */
+h1 {
+  margin: 0;
+}
+
+/* Back links and breadcrumbs sit tight above the title */
+.back-link,
+.feedback-detail .back-link,
+.acct .back-link {
+  margin-bottom: var(--space-nav);
+  padding: 4px 8px 4px 4px;
+}
+
+.breadcrumb {
+  margin-bottom: var(--space-nav);
+}
+
+/* Page headers: the category (eyebrow) gets its own line above the title */
+.page-heading > .eyebrow {
+  flex-basis: 100%;
+  margin: 0 0 2px;
+}
+
+/* ...without the heading taking the whole row: actions (Start new round) stay beside it */
+.home-head > .page-heading {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Feedback page: eyebrow, title and meta lines sit together */
+.results-title .eyebrow {
+  margin: 0 0 4px;
+}
+
+.results-title .file-name {
+  margin: 0;
+}
+
+.home-head,
+.survey-head,
+.history-header {
+  margin-bottom: var(--space-section);
+}
+
+.survey-head {
+  margin-bottom: 0; /* the stepper below brings its own top margin */
+}
+
+/* Tabs under a page header */
+.page-tabs-u {
+  margin: 0 0 var(--space-section);
+}
+
+.product-tabs {
+  margin-top: 0;
+}
+
+.history-tabs-row,
+.team-tabs,
+.page-tabs,
+.history-tabs {
+  margin-bottom: var(--space-section);
+}
+
+.history-tabs-row > .history-tabs {
+  margin-bottom: 0;
+}
+
+/* Sections */
+.home-stats,
+.history-stats,
+.setup-guide,
+.org-report-stats {
+  margin-bottom: var(--space-section);
+}
+
+.home-grid,
+.org-two,
+.report,
+.report-grid,
+.client-sections,
+.my-survey,
+.my-survey-grid,
+.acct,
+.acct-grid {
+  gap: var(--space-section);
+}
+
+.report-bar {
+  margin-bottom: var(--space-section);
+}
+
+/* Account page: its grid gap already separates the cards; keep the back link tight */
+.acct > .back-link {
+  margin-bottom: calc(var(--space-nav) - var(--space-section));
+}
+
+/* Catalog product: panel under the underline tabs (the tabs overlap it by 1px) */
+.product-tabs + .product-panel,
+.product-panel {
+  margin-top: calc(var(--space-section) + 1px);
+}
+
+/* The first line inside a panel starts at the panel's padding (no extra margin on top) */
+.panel > :first-child,
+.product-panel > :first-child,
+.product-panel > section > :first-child {
+  margin-top: 0;
+}
+
+/* Take survey: same rhythm around the stepper and the buttons */
+.stepper {
+  margin: var(--space-section) 0;
+}
+
+.survey-actions {
+  margin-top: var(--space-section);
+}
+
 /* ============================================================
    Page width: uses the extra room on large screens (Mac),
    unchanged on smaller ones (Windows at 150% scaling).

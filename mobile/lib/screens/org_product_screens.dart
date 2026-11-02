@@ -470,6 +470,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   void _addStep() => setState(() => _steps.add(List.generate(4, (_) => TextEditingController())));
 
   Future<void> _save() async {
+    FocusManager.instance.primaryFocus?.unfocus(); // Save works with the keyboard open
     String? t(TextEditingController c) => c.text.trim().isEmpty ? null : c.text.trim();
     final body = <String, dynamic>{
       'batch_size': t(_batch),
@@ -510,8 +511,13 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(title: const Text('Edit recipe')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+      // The Save bar is part of the body (not bottomNavigationBar), so it stays above
+      // the keyboard: the body shrinks to the space the keyboard leaves.
+      body: Column(children: [
+        Expanded(
+          child: ListView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
           _field(_batch, 'Batch size', hint: '100 kg batch = about 1000 servings of 100 g'),
           _section('Ingredients'),
@@ -569,13 +575,20 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
           if (_error != null) Text(_error!, style: TextStyle(color: AppColors.neg)),
         ],
       ),
-      bottomNavigationBar: SafeArea(
-        minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-        child: FilledButton(
-          onPressed: _saving ? null : _save,
-          child: Text(_saving ? 'Saving…' : 'Save as a new version'),
         ),
-      ),
+        SafeArea(
+          top: false,
+          bottom: MediaQuery.viewInsetsOf(context).bottom == 0, // keyboard open: sit right on it
+          minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: _saving ? null : _save,
+              child: Text(_saving ? 'Saving…' : 'Save as a new version'),
+            ),
+          ),
+        ),
+      ]),
     );
   }
 }

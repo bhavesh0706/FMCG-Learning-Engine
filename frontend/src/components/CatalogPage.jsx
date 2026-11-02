@@ -515,7 +515,6 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
             )}
             <LiveRoundChip round={product.live_round} />
           </div>
-          <button type="button" className="btn btn-secondary" onClick={() => setProductId(null)}>Back to catalog</button>
         </header>
         <Notice notice={notice} onClose={() => setNotice(null)} />
         <ProductPage key={`${product.id}-${openCount}`} product={product} categories={categories} startTab={startTab} onChanged={load} notify={notify}

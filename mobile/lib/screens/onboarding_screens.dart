@@ -448,7 +448,24 @@ class _AuthScreenState extends State<AuthScreen> {
     AppProfile.save();
   }
 
-  void _forgot() {
+  Future<void> _forgot() async {
+    // Admins and Super Admins reset it themselves; survey persons ask their admin.
+    if (_role == 'admin' || _role == 'client') {
+      final done = await Navigator.of(context).push<String>(MaterialPageRoute(
+        builder: (_) => ResetPasswordScreen(roleName: _roleCopy[_role]!.tab, initialIdentifier: _id.text.trim()),
+      ));
+      if (done != null && mounted) {
+        setState(() {
+          _id.text = done;
+          _password.clear();
+          _error = null;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Password changed. Sign in with your new password.')),
+        );
+      }
+      return;
+    }
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -735,6 +752,220 @@ class _PermissionCard extends StatelessWidget {
             Text('Allowed', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.pos))
           else
             TextButton(onPressed: onAllow, child: Text(blocked ? 'Settings' : 'Allow')),
+        ],
+      ),
+    );
+  }
+}
+
+
+/* ============================================================
+   Forgot password (Admin and Super Admin)
+   ============================================================
+   The server decides the flow (Session.passwordResetMode):
+     simple  outside production: mobile number or email + new password + repeat
+     email   a 6-digit code is emailed first, then code + new password + repeat
+   Pops with the mobile number or email so the login screen can fill it in.
+*/
+
+class ResetPasswordScreen extends StatefulWidget {
+  const ResetPasswordScreen({super.key, required this.roleName, this.initialIdentifier = ''});
+
+  final String roleName;
+  final String initialIdentifier;
+
+  @override
+  State<ResetPasswordScreen> createState() => _ResetPasswordScreenState();
+}
+
+class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
+  String? _mode; // null while asking the server
+  int _step = 1;
+  late final TextEditingController _id = TextEditingController(text: widget.initialIdentifier);
+  final _code = TextEditingController();
+  final _next = TextEditingController();
+  final _repeat = TextEditingController();
+  bool _hide = true;
+  bool _busy = false;
+  String? _error;
+  String? _info;
+
+  bool get _simple => _mode == 'simple';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMode();
+  }
+
+  Future<void> _loadMode() async {
+    setState(() => _error = null);
+    try {
+      final mode = await Session.passwordResetMode();
+      if (!mounted) return;
+      setState(() {
+        _mode = mode;
+        _step = mode == 'simple' ? 2 : 1;
+        if (mode == 'email' && !_id.text.contains('@')) _id.clear();
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in [_id, _code, _next, _repeat]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  String? _problem() {
+    final id = _id.text.trim();
+    if (_simple && id.length < 3) return 'Enter your mobile number or email.';
+    if (!_simple && !RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(id)) return 'Enter your work email.';
+    if (_step == 1) return null;
+    if (!_simple && !RegExp(r'^\d{6}$').hasMatch(_code.text.trim())) return 'Enter the 6-digit code from the email.';
+    final p = _next.text;
+    if (p.length < 8 || !RegExp(r'[A-Za-z]').hasMatch(p) || !RegExp(r'\d').hasMatch(p)) {
+      return 'Use at least 8 characters with letters and numbers.';
+    }
+    if (_repeat.text != p) return "The two new passwords don't match.";
+    return null;
+  }
+
+  Future<void> _submit() async {
+    FocusScope.of(context).unfocus();
+    final problem = _problem();
+    if (problem != null) {
+      setState(() => _error = problem);
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (_step == 1) {
+        final info = await Session.requestPasswordCode(_id.text);
+        if (!mounted) return;
+        setState(() {
+          _info = info;
+          _step = 2;
+          _busy = false;
+        });
+        return;
+      }
+      if (_simple) {
+        await Session.resetPasswordSimple(_id.text, _next.text);
+      } else {
+        await Session.resetPasswordWithCode(_id.text, _code.text, _next.text);
+      }
+      if (mounted) Navigator.of(context).pop(_id.text.trim());
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _error = '$e';
+        });
+      }
+    }
+  }
+
+  Future<void> _resend() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final info = await Session.requestPasswordCode(_id.text);
+      if (mounted) setState(() => _info = info);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Widget _input(TextEditingController c, String label,
+      {TextInputType? keyboard, bool secret = false, bool readOnly = false, String? hint, int? maxLength,
+      TextInputAction action = TextInputAction.next}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: TextField(
+        controller: c,
+        keyboardType: keyboard,
+        obscureText: secret && _hide,
+        readOnly: readOnly,
+        maxLength: maxLength,
+        textInputAction: action,
+        onSubmitted: action == TextInputAction.done ? (_) => _submit() : null,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          counterText: '',
+          suffixIcon: secret
+              ? IconButton(
+                  tooltip: _hide ? 'Show passwords' : 'Hide passwords',
+                  icon: Icon(_hide ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  onPressed: () => setState(() => _hide = !_hide),
+                )
+              : null,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = _mode == null
+        ? 'One moment…'
+        : _simple
+            ? '${widget.roleName} account: enter your mobile number or email and choose a new password.'
+            : _step == 1
+                ? "${widget.roleName} account: we'll email you a 6-digit code to set a new password."
+                : 'Enter the code from the email and choose your new password.';
+    return _SheetScaffold(
+      title: 'Reset your password',
+      subtitle: subtitle,
+      onBack: () => Navigator.of(context).maybePop(),
+      footer: TextButton(onPressed: _busy ? null : () => Navigator.of(context).maybePop(), child: const Text('Back to sign in')),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_mode == null && _error == null)
+            const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator())),
+          if (_mode != null) ...[
+            _input(_id, _simple ? 'Mobile number or email' : 'Work email',
+                keyboard: TextInputType.emailAddress, readOnly: !_simple && _step == 2,
+                hint: _simple ? '98765 43210 or name@company.com' : 'name@company.com',
+                action: _step == 1 ? TextInputAction.done : TextInputAction.next),
+            if (_step == 2) ...[
+              if (_info != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(_info!, style: TextStyle(color: AppColors.muted, height: 1.4)),
+                ),
+              if (!_simple) _input(_code, 'Code from the email', keyboard: TextInputType.number, hint: '6 digits', maxLength: 6),
+              _input(_next, 'New password', secret: true, hint: '8+ characters, letters and numbers'),
+              _input(_repeat, 'Repeat new password', secret: true, action: TextInputAction.done),
+            ],
+          ],
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(_error!, style: TextStyle(color: AppColors.neg)),
+            ),
+          if (_mode == null && _error != null)
+            OutlinedButton(onPressed: _loadMode, child: const Text('Try again'))
+          else if (_mode != null)
+            FilledButton(
+              onPressed: _busy ? null : _submit,
+              child: Text(_busy ? 'Please wait…' : _step == 1 ? 'Email me a code' : 'Set new password'),
+            ),
+          if (_mode == 'email' && _step == 2)
+            TextButton(onPressed: _busy ? null : _resend, child: const Text('Send a new code')),
         ],
       ),
     );

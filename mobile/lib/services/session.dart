@@ -245,6 +245,40 @@ class Session {
     }
   }
 
+  // ---- Forgot password (Admin and Super Admin; survey persons are reset by their admin)
+
+  /// "simple" (outside production: mobile number or email + new password) or
+  /// "email" (a 6-digit code is emailed first). The server decides.
+  static Future<String> passwordResetMode() async {
+    try {
+      final r = await _dio.get('/auth/setup-status');
+      final mode = r.data is Map ? (r.data as Map)['password_reset'] : null;
+      return mode == 'simple' ? 'simple' : 'email';
+    } catch (e) {
+      throw _message(e);
+    }
+  }
+
+  static Future<String> _resetCall(String path, Map<String, dynamic> body) async {
+    try {
+      final r = await _dio.post(path, data: body);
+      final detail = r.data is Map ? (r.data as Map)['detail'] : null;
+      return detail is String ? detail : 'Done.';
+    } catch (e) {
+      if (e is String) rethrow;
+      throw _message(e);
+    }
+  }
+
+  static Future<String> resetPasswordSimple(String identifier, String newPassword) =>
+      _resetCall('/auth/password-reset/simple', {'identifier': identifier.trim(), 'new_password': newPassword});
+
+  static Future<String> requestPasswordCode(String email) =>
+      _resetCall('/auth/password-reset/request', {'email': email.trim()});
+
+  static Future<String> resetPasswordWithCode(String email, String code, String newPassword) =>
+      _resetCall('/auth/password-reset/confirm', {'email': email.trim(), 'code': code.trim(), 'new_password': newPassword});
+
   static Future<void> signup(String name, String identifier, String password) async {
     try {
       final r = await _dio.post('/auth/signup', data: {'name': name.trim(), 'identifier': identifier.trim(), 'password': password});

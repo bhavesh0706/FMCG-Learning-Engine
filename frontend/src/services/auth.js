@@ -170,6 +170,35 @@ export async function signIn(base, identifier, password) {
   }
 }
 
+// Forgot password (Admin and Super Admin): a 6-digit code is emailed, then code + new password.
+export async function requestPasswordCode(base, email) {
+  try {
+    const res = await axios.post(`${base}/auth/password-reset/request`, { email: email.trim() });
+    return res.data.detail;
+  } catch (err) {
+    throw new Error(message(err, "Couldn't send the code. Try again."), { cause: err });
+  }
+}
+
+export async function resetPassword(base, email, code, newPassword) {
+  try {
+    const res = await axios.post(`${base}/auth/password-reset/confirm`, { email: email.trim(), code: code.trim(), new_password: newPassword });
+    return res.data.detail;
+  } catch (err) {
+    throw new Error(message(err, "The password couldn't be changed. Try again."), { cause: err });
+  }
+}
+
+// Simple mode (no real emails yet; off in production): mobile number or email + new password.
+export async function resetPasswordSimple(base, identifier, newPassword) {
+  try {
+    const res = await axios.post(`${base}/auth/password-reset/simple`, { identifier: identifier.trim(), new_password: newPassword });
+    return res.data.detail;
+  } catch (err) {
+    throw new Error(message(err, "The password couldn't be changed. Try again."), { cause: err });
+  }
+}
+
 export async function createFirstAdmin(base, name, identifier, password) {
   try {
     const res = await axios.post(`${base}/auth/setup`, { name: name.trim(), identifier: identifier.trim(), password });
@@ -200,6 +229,38 @@ export async function refreshMe(base) {
 export async function changePassword(base, currentPassword, newPassword) {
   try {
     const res = await axios.post(`${base}/auth/change-password`, { current_password: currentPassword, new_password: newPassword });
+    save({ token: res.data.token, user: res.data.user });
+    return res.data.user;
+  } catch (err) {
+    throw new Error(message(err, "The password couldn't be changed. Try again."), { cause: err });
+  }
+}
+
+/** Signed in but forgot the password: a 6-digit code is emailed to this account. */
+export async function sendMyPasswordCode(base) {
+  try {
+    const res = await axios.post(`${base}/auth/me/password-code`);
+    return res.data; // { sent, email, detail }
+  } catch (err) {
+    throw new Error(message(err, "Couldn't send the code. Try again."), { cause: err });
+  }
+}
+
+/** New password with the emailed code (no current password needed). This browser stays signed in. */
+export async function changePasswordWithCode(base, code, newPassword) {
+  try {
+    const res = await axios.post(`${base}/auth/change-password`, { code: code.trim(), new_password: newPassword });
+    save({ token: res.data.token, user: res.data.user });
+    return res.data.user;
+  } catch (err) {
+    throw new Error(message(err, "The password couldn't be changed. Try again."), { cause: err });
+  }
+}
+
+/** Simple mode (no real emails yet): signed in, set a new password directly. This browser stays signed in. */
+export async function changePasswordSimple(base, newPassword) {
+  try {
+    const res = await axios.post(`${base}/auth/change-password`, { new_password: newPassword });
     save({ token: res.data.token, user: res.data.user });
     return res.data.user;
   } catch (err) {

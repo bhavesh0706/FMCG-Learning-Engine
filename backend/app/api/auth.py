@@ -415,8 +415,11 @@ def link_earlier_surveys(db: Session, user: User) -> int:
 @router.get("/setup-status")
 def setup_status(db: Session = Depends(get_db)):
     """The web shows 'Create the admin account' until the first admin exists."""
+    from app.services.password_reset import reset_mode
+
     has_admin = db.query(User).filter(User.role == "admin").first() is not None
-    return {"needs_setup": not has_admin, "signup_open": ALLOW_SIGNUP}
+    # password_reset: "simple" (new password only) or "email" (emailed code), see services/password_reset.py
+    return {"needs_setup": not has_admin, "signup_open": ALLOW_SIGNUP, "password_reset": reset_mode()}
 
 
 @router.post("/setup")
@@ -546,7 +549,10 @@ def logout_all(request: Request, user: User = Depends(current_user), db: Session
 
 
 class ChangePasswordIn(BaseModel):
-    current_password: str = Field(min_length=1, max_length=128)
+    # Either the current password, or a code emailed with POST /auth/me/password-code
+    # (for someone who forgot it while signed in).
+    current_password: Optional[str] = Field(default=None, max_length=128)
+    code: Optional[str] = Field(default=None, max_length=12)
     new_password: str = Field(min_length=8, max_length=128)
 
 
@@ -557,19 +563,129 @@ def change_password(body: ChangePasswordIn, request: Request, user: User = Depen
     sign-in of this account ends; this device gets a new token and stays signed in.
     Used by the organization at its first sign-in and on its Account page.
     """
-    if not verify_password(body.current_password, user.password_hash):
+    from app.services.password_reset import ResetError, check_code, reset_mode, use_code
+
+    used = None
+    if not body.code and not body.current_password and reset_mode() == "simple":
+        pass  # simple mode (no real emails yet): the signed-in account sets a new password directly
+    elif body.code:
+        try:
+            used = check_code(db, user, body.code)
+        except ResetError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    elif not body.current_password or not verify_password(body.current_password, user.password_hash):
         raise HTTPException(status_code=400, detail="The current password is incorrect.")
     check_password(body.new_password)
     if verify_password(body.new_password, user.password_hash):
         raise HTTPException(status_code=400, detail="Choose a password different from the current one.")
     user.password_hash = hash_password(body.new_password)
     user.must_change_password = 0
+    if used is not None:
+        use_code(db, used)
     sign_out_everywhere(user)  # other devices (and anyone with the old password) are signed out
     db.commit()
     db.refresh(user)
     audit.record_from_request(request, action="auth.password_changed", account=_account_of(user), target_type="user",
                               target_id=user.id, summary="Changed own password (signed out of other devices)")
     return {"token": make_token(user), "user": _user_out(user)}
+
+
+class ResetRequestIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class ResetConfirmIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(min_length=4, max_length=12)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+RESET_SENT = "If an Admin or Super Admin account uses this email, a 6-digit code is on its way. It works for 15 minutes."
+
+
+@router.post("/password-reset/request")
+def password_reset_request(body: ResetRequestIn, db: Session = Depends(get_db)):
+    """
+    Forgot password (Admin and Super Admin): email a 6-digit code. The answer is the
+    same whether or not the email has an account, so nobody can probe addresses.
+    """
+    from app.services.password_reset import account_for, request_code
+
+    user = account_for(db, body.email)
+    if user is not None:
+        try:
+            request_code(db, user)
+        except Exception:  # mail server down: same answer (and logged), nothing revealed
+            import logging
+
+            logging.getLogger("fmcg.mail").exception("Password reset email failed for user %s", user.id)
+    return {"ok": True, "detail": RESET_SENT}
+
+
+@router.post("/password-reset/confirm")
+def password_reset_confirm(body: ResetConfirmIn, request: Request, db: Session = Depends(get_db)):
+    """Set a new password with the emailed code. Every sign-in of the account ends."""
+    from app.services.password_reset import ResetError, account_for, check_code, use_code
+
+    user = account_for(db, body.email)
+    if user is None:
+        raise HTTPException(status_code=400, detail="The code is wrong or has expired. Ask for a new code.")
+    try:
+        row = check_code(db, user, body.code)
+    except ResetError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    check_password(body.new_password)
+    user.password_hash = hash_password(body.new_password)
+    user.must_change_password = 0
+    use_code(db, row)
+    sign_out_everywhere(user)
+    db.commit()
+    audit.record_from_request(request, action="auth.password_reset", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Reset own password with an emailed code (signed out everywhere)")
+    return {"ok": True, "detail": "Password changed. Sign in with your new password."}
+
+
+class SimpleResetIn(BaseModel):
+    identifier: str = Field(min_length=3, max_length=254)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+@router.post("/password-reset/simple")
+def password_reset_simple(body: SimpleResetIn, request: Request, db: Session = Depends(get_db)):
+    """
+    Simple mode only (no real emails yet; off in production): an Admin or Super Admin
+    sets a new password with their mobile number or email. Every sign-in ends.
+    """
+    from app.services.password_reset import account_for_identifier, reset_mode
+
+    if reset_mode() != "simple":
+        raise HTTPException(status_code=403, detail="Use Forgot password: a code is emailed to you.")
+    user = account_for_identifier(db, body.identifier)
+    if user is None:
+        raise HTTPException(status_code=400, detail="No Admin or Super Admin account uses this mobile number or email.")
+    check_password(body.new_password)
+    user.password_hash = hash_password(body.new_password)
+    user.must_change_password = 0
+    sign_out_everywhere(user)
+    db.commit()
+    audit.record_from_request(request, action="auth.password_reset", account=_account_of(user), target_type="user",
+                              target_id=user.id, summary="Set a new password from Forgot password (signed out everywhere)")
+    return {"ok": True, "detail": "Password changed. Sign in with your new password."}
+
+
+@router.post("/me/password-code")
+def my_password_code(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Signed in and forgot the current password: email a code to this account's address."""
+    from app.services.password_reset import RESET_ROLES, request_code
+
+    if user.role not in RESET_ROLES or not user.email:
+        raise HTTPException(status_code=400, detail="This account has no email for codes. Ask your admin to reset the password.")
+    sent = request_code(db, user)
+    name, _, domain = user.email.partition("@")
+    masked = f"{name[:2]}…@{domain}"
+    return {"sent": sent, "email": masked,
+            "detail": f"Code sent to {masked}. It works for 15 minutes." if sent
+            else f"A code was sent to {masked} moments ago. Check your inbox, or try again in a minute."}
 
 
 @router.get("/me")

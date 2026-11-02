@@ -49,6 +49,7 @@ PUBLIC = [
     ({"GET"}, r"^/auth/setup-status$"),
     ({"POST"}, r"^/auth/setup$"),  # only works while no admin exists
     ({"POST"}, r"^/auth/logout$"),  # ends the sent token if it is still valid; harmless otherwise
+    ({"POST"}, r"^/auth/password-reset/(request|confirm|simple)$"),  # forgot password (Admin, Super Admin)
 ]
 
 ADMIN = [
@@ -101,7 +102,7 @@ ORG_CATALOG = [
 # only aggregated results: no customer details, survey persons or recordings.
 CLIENT_ALLOWED = [
     ({"GET"}, r"^/auth/me$"),
-    ({"POST"}, r"^/auth/(logout-all|change-password)$"),
+    ({"POST"}, r"^/auth/(logout-all|change-password|me/password-code)$"),
     (None, r"^/org(/|$)"),
     ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
     ({"GET"}, r"^/products/\d+/recipe/versions$"),

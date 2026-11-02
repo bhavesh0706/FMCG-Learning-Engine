@@ -264,8 +264,12 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
 
   /* ---------------- Navigation ---------------- */
 
+  /// Closes the keyboard wherever the focus is (FocusScope.of(context) only clears this
+  /// screen's own scope, which left the keyboard open on the next step).
+  void _hideKeyboard() => FocusManager.instance.primaryFocus?.unfocus();
+
   void _go(int step) {
-    FocusScope.of(context).unfocus();
+    _hideKeyboard();
     setState(() {
       _error = null;
       _missingQuestionId = null;
@@ -274,6 +278,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   }
 
   Future<void> _back() async {
+    _hideKeyboard();
     if (_step == 0 || (widget.startProduct != null && _step == 2)) {
       if (!_hasEntries || await _confirmLeave()) {
         if (mounted) Navigator.of(context).pop();
@@ -310,6 +315,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   }
 
   void _next() {
+    _hideKeyboard(); // Continue works with the keyboard open: close it, then validate as before
     if (_step == 2) {
       final problem = _validateRespondent();
       if (problem != null) {
@@ -512,6 +518,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   /* ---------------- Submit ---------------- */
 
   Future<void> _submit() async {
+    _hideKeyboard();
     final p = _product!;
     final media = _media!;
     setState(() => _submitting = true);
@@ -668,8 +675,16 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             ),
           ),
         ),
-        body: SafeArea(child: _body()),
-        bottomNavigationBar: _bottomBar(),
+        // The Continue bar is part of the body (not bottomNavigationBar): with
+        // resizeToAvoidBottomInset the body shrinks above the keyboard, so the bar
+        // stays visible right on top of it instead of hidden behind it.
+        body: Builder(builder: (context) {
+          final bar = _bottomBar();
+          return SafeArea(
+            bottom: bar == null, // the bar handles the bottom safe area itself
+            child: Column(children: [Expanded(child: _body()), if (bar != null) bar]),
+          );
+        }),
       ),
     );
   }
@@ -695,10 +710,13 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   Widget? _bottomBar() {
     if (_loadingCatalog || _step < 2) return null;
     final isReview = _step == _reviewStep;
+    // Keyboard open: the bar sits on top of it, so a slimmer bar and no home-indicator padding.
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
     return SafeArea(
       top: false,
+      bottom: !keyboardOpen,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+        padding: EdgeInsets.fromLTRB(16, keyboardOpen ? 8 : 10, 16, keyboardOpen ? 8 : 12),
         decoration: BoxDecoration(
           color: AppColors.surface,
           border: Border(top: BorderSide(color: AppColors.line)),
@@ -735,6 +753,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     final list = _categories.where((c) => query.isEmpty || c.name.toLowerCase().contains(query)).toList();
     int count(CatalogCategory c) => _products.where((p) => p.categoryId == c.id).length;
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
         TextField(
@@ -797,6 +816,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
 
   Widget _respondentStep() {
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         _banner(),
@@ -841,7 +861,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           )
         else
           _field(_executive, 'Your name (executive) *', capitalization: TextCapitalization.words),
-        _field(_surveyLocation, 'Survey location *', capitalization: TextCapitalization.words, hint: 'e.g. D-Mart, Andheri West'),
+        _field(_surveyLocation, 'Survey location *', capitalization: TextCapitalization.words, hint: 'e.g. D-Mart, Andheri West',
+            action: TextInputAction.done),
         _locationRow(),
         const SizedBox(height: 12),
         Text('When did they use ${_product?.name ?? 'the product'}? *',
@@ -901,6 +922,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     TextCapitalization capitalization = TextCapitalization.none,
     String? hint,
     List<String>? autofill,
+    TextInputAction action = TextInputAction.next,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -909,7 +931,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         keyboardType: keyboard,
         textCapitalization: capitalization,
         autofillHints: autofill,
-        textInputAction: TextInputAction.next,
+        textInputAction: action,
+        onSubmitted: action == TextInputAction.done ? (_) => _hideKeyboard() : null,
         decoration: _inputDecoration(label).copyWith(hintText: hint),
         onChanged: (_) {
           if (_error != null) setState(() => _error = null);
@@ -961,6 +984,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   Widget _questionsView() {
     final done = _answeredCount;
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
       children: [
         _banner(),
@@ -1027,10 +1051,16 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         );
       default:
         final controller = _textControllers.putIfAbsent(q.id, () => TextEditingController(text: value));
+        // The last text question's return key is "Done" (closes the keyboard); earlier
+        // ones are "Next" (moves to the next text field).
+        final lastText = _questions.lastWhere((x) => !const {'rating', 'yes_no', 'single_choice'}.contains(x.type), orElse: () => q).id == q.id;
         answer = TextField(
           controller: controller,
           minLines: 2,
           maxLines: 5,
+          keyboardType: TextInputType.text, // single-line keyboard: the return key acts as Done / Next
+          textInputAction: lastText ? TextInputAction.done : TextInputAction.next,
+          onSubmitted: lastText ? (_) => _hideKeyboard() : null,
           textCapitalization: TextCapitalization.sentences,
           decoration: const InputDecoration(hintText: 'Write down what the customer says'),
           onChanged: (v) => _answer(q, v),
@@ -1080,6 +1110,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   Widget _recordingStepView() {
     final m = _media;
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
         Text(
@@ -1223,6 +1254,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         );
 
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
       children: [
         _ReviewCard(

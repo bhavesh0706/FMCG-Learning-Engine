@@ -561,3 +561,20 @@ def _set_feedback_tone(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy 
 
 event.listen(FeedbackRecord, "before_insert", _set_feedback_tone)
 event.listen(FeedbackRecord, "before_update", _set_feedback_tone)
+
+
+# ============================================================
+# PASSWORD RESET CODES (emailed to Admin and Super Admin accounts)
+# Hashed, single use, 15 minutes, 5 tries (services/password_reset.py).
+# ============================================================
+
+class PasswordResetCode(Base):
+    __tablename__ = "password_reset_codes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    code_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    used_at = Column(DateTime, nullable=True)
