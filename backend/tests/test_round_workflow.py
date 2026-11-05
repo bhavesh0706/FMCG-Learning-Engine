@@ -38,15 +38,7 @@ def _new_product(client, org):
         assert client.post(f"/products/{pid}/questions", headers=auth(org),
                            json={"text": f"Question {i}?", "question_type": "text", "required": True}).status_code == 201
     assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=RECIPE).status_code == 200
-    # The survey form is approved by an Admin before survey persons can use it (requirements point 4)
-    from app.database.database import SessionLocal
-
-    session = SessionLocal()
-    try:
-        approver = make_user(session, role="admin")
-    finally:
-        session.close()
-    assert client.post(f"/admin/products/{pid}/survey-form/approve", headers=auth(approver), json={}).status_code == 200
+    # The Super Admin's survey questions are final: no approval step
     return pid, cid
 
 

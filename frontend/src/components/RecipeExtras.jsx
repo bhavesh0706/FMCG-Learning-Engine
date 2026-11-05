@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { downloadAttachment, errorText, removeAttachment, uploadAttachment } from "../services/nextApi";
+import { useCallback, useEffect, useState } from "react";
+import { downloadAttachment, errorText, listStandards, removeAttachment, removeStandard, uploadAttachment } from "../services/nextApi";
+import StandardRuleForm, { KINDS, ruleCondition } from "./StandardRuleForm";
 
 /*
   Recipe tab extras (requirements points 1-3), from the server's recipe response:
@@ -58,15 +59,31 @@ export function CostingCard({ costing }) {
   );
 }
 
-export function StandardsCard({ standards }) {
+export function StandardsCard({ standards, productId, readOnly = true, onChanged }) {
+  // Rules made for this product only (Super Admin adds, edits and removes them here)
+  const [rules, setRules] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const loadRules = useCallback(() => {
+    if (readOnly || !productId) return;
+    listStandards(productId).then((r) => setRules(r.standards || [])).catch(() => {});
+  }, [productId, readOnly]);
+  useEffect(() => { loadRules(); }, [loadRules]);
   if (!standards) return null;
   const results = standards.results || [];
+  const changed = () => { setEditing(null); setAdding(false); loadRules(); onChanged?.(); };
+  const remove = async (r) => {
+    if (!window.confirm(`Remove the rule “${r.name}”?`)) return;
+    await removeStandard(r.id).catch(() => {});
+    changed();
+  };
+  const SCOPE = { product: "This product", category: "Category", all: "All products" };
   return (
     <section className="recipe-card" aria-labelledby="standards-title">
       <header className="recipe-card-head">
         <div>
           <h3 id="standards-title">Recipe standards</h3>
-          <p className="muted">Each recipe is checked against the standard rules set in the Recipe Master.</p>
+          <p className="muted">This recipe is checked against the rules for this product, its category and all products.</p>
         </div>
         {results.length > 0 && (
           <span className={`status-chip ${standards.passed ? "is-ok" : "is-neg"}`}>
@@ -75,16 +92,50 @@ export function StandardsCard({ standards }) {
         )}
       </header>
       {results.length === 0 ? (
-        <p className="muted">No standard rules apply yet.</p>
+        <p className="muted">No standard rules apply to this product yet.</p>
       ) : (
-        <ul className="std-results is-check">
-          {results.map((r) => (
-            <li key={r.rule_id} className={r.passed ? "is-ok" : "is-neg"}>
-              <span aria-hidden="true">{r.passed ? "✓" : "✕"}</span>
-              <span><strong>{r.name}</strong><span className="muted"> · {r.detail}</span></span>
-            </li>
-          ))}
-        </ul>
+        <div className="table-wrap">
+          <table className="data-table std-table">
+            <thead>
+              <tr><th scope="col">Standard</th><th scope="col">Expected</th><th scope="col">Actual</th><th scope="col">Status</th><th scope="col">Reason</th></tr>
+            </thead>
+            <tbody>
+              {results.map((r) => (
+                <tr key={r.rule_id}>
+                  <td><strong>{r.name}</strong><span className="cell-sub">{SCOPE[r.scope] || ""}</span></td>
+                  <td>{r.expected || "—"}</td>
+                  <td>{r.actual || "—"}</td>
+                  <td><span className={`status-chip ${r.passed ? "is-ok" : "is-neg"}`}>{r.status || (r.passed ? "MET" : "NOT MET")}</span></td>
+                  <td className={r.passed ? "muted" : "std-reason"}>{r.reason || r.detail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!readOnly && productId && (
+        <div className="std-product-rules">
+          <h4>Rules for this product</h4>
+          <ul className="std-results">
+            {rules.map((r) => editing === r.id ? (
+              <li key={r.id} className="is-editing"><StandardRuleForm productId={productId} rule={r} onSaved={changed} onCancel={() => setEditing(null)} /></li>
+            ) : (
+              <li key={r.id}>
+                <span><strong>{r.name}</strong><span className="muted"> · {KINDS[r.kind] || r.kind} · {ruleCondition(r)}</span></span>
+                <span className="attach-actions">
+                  <button type="button" className="link-btn" onClick={() => setEditing(r.id)}>Edit</button>
+                  <button type="button" className="link-btn danger-link" onClick={() => remove(r)}>Remove</button>
+                </span>
+              </li>
+            ))}
+            {!rules.length && <li className="muted">No rules for this product only.</li>}
+          </ul>
+          {adding ? (
+            <StandardRuleForm productId={productId} onSaved={changed} onCancel={() => setAdding(false)} />
+          ) : (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>Add a rule for this product</button>
+          )}
+        </div>
       )}
     </section>
   );

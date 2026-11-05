@@ -53,6 +53,34 @@ class RoundError(Exception):
         self.status = status
 
 
+class StandardsNotMet(RoundError):
+    """The recipe the round would test fails at least one applicable Recipe Standard.
+    Every active applicable standard is mandatory; there is no override."""
+
+    def __init__(self, failures: list, version: int):
+        n = len(failures)
+        super().__init__(f"Round not started: recipe v{version} doesn't meet {n} recipe standard{'s' if n != 1 else ''}. "
+                         "Change the recipe (or the standard) so every standard is met, then start the round.", 409)
+        self.failures = failures
+        self.version = version
+
+
+def standards_failures(db: Session, product: Product, version: int) -> list:
+    """Validate the recipe of this version against every active standard that applies to the
+    product, read fresh from the database (never a cached result). [] = all met."""
+    from app.database.models import RecipeStandard
+    from app.services.recipe_tools import validate
+
+    row = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first())
+    recipe = row.recipe if row is not None else None
+    rules = db.query(RecipeStandard).filter(RecipeStandard.is_active == 1).all()
+    by_id = {r.id: r for r in rules}
+    result = validate(recipe, rules, product.category_id, product.id)
+    return [{"rule_id": x["rule_id"], "name": x["name"], "kind": x["kind"], "ingredient": by_id[x["rule_id"]].ingredient,
+             "expected": x["expected"], "actual": x["actual"], "reason": x["reason"], "scope": x.get("scope")}
+            for x in result["results"] if not x["passed"]]
+
+
 def _iso(dt) -> Optional[str]:
     if isinstance(dt, datetime):
         return dt.isoformat(timespec="seconds") + "Z"
@@ -359,6 +387,11 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
     due = _parse_due(due_date)
     if due is not None and due < date.today():
         raise RoundError("The 'wanted by' date is in the past.")
+    # Recipe Standards: checked here, immediately before the round is created, on every
+    # path that starts a round. Nothing is written when one fails (no round, no notice).
+    failures = standards_failures(db, product, version)
+    if failures:
+        raise StandardsNotMet(failures, version)
     last = latest_round(db, product.id)
     r = SurveyRound(
         product_id=product.id, number=(last.number if last else 0) + 1, recipe_version=version, target=target,

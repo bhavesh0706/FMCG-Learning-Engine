@@ -153,14 +153,6 @@ class QuestionUpdate(QuestionIn):
 
 
 
-def _form_changed(db: Session, product_or_id, request: Request) -> None:
-    """The Super Admin changed a survey form: an Admin approves it before survey persons use it."""
-    from app.services.survey_forms import mark_pending
-
-    product = product_or_id if isinstance(product_or_id, Product) else db.get(Product, int(product_or_id))
-    if product is not None:
-        mark_pending(db, product, account(request))
-
 class QuestionOrder(BaseModel):
     question_ids: List[int] = Field(min_length=1)
 
@@ -297,13 +289,14 @@ def _product_out(
         # Recipe status for the Catalog page (the recipe itself: GET /products/{id}/recipe).
         "has_recipe": bool(getattr(p, "recipe", None)),
         "recipe_steps": len((getattr(p, "recipe", None) or {}).get("steps") or []),
+        "recipe_ingredients": len((getattr(p, "recipe", None) or {}).get("ingredients") or []),
         # Newest recipe version: who changed it and when (Catalog badge "Updated by client").
         "recipe_change": (recipe_changes if recipe_changes is not None else latest_changes(db, [p.id])).get(p.id),
         # The survey round collecting surveys now (organization portal starts rounds), or None.
         "live_round": (rounds if rounds is not None else live_rounds(db, [p.id])).get(p.id),
         # False: an existing product that stays open without the Super Admin starting a round.
         "needs_round": bool(getattr(p, "needs_round", 1)),
-        # Survey form approval: approved | pending | returned (an Admin approves the questions)
+        # Always "approved": the Super Admin's survey questions are final (no approval step)
         "questions_status": getattr(p, "questions_status", None) or "approved",
         "questions_note": getattr(p, "questions_note", None),
         "questions_reviewed_by": getattr(p, "questions_reviewed_by", None),
@@ -582,7 +575,6 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
 
     # One transaction: the product and its starting questions are saved together, or not at all.
     product = Product(**body.model_dump(exclude=STARTING_QUESTION_FIELDS))
-    product.questions_status = "pending"  # new survey form: an Admin approves it first
     db.add(product)
     conflict = f'"{body.name}" already exists in {category.name}, or the SKU is already used.'
     try:
@@ -733,7 +725,6 @@ def add_question(product_id: int, body: QuestionIn, request: Request, db: Sessio
         report_role=body.report_role,
     )
     db.add(question)
-    _form_changed(db, product_id, request)
     db.commit()
     db.refresh(question)
     audit.note(request, target_id=product_id,
@@ -772,7 +763,6 @@ def update_question(question_id: int, body: QuestionUpdate, request: Request, db
         question.is_active = 1 if data["is_active"] else 0
     db.flush()
     _renumber(db, question.product_id)
-    _form_changed(db, question.product_id, request)
     db.commit()
     db.refresh(question)
     audit.note(request, target_id=question.product_id,
@@ -787,7 +777,6 @@ def deactivate_question(question_id: int, request: Request, db: Session = Depend
     question.is_active = 0
     db.flush()
     _renumber(db, question.product_id)
-    _form_changed(db, question.product_id, request)
     db.commit()
     audit.note(request, target_id=question.product_id,
                summary=f"Removed survey question #{question_id} from product #{question.product_id}")
@@ -803,6 +792,5 @@ def reorder_questions(product_id: int, body: QuestionOrder, request: Request, db
         raise HTTPException(status_code=400, detail="Send every active question of this product exactly once.")
     for position, qid in enumerate(body.question_ids, start=1):
         questions[qid].position = position
-    _form_changed(db, product_id, request)
     db.commit()
     return {"questions": [_question_out(q) for q in _active_questions(db, product_id)]}

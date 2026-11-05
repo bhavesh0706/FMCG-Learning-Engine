@@ -56,14 +56,15 @@ def test_standards_validate_recipes_and_show_in_the_recipe_master(client, db, ad
     org = make_user(db, role="client")
     client.put(f"/products/{product.id}/recipe", headers=auth(org), json=RECIPE)
     rules = [
-        {"name": "Contains cocoa", "kind": "required_ingredient", "ingredient": "cocoa"},
-        {"name": "Sugar at most 25%", "kind": "ingredient_share", "ingredient": "sugar", "max_value": 25},
-        {"name": "Cost per kg at most 500", "kind": "max_cost_per_kg", "max_value": 500},
-        {"name": "Every ingredient costed", "kind": "costs_complete"},
+        # a scope is required: these check every recipe
+        {"name": "Contains cocoa", "kind": "required_ingredient", "ingredient": "cocoa", "applies_to_all": True},
+        {"name": "Sugar at most 25%", "kind": "ingredient_share", "ingredient": "sugar", "max_value": 25, "applies_to_all": True},
+        {"name": "Cost per kg at most 500", "kind": "max_cost_per_kg", "max_value": 500, "applies_to_all": True},
+        {"name": "Every ingredient costed", "kind": "costs_complete", "applies_to_all": True},
     ]
     ids = [client.post("/recipe-standards", headers=auth(org), json=r).json()["id"] for r in rules]
     assert client.post("/recipe-standards", headers=auth(admin), json=rules[0]).status_code == 403  # Super Admin only
-    assert client.post("/recipe-standards", headers=auth(org), json={"name": "Bad rule", "kind": "ingredient_share", "ingredient": "x"}).status_code == 400
+    assert client.post("/recipe-standards", headers=auth(org), json={"name": "Bad rule", "kind": "ingredient_share", "ingredient": "x", "applies_to_all": True}).status_code == 400
     v = client.get(f"/products/{product.id}/recipe", headers=auth(admin)).json()["standards"]
     by_name = {r["name"]: r for r in v["results"]}
     assert by_name["Contains cocoa"]["passed"] and by_name["Every ingredient costed"]["passed"]
@@ -167,31 +168,27 @@ def test_new_question_types_respondent_details_and_breakdowns(client, db, admin,
 
 # ---------- 4. Survey form approval ----------
 
-def test_survey_forms_need_admin_approval(client, db, admin):
+def test_the_super_admins_survey_questions_are_final(client, db, admin):
+    """No Admin approval step: a new or changed survey form is usable at once by the
+    survey persons assigned to the live round, and the approval endpoints are gone."""
     org = make_user(db, role="client")
     cid = client.post("/categories", headers=auth(org), json={"name": _unique("Snacks ")}).json()["id"]
     pid = client.post("/products", headers=auth(org), json={"category_id": cid, "name": _unique("Chips "), "min_responses": 1}).json()["id"]
     for i in range(5):
         client.post(f"/products/{pid}/questions", headers=auth(org), json={"text": f"Question {i}?", "question_type": "text"})
     assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=RECIPE).status_code == 200
-    assert client.get(f"/products/{pid}", headers=auth(org)).json()["questions_status"] == "pending"
-    pending = client.get("/admin/survey-forms", headers=auth(admin)).json()
-    assert any(f["product_id"] == pid for f in pending["forms"]) and pending["counts"]["pending"] >= 1
-    started = client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5})
-    assert started.status_code == 201, started.text
+    assert client.get(f"/products/{pid}", headers=auth(org)).json()["questions_status"] == "approved"
+    assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5}).status_code == 201
     person = make_user(db)
-    assigned = client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [person.id]})
-    assert assigned.status_code == 200, assigned.text
+    assert client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [person.id]}).status_code == 200
     ids = lambda: {p["id"] for p in client.get("/products", headers=auth(person)).json()["products"]}  # noqa: E731
-    assert pid not in ids(), "not usable before approval"
-    assert client.post(f"/admin/products/{pid}/survey-form/return", headers=auth(admin), json={}).status_code == 400  # note required
-    assert client.post(f"/admin/products/{pid}/survey-form/return", headers=auth(admin), json={"note": "Q3 unclear"}).json()["status"] == "returned"
-    assert pid not in ids()
-    ok = client.post(f"/admin/products/{pid}/survey-form/approve", headers=auth(admin), json={})
-    assert ok.status_code == 200 and ok.json()["status"] == "approved" and ok.json()["reviewed_by"] == admin.name
-    assert pid in ids()
+    assert pid in ids(), "usable as soon as the round is assigned"
     client.post(f"/products/{pid}/questions", headers=auth(org), json={"text": "One more question?", "question_type": "text"})
-    assert pid not in ids(), "a change needs approval again"
+    assert pid in ids(), "a change by the Super Admin is final too"
+    assert len(client.get(f"/products/{pid}/questions", headers=auth(person)).json()["questions"]) == 6
+    for path in (f"/admin/products/{pid}/survey-form/approve", f"/admin/products/{pid}/survey-form/return"):
+        assert client.post(path, headers=auth(admin), json={"note": "x"}).status_code == 404
+    assert client.get("/admin/survey-forms", headers=auth(admin)).status_code == 404
 
 
 # ---------- 9. Report review chain ----------

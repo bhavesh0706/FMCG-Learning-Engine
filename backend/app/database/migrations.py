@@ -119,10 +119,30 @@ def run_migrations():
     if not had_form_status:  # forms already in use stay usable: approved
         with engine.begin() as conn:
             conn.execute(text("UPDATE products SET questions_status = 'approved'"))
+    # The Super Admin's survey questions are final (no Admin approval step): forms left
+    # "pending" or "returned" by the earlier approval flow are usable again.
+    with engine.begin() as conn:
+        n = conn.execute(text("UPDATE products SET questions_status = 'approved' "
+                              "WHERE questions_status IN ('pending', 'returned')")).rowcount
+    if n:
+        print(f"Database updated: {n} survey form(s) no longer wait for approval")
+    # Recipe standards gained an explicit scope. Rules created before it, with no
+    # category, applied to every product: keep exactly that, once, for those rows only.
+    from sqlalchemy import inspect as _inspect
+
+    _std_cols = {c["name"] for c in _inspect(engine).get_columns("recipe_standards")} if _inspect(engine).has_table("recipe_standards") else set()
+    _std_scope_new = bool(_std_cols) and "applies_to_all" not in _std_cols
+
     # Tables of these features may exist from an earlier version with fewer columns:
     # add what's missing (create_all never changes an existing table).
     sync_columns(["product_checks", "report_review_events", "master_values", "recipe_standards",
                   "recipe_attachments", "password_reset_codes", "custom_report_requests"])
+
+    if _std_scope_new:
+        with engine.begin() as conn:
+            n = conn.execute(text("UPDATE recipe_standards SET applies_to_all = 1 "
+                                  "WHERE product_id IS NULL AND category_id IS NULL")).rowcount
+        print(f"Database updated: {n} existing recipe standard(s) kept as 'all products'")
 
     from app.services.masters import seed_defaults
 
@@ -348,6 +368,7 @@ def sync_columns(table_names) -> None:
                 conn.execute(text(f"ALTER TABLE {name} ADD COLUMN {column.name} {ddl}"))
             print(f"Database updated: added {name}.{column.name}")
         if engine.dialect.name == "mysql":
+            _fix_types(name, table, present)
             for col_name, info in present.items():
                 if col_name in table.columns or info.get("nullable", True) or info.get("default") is not None:
                     continue
@@ -357,4 +378,34 @@ def sync_columns(table_names) -> None:
                 with engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE {name} MODIFY COLUMN {col_name} {ddl} NULL"))
                 print(f"Database updated: {name}.{col_name} is now optional (not used any more)")
+
+
+def _python_type(sql_type):
+    try:
+        return sql_type.python_type
+    except (NotImplementedError, AttributeError):
+        return None
+
+
+def _fix_types(name: str, table, present: dict) -> None:
+    """
+    A column that exists with an older type (MySQL). Number -> text is lossless, so it is
+    converted (e.g. recipe_attachments.uploaded_by was a user id, now the uploader's name).
+    Any other mismatch could lose data: it is only reported, never changed.
+    """
+    for column in table.columns:
+        info = present.get(column.name)
+        if info is None or column.primary_key:
+            continue
+        want, have = _python_type(column.type), _python_type(info["type"])
+        if want is None or have is None or want is have:
+            continue
+        if want is str and have in (int, float):
+            ddl = column.type.compile(dialect=engine.dialect) + " NULL"
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {name} MODIFY COLUMN {column.name} {ddl}"))
+            print(f"Database updated: {name}.{column.name} changed from a number to text ({ddl}); values kept")
+        else:
+            print(f"WARNING: {name}.{column.name} is {info['type']} in the database but the code expects "
+                  f"{column.type}. Not changed automatically (it could lose data); please check it.")
 

@@ -3,7 +3,7 @@ import { API_BASE_URL } from "./feedbackApi";
 
 /*
   Next update (requirements PDF): Recipe Master, standards, attachments, master lists,
-  survey form approval, report reviews, the Super Admin's surveys, report downloads.
+  report reviews, the Super Admin's surveys, report downloads.
   axios.create() clients get the sign-in token automatically (services/auth.js).
 */
 const api = axios.create({ baseURL: API_BASE_URL });
@@ -13,7 +13,7 @@ export const errorText = (err, fallback) => err?.response?.data?.detail || err?.
 
 // Recipe Master, standards, attachments
 export const getRecipeMaster = () => data(api.get("/recipes"));
-export const listStandards = () => data(api.get("/recipe-standards"));
+export const listStandards = (productId) => data(api.get("/recipe-standards", { params: productId ? { product_id: productId } : {} }));
 export const addStandard = (body) => data(api.post("/recipe-standards", body));
 export const changeStandard = (id, body) => data(api.put(`/recipe-standards/${id}`, body));
 export const removeStandard = (id) => data(api.delete(`/recipe-standards/${id}`));
@@ -46,11 +46,6 @@ export const downloadReport = (productId, kind, round) =>
 export const getMasters = (all = false) => data(api.get("/masters", { params: all ? { all: true } : {} }));
 export const addMaster = (kind, name) => data(api.post(`/admin/masters/${kind}`, { name }));
 export const changeMaster = (kind, id, body) => data(api.patch(`/admin/masters/${kind}/${id}`, body));
-
-// Survey form approval (admins)
-export const listSurveyForms = (status = "pending") => data(api.get("/admin/survey-forms", { params: { status } }));
-export const approveSurveyForm = (productId, note) => data(api.post(`/admin/products/${productId}/survey-form/approve`, { note }));
-export const returnSurveyForm = (productId, note) => data(api.post(`/admin/products/${productId}/survey-form/return`, { note }));
 
 // Report review chain
 export const submitReport = (responseId, note) => data(api.post(`/surveys/responses/${responseId}/report/submit`, { note }));

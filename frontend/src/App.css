@@ -11501,7 +11501,7 @@ input[type="radio"] {
 }
 
 /* ================================================================
-   Next update: recipe standards, attachments, form approval, report
+   Next update: recipe standards, attachments, report
    review status, downloads, master lists
    ================================================================ */
 
@@ -11528,6 +11528,24 @@ input[type="radio"] {
 .std-results li.is-ok > span:first-child { color: var(--pos); font-weight: 800; }
 .std-results li.is-neg { background: var(--neg-soft); }
 .std-results li.is-neg > span:first-child { color: var(--neg); font-weight: 800; }
+
+.std-table td { vertical-align: top; font-size: 13.5px; }
+.round-blocked {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 var(--space-section, 16px);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--neg);
+  background: var(--neg-soft);
+  color: var(--neg-strong);
+}
+.round-blocked p { margin: 0; line-height: 1.5; }
+.round-blocked .table-wrap { background: var(--surface); border-radius: 8px; }
+.std-table .std-reason { color: var(--neg-strong); }
+.std-product-rules { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.std-product-rules h4 { margin: 0; font-size: 14px; }
+.std-results li.is-editing { display: block; background: var(--surface); border: 1px solid var(--line); }
 
 .std-form {
   display: flex;
@@ -11571,33 +11589,6 @@ input[type="radio"] {
 .ing-edit-head,
 .ing-edit-row {
   grid-template-columns: minmax(0, 2fr) minmax(0, 0.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 1.8fr) 32px;
-}
-
-.form-status {
-  margin: 0 0 12px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  font-size: 14px;
-}
-
-.form-status p { margin: 0; }
-.form-status.is-ok { background: var(--pos-soft); color: var(--pos-ink); }
-.form-status.is-warn { background: var(--act-soft); color: var(--act-ink); }
-.form-status.is-neg { background: var(--neg-soft); color: var(--neg-strong); }
-
-.form-status-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.form-status-actions .input {
-  flex: 1 1 220px;
-  min-height: 32px;
-  height: 32px;
-  padding: 4px 10px;
-  font-size: 13.5px;
 }
 
 .report-status {

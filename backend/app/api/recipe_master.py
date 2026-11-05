@@ -75,7 +75,7 @@ def recipe_extras(db: Session, product: Product) -> dict:
     files = db.query(RecipeAttachment).filter(RecipeAttachment.product_id == product.id).order_by(RecipeAttachment.created_at.desc()).all()
     return {
         "costing": costing(recipe),
-        "standards": validate(recipe, rules, product.category_id) if recipe else {"passed": None, "failed_count": 0, "checked": 0, "results": []},
+        "standards": validate(recipe, rules, product.category_id, product.id) if recipe else {"passed": None, "failed_count": 0, "checked": 0, "results": []},
         "attachments": [_attachment_out(a) for a in files],
         "legacy_steps": legacy,  # steps of an earlier version, shown read-only
         "latest_version": _latest_version(db, product.id),  # (not "version": a save returns its own)
@@ -102,7 +102,7 @@ def recipe_master(request: Request, db: Session = Depends(get_db)):
     for p in q.order_by(Product.name).all():
         recipe = p.recipe or None
         c = costing(recipe)
-        v = validate(recipe, rules, p.category_id) if recipe else None
+        v = validate(recipe, rules, p.category_id, p.id) if recipe else None
         out.append({
             "product_id": p.id, "product_name": p.name, "sku": p.sku, "category_name": cats.get(p.category_id),
             "has_recipe": bool(recipe), "version": _latest_version(db, p.id),
@@ -119,23 +119,43 @@ def recipe_master(request: Request, db: Session = Depends(get_db)):
 
 class StandardIn(BaseModel):
     name: str = Field(min_length=3, max_length=160)
-    kind: Literal["required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete"]
+    kind: Literal["required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg"]
     ingredient: Optional[str] = Field(default=None, max_length=120)
     min_value: Optional[float] = Field(default=None, ge=0)
     max_value: Optional[float] = Field(default=None, ge=0)
+    # Scope, exactly one: a product, a category, or every product (explicit)
+    product_id: Optional[int] = None
     category_id: Optional[int] = None
+    applies_to_all: bool = False
     is_active: bool = True
 
 
-def _standard_out(r: RecipeStandard, cats: dict) -> dict:
+def _names(db: Session) -> tuple:
+    return ({c.id: c.name for c in db.query(Category).all()}, {p.id: p.name for p in db.query(Product).all()})
+
+
+def _standard_out(r: RecipeStandard, cats: dict, products: Optional[dict] = None) -> dict:
+    scope = "product" if r.product_id else "category" if r.category_id else "all" if r.applies_to_all else "none"
+    label = {"product": f"Only {(products or {}).get(r.product_id, 'this product')}",
+             "category": f"Only {cats.get(r.category_id, 'this category')}", "all": "All products", "none": "Applies to nothing"}[scope]
     return {"id": r.id, "name": r.name, "kind": r.kind, "ingredient": r.ingredient, "min_value": r.min_value,
-            "max_value": r.max_value, "category_id": r.category_id, "category_name": cats.get(r.category_id),
-            "is_active": bool(r.is_active), "created_by": r.created_by}
+            "max_value": r.max_value, "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
+            "category_id": r.category_id, "category_name": cats.get(r.category_id), "applies_to_all": bool(r.applies_to_all),
+            "scope": scope, "scope_label": label, "is_active": bool(r.is_active), "created_by": r.created_by}
 
 
-def _check_standard(body: StandardIn) -> None:
-    if body.kind in ("required_ingredient", "ingredient_share") and not (body.ingredient or "").strip():
+def _check_standard(body: StandardIn, db: Session) -> None:
+    scopes = sum([bool(body.product_id), bool(body.category_id), bool(body.applies_to_all)])
+    if scopes != 1:
+        raise HTTPException(status_code=400, detail="Choose what the rule applies to: one product, one category, or all products.")
+    if body.product_id and db.get(Product, body.product_id) is None:
+        raise HTTPException(status_code=400, detail="That product doesn't exist.")
+    if body.category_id and db.get(Category, body.category_id) is None:
+        raise HTTPException(status_code=400, detail="That category doesn't exist.")
+    if body.kind in ("required_ingredient", "ingredient_share", "ingredient_cost_per_kg") and not (body.ingredient or "").strip():
         raise HTTPException(status_code=400, detail="Name the ingredient this rule checks.")
+    if body.kind == "ingredient_cost_per_kg" and body.max_value is None:
+        raise HTTPException(status_code=400, detail="Give the maximum Cost per KG for this ingredient.")
     if body.kind == "ingredient_share" and body.min_value is None and body.max_value is None:
         raise HTTPException(status_code=400, detail="Give a minimum and/or maximum Usage %.")
     if body.kind == "ingredient_share" and body.min_value is not None and body.max_value is not None and body.min_value > body.max_value:
@@ -145,20 +165,31 @@ def _check_standard(body: StandardIn) -> None:
 
 
 @router.get("/recipe-standards")
-def list_standards(request: Request, db: Session = Depends(get_db)):
+def list_standards(request: Request, product_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Every rule, or with ?product_id= the rules made for that one product."""
     _admin_or_super(request)
-    cats = {c.id: c.name for c in db.query(Category).all()}
-    return {"standards": [_standard_out(r, cats) for r in db.query(RecipeStandard).order_by(RecipeStandard.id).all()]}
+    cats, products = _names(db)
+    q = db.query(RecipeStandard)
+    if product_id:
+        q = q.filter(RecipeStandard.product_id == product_id)
+    return {"standards": [_standard_out(r, cats, products) for r in q.order_by(RecipeStandard.id).all()]}
+
+
+def _fields(body: StandardIn) -> dict:
+    d = body.model_dump(exclude={"is_active", "applies_to_all"})
+    d["applies_to_all"] = 1 if body.applies_to_all else 0
+    d["ingredient"] = (body.ingredient or "").strip() or None
+    return d
 
 
 @router.post("/recipe-standards", status_code=201)
 def add_standard(body: StandardIn, request: Request, db: Session = Depends(get_db)):
-    _check_standard(body)
-    r = RecipeStandard(**body.model_dump(exclude={"is_active"}), is_active=1 if body.is_active else 0, created_by=account(request).get("name"))
+    _check_standard(body, db)
+    r = RecipeStandard(**_fields(body), is_active=1 if body.is_active else 0, created_by=account(request).get("name"))
     db.add(r)
     db.commit()
     audit.note(request, summary=f"Added recipe standard “{r.name}”")
-    return _standard_out(r, {c.id: c.name for c in db.query(Category).all()})
+    return _standard_out(r, *_names(db))
 
 
 @router.put("/recipe-standards/{standard_id}")
@@ -166,13 +197,13 @@ def change_standard(standard_id: int, body: StandardIn, request: Request, db: Se
     r = db.get(RecipeStandard, standard_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Rule not found.")
-    _check_standard(body)
-    for k, v in body.model_dump(exclude={"is_active"}).items():
+    _check_standard(body, db)
+    for k, v in _fields(body).items():
         setattr(r, k, v)
     r.is_active = 1 if body.is_active else 0
     db.commit()
     audit.note(request, summary=f"Changed recipe standard “{r.name}”")
-    return _standard_out(r, {c.id: c.name for c in db.query(Category).all()})
+    return _standard_out(r, *_names(db))
 
 
 @router.delete("/recipe-standards/{standard_id}")

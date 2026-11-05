@@ -1,3 +1,6 @@
+import { getRecipe } from "../services/catalogAdminApi";
+import { removeStandard } from "../services/nextApi";
+import { StandardsCard } from "./RecipeExtras";
 import AnalyticsPage from "./AnalyticsPage";
 import OrgSurveys from "./OrgSurveys";
 import RecipeMaster from "./RecipeMaster";
@@ -18,6 +21,7 @@ import {
   markUpdatesSeen,
   orgError,
   startRound,
+  standardsFailures,
 } from "../services/orgApi";
 import { downloadComparisonPdf } from "../services/comparisonPdf";
 import CatalogPage, { QuestionsTab, RecipeTab } from "./CatalogPage";
@@ -314,7 +318,7 @@ function PortalShell({ user, ReportView }) {
   // organization's add / change / deactivate / delete (each change notifies the admins).
   else if (page === "catalog") body = <CatalogPage mode="organization" />;
   // Next update: Recipe Master (costing, standards) and every survey with its report review
-  else if (page === "recipes") body = <RecipeMaster onOpenProduct={(id) => go(`products/${id}/recipe`)} />;
+  else if (page === "recipes") body = <RecipeMaster onOpenProduct={(id) => go(`products/${id}/standards`)} />;
   else if (page === "surveys") body = <OrgSurveys />;
   else if (page === "analytics") body = <AnalyticsPage />;
   else if (page === "updates") body = <UpdatesPage onSeen={() => setUnread(0)} />;
@@ -675,6 +679,7 @@ function ProductsPage() {
 const TABS = [
   ["report", "Consumer report"],
   ["recipe", "Recipe"],
+  ["standards", "Recipe standards"],
   ["questions", "Survey questions"],
   ["rounds", "Rounds"],
   ["compare", "Compare rounds"],
@@ -697,7 +702,9 @@ function ProductPage({ productId, tab, round, ReportView }) {
   }
   const detail = state.data;
   const { product, rounds, live_round: live } = detail;
-  const startTitle = live ? `Round ${live.number} is still collecting surveys` : !detail.latest_version ? "Add a recipe first" : "";
+  const failedStandards = detail.standards_failed || [];
+  const startTitle = live ? `Round ${live.number} is still collecting surveys` : !detail.latest_version ? "Add a recipe first"
+    : failedStandards.length ? `${failedStandards.length} recipe standard(s) not met` : "";
   const shownRound = tab === "report" ? round || rounds[rounds.length - 1]?.number : null;
 
   return (
@@ -737,11 +744,16 @@ function ProductPage({ productId, tab, round, ReportView }) {
       </div>
 
       <Notice notice={notice} onClose={() => setNotice(null)} />
+      {!live && (
+        <StandardsBlocked failures={failedStandards} version={detail.latest_version}
+          onRecipe={tab === "standards" ? null : () => go(`products/${productId}/standards`)} />
+      )}
 
       {tab === "report" && <ReportTab product={product} rounds={rounds} round={shownRound} ReportView={ReportView} />}
       {tab === "recipe" && (
         <RecipeSection product={product} detail={detail} onNotice={onNotice} onSaved={() => reload({ silent: true })} onStart={() => setDialog(true)} />
       )}
+      {tab === "standards" && <StandardsSection product={product} onChanged={() => reload({ silent: true })} />}
       {tab === "questions" && <QuestionsSection product={product} onNotice={onNotice} />}
       {tab === "rounds" && (
         <RoundsSection product={product} detail={detail} onStart={() => setDialog(true)} onChanged={() => reload({ silent: true })} onNotice={onNotice} />
@@ -833,6 +845,53 @@ function ReportTab({ product, rounds, round, ReportView }) {
 }
 
 /* ---------------- Recipe ---------------- */
+
+/* Recipe standards of ONE product (its own tab): every result, and the rules made for
+   this product (add, edit, remove). Rules from before per-product standards (a whole
+   category or all products) still apply: they're listed so they can be removed. */
+function StandardsSection({ product, onChanged }) {
+  const [state, setState] = useState({ loading: true, error: "", data: null });
+  const load = useCallback(() => {
+    getRecipe(product.id)
+      .then((data) => setState({ loading: false, error: "", data }))
+      .catch((err) => setState({ loading: false, error: orgError(err, "The standards couldn't be loaded."), data: null }));
+  }, [product.id]);
+  useEffect(() => { load(); }, [load]);
+  if (state.loading) return <Loading />;
+  if (state.error) return <p className="form-error" role="alert">{state.error}</p>;
+  const standards = state.data?.standards || { passed: null, failed_count: 0, checked: 0, results: [] };
+  const inherited = (standards.results || []).filter((r) => r.scope && r.scope !== "product");
+  const changed = () => { load(); onChanged?.(); };
+  const removeInherited = async (r) => {
+    if (!window.confirm(`Remove “${r.name}”? It applies to ${r.scope === "all" ? "every product" : "every product in this category"}.`)) return;
+    await removeStandard(r.rule_id).catch(() => {});
+    changed();
+  };
+  return (
+    <div className="pc">
+      {!state.data?.recipe && <p className="muted">Add a recipe on the Recipe tab: the standards are checked against it.</p>}
+      <StandardsCard standards={standards} productId={product.id} readOnly={false} onChanged={changed} />
+      {inherited.length > 0 && (
+        <section className="recipe-card" aria-label="Rules from the category or all products">
+          <header className="recipe-card-head">
+            <div>
+              <h3>Also applied: rules for the whole category or all products</h3>
+              <p className="muted">Created before standards were set per product. Remove them here if they shouldn't apply to {product.name}.</p>
+            </div>
+          </header>
+          <ul className="std-results">
+            {inherited.map((r) => (
+              <li key={r.rule_id}>
+                <span><strong>{r.name}</strong><span className="muted"> · {r.scope === "all" ? "All products" : "This category"} · {r.expected}</span></span>
+                <button type="button" className="link-btn danger-link" onClick={() => removeInherited(r)}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
 
 function RecipeSection({ product, detail, onNotice, onSaved, onStart }) {
   const latest = detail.versions[0];
@@ -968,6 +1027,40 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice }) {
   );
 }
 
+/* Recipe standards that stop a round from starting (requirements: no round while any
+   applicable standard is NOT MET; the server checks again on every start, no override). */
+function StandardsBlocked({ failures, version, onRecipe }) {
+  if (!failures?.length) return null;
+  return (
+    <div className="round-blocked" role="alert">
+      <p>
+        <strong>A round can't start: {failures.length} recipe standard{failures.length === 1 ? " is" : "s are"} not met
+          {version ? ` by recipe v${version}` : ""}.</strong>{" "}
+        Change the recipe (or the standard) until every standard is met.
+        {onRecipe && <> <button type="button" className="link-btn" onClick={onRecipe}>Open Recipe standards</button></>}
+      </p>
+      <div className="table-wrap">
+        <table className="data-table std-table">
+          <thead>
+            <tr><th scope="col">Standard</th><th scope="col">Ingredient</th><th scope="col">Expected</th><th scope="col">Actual</th><th scope="col">Reason</th></tr>
+          </thead>
+          <tbody>
+            {failures.map((f) => (
+              <tr key={f.rule_id}>
+                <td><strong>{f.name}</strong></td>
+                <td>{f.ingredient || "Whole recipe"}</td>
+                <td>{f.expected}</td>
+                <td>{f.actual}</td>
+                <td className="std-reason">{f.reason}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function NewRoundDialog({ product, detail, onClose, onStarted }) {
   const last = detail.rounds[detail.rounds.length - 1];
   const number = (last?.number || 0) + 1;
@@ -978,6 +1071,7 @@ function NewRoundDialog({ product, detail, onClose, onStarted }) {
     note: "",
   });
   const [error, setError] = useState("");
+  const [blocked, setBlocked] = useState({ failures: [], version: null });
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const today = new Date().toISOString().slice(0, 10);
@@ -990,6 +1084,7 @@ function NewRoundDialog({ product, detail, onClose, onStarted }) {
     }
     setBusy(true);
     setError("");
+    setBlocked({ failures: [], version: null });
     try {
       const res = await startRound(product.id, {
         recipe_version: Number(form.recipe_version) || null,
@@ -999,7 +1094,9 @@ function NewRoundDialog({ product, detail, onClose, onStarted }) {
       });
       onStarted(res.round);
     } catch (err) {
-      setError(orgError(err, "The round couldn't be started."));
+      const failures = standardsFailures(err);
+      if (failures.length) setBlocked({ failures, version: err.response.data.detail.recipe_version });
+      else setError(orgError(err, "The round couldn't be started."));
       setBusy(false);
     }
   };
@@ -1046,6 +1143,7 @@ function NewRoundDialog({ product, detail, onClose, onStarted }) {
         Round {number} report builds itself as surveys come in.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
+      <StandardsBlocked failures={blocked.failures} version={blocked.version} />
     </Modal>
   );
 }

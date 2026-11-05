@@ -1,5 +1,4 @@
 import MastersDialog from "./MastersDialog";
-import { approveSurveyForm, errorText, returnSurveyForm } from "../services/nextApi";
 import { AttachmentsCard, CostingCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { confirmDialog } from "./ConfirmDialog";
@@ -506,7 +505,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
             <h1 id="product-title">{product.name}</h1>
             <span className={`status-chip is-${status.tone}`}>{status.label}</span>
             <span className={`status-chip ${product.has_recipe ? "is-ok" : "is-neutral"}`}>
-              {product.has_recipe ? `Recipe · ${product.recipe_steps} steps` : "No recipe"}
+              {product.has_recipe ? `Recipe · ${product.recipe_ingredients ?? 0} ingredients` : "No recipe"}
             </span>
             {versionsOf(product).saved.length > 0 && (
               <span className="status-chip is-neutral" title="Each saved change to the recipe is a new product version">
@@ -754,7 +753,8 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
    ================================================================ */
 
 // Recipes and survey questions are managed (and shown) only in the organization's
-// portal, so the admin product page has no Recipe or Survey questions tab.
+// portal: the Super Admin's survey questions are final, so the admin product page has
+// no Recipe or Survey questions tab.
 const ADMIN_PRODUCT_TABS = ["details", "access", "rounds"];
 
 function ProductPage({ product, categories, startTab, onChanged, notify, onDeleted, onOpenRound, mode = "admin" }) {
@@ -1060,52 +1060,6 @@ const REPORT_ROLES = {
 
 // readOnly: the admin dashboard lists the questions but can't change them (the
 // organization manages them in its portal; the server refuses admin changes too).
-/* Survey form approval (requirements point 4): the Super Admin edits the questions,
-   an Admin approves the form before survey persons can use it. */
-function FormApproval({ product, readOnly, onChanged, onNotice }) {
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const status = product.questions_status || "approved";
-  const decide = async (approve) => {
-    if (!approve && !note.trim()) {
-      onNotice?.({ tone: "error", text: "Add a note so the Super Admin knows what to change." });
-      return;
-    }
-    setBusy(true);
-    try {
-      await (approve ? approveSurveyForm(product.id, note.trim() || null) : returnSurveyForm(product.id, note.trim()));
-      setNote("");
-      onNotice?.({ tone: "ok", text: approve ? "Survey form approved: survey persons can use it." : "Survey form returned to the Super Admin." });
-      onChanged?.();
-    } catch (err) {
-      onNotice?.({ tone: "error", text: errorText(err, "The decision couldn't be saved.") });
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (status === "approved") {
-    return product.questions_reviewed_by ? (
-      <p className="form-status is-ok">Survey form approved by {product.questions_reviewed_by}{product.questions_note ? ` · “${product.questions_note}”` : ""}</p>
-    ) : null;
-  }
-  return (
-    <div className={`form-status is-${status === "returned" ? "neg" : "warn"}`}>
-      <p>
-        <strong>{status === "returned" ? "Returned by the Admin" : "Waiting for Admin approval"}</strong>
-        {status === "returned" && product.questions_note ? `: “${product.questions_note}”` : ""}
-        {status === "pending" && " · survey persons can't use this form until an Admin approves it."}
-      </p>
-      {readOnly && status === "pending" && (
-        <div className="form-status-actions">
-          <input className="input" placeholder="Note (required to return)" value={note} onChange={(e) => setNote(e.target.value)} />
-          <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => decide(true)}>Approve form</button>
-          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => decide(false)}>Return with note</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false }) {
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1245,7 +1199,6 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 
   return (
     <div>
-      <FormApproval product={product} readOnly={readOnly} onChanged={onChanged} onNotice={onNotice} />
       <div className="tab-head">
         <div className="tab-intro">
           <strong>Survey questions</strong>
@@ -1549,7 +1502,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
       {/* ---- production process ---- */}
       {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
       <CostingCard costing={extras?.costing} />
-      <StandardsCard standards={extras?.standards} />
+      {readOnly && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
       <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />
       <LegacyStepsCard legacy={extras?.legacy_steps} />
 

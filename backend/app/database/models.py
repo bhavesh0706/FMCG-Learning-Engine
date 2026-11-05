@@ -136,9 +136,9 @@ class Product(Base):
     # and any product after a new recipe version). 0 = an existing product surveyed
     # before rounds were required: it stays open as before (services/product_access.py).
     needs_round = Column(Integer, nullable=False, default=1)
-    # Survey form approval (point 4): the Super Admin edits the questions, an Admin
-    # approves them before survey persons can use the form. approved | pending | returned
-    questions_status = Column(String(20), nullable=False, default="approved")  # the API sets "pending" on changes
+    # Kept from the earlier survey form approval step. The Super Admin's survey questions are
+    # final now, so this is always "approved" (start-up resets any old "pending" / "returned").
+    questions_status = Column(String(20), nullable=False, default="approved")
     questions_note = Column(Text, nullable=True)
     questions_reviewed_by = Column(String(150), nullable=True)
     questions_reviewed_at = Column(DateTime, nullable=True)
@@ -655,7 +655,10 @@ class RecipeStandard(Base):
     ingredient = Column(String(120), nullable=True)
     min_value = Column(Float, nullable=True)
     max_value = Column(Float, nullable=True)
-    category_id = Column(Integer, nullable=True, index=True)  # None = every category
+    # Scope (exactly one): one product, one category, or every product (explicit)
+    product_id = Column(Integer, nullable=True, index=True)
+    category_id = Column(Integer, nullable=True, index=True)
+    applies_to_all = Column(Integer, nullable=False, default=0)
     is_active = Column(Integer, nullable=False, default=1)
     created_by = Column(String(150), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

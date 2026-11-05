@@ -287,6 +287,8 @@ def product_detail(product_id: int, request: Request, db: Session = Depends(get_
     rounds = _rounds_out(db, product_id, viewer)
     versions = _versions_out(db, product_id, viewer, rounds)
     live = next((r for r in rounds if r["status"] == R.LIVE), None)
+    latest = versions[0]["version"] if versions else None
+    blocked = R.standards_failures(db, product, latest) if (product.recipe and latest) else []
     return {
         "product": {
             "id": product.id,
@@ -300,8 +302,10 @@ def product_detail(product_id: int, request: Request, db: Session = Depends(get_
         "versions": versions,
         "rounds": rounds,
         "live_round": live,
-        # Starting a round needs a recipe and no round collecting surveys.
-        "can_start_round": bool(product.recipe) and live is None,
+        # Starting a round needs a recipe, no round collecting surveys, and every applicable
+        # Recipe Standard met (shown here; the server checks again when the round is started).
+        "standards_failed": blocked,
+        "can_start_round": bool(product.recipe) and live is None and not blocked,
         "default_target": R.DEFAULT_TARGET,
     }
 
@@ -457,6 +461,14 @@ def start_round_for(db: Session, request: Request, product_id: int, body: NewRou
     product = _product_or_404(db, request, product_id)
     try:
         r = R.start_round(db, product, account(request), body.recipe_version, body.target, body.due_date, body.note)
+    except R.StandardsNotMet as e:
+        # Written directly: the audit middleware skips refused requests
+        audit.record_from_request(request, action="round.blocked", status=409, target_type="product", target_id=product.id,
+                                  summary=f"Round not started for product #{product.id} ({product.name}): "
+                                          f"{len(e.failures)} recipe standard(s) not met",
+                                  details={"recipe_version": e.version, "failed_standards": [f["name"] for f in e.failures]})
+        raise HTTPException(status_code=409, detail={
+            "code": "recipe_standards_not_met", "message": str(e), "recipe_version": e.version, "failed_standards": e.failures})
     except R.RoundError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
     audit.note(request, summary=f"Started Round {r.number} of product #{product.id} ({product.name}) with recipe v{r.recipe_version}",

@@ -100,10 +100,6 @@ def visible_product_ids(db: Session, user) -> Optional[Set[int]]:
     if not getattr(user, "is_active", 1):
         return set()
     rounds = current_rounds(db)
-    # Survey forms waiting for (or returned by) an Admin can't be used yet.
-    unapproved = {pid for (pid,) in db.query(Product.id).filter(Product.questions_status.in_(("pending", "returned"))).all()}
-    for pid in unapproved:
-        rounds.pop(pid, None)
     open_ids = open_product_ids(db)
     people = _people_by_round(db, [r.id for r in rounds.values()])
     visible = set()
@@ -141,9 +137,6 @@ def round_for_survey(db: Session, user, product_id: int) -> Optional[SurveyRound
         current = latest
     if role == "admin":
         return current
-    product = db.get(Product, product_id)
-    if product is not None and (product.questions_status or "approved") != "approved":
-        return None  # the survey form isn't approved by an Admin yet
     assigned = _people_by_round(db, [current.id]).get(current.id, set())
     if user.id in assigned:
         return current
@@ -227,9 +220,6 @@ def visible_count(db: Session, user, product_ids) -> Optional[int]:
 
 
 def refusal_reason(db: Session, product_id) -> str:
-    """Why a survey person can't survey a product: a form waiting for approval, or not assigned."""
-    product = db.get(Product, int(product_id)) if product_id is not None else None
-    if product is not None and (product.questions_status or "approved") != "approved":
-        return "This product's survey form is waiting for Admin approval. Try again once your admin approves it."
+    """Why a survey person can't survey a product."""
     return "This product isn't assigned to you. Ask your admin."
 

@@ -1,16 +1,17 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../services/api_service.dart' show ApiException;
 import '../services/org_api.dart';
 import 'org_screens.dart';
 import 'report_screens.dart' show ToneBar;
-import 'next_update_screens.dart' show FormStatusLoader, RecipeExtrasView, ReportDownloads;
+import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads;
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
    ============================================================ */
 
-const _tabs = ['report', 'recipe', 'questions', 'rounds', 'compare'];
+const _tabs = ['report', 'recipe', 'standards', 'questions', 'rounds', 'compare'];
 
 class OrgProductPage extends StatefulWidget {
   const OrgProductPage({super.key, required this.productId, required this.name, this.initialTab = 'report'});
@@ -68,7 +69,7 @@ class _OrgProductPageState extends State<OrgProductPage> {
           bottom: const TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: [Tab(text: 'Report'), Tab(text: 'Recipe'), Tab(text: 'Questions'), Tab(text: 'Rounds'), Tab(text: 'Compare')],
+            tabs: [Tab(text: 'Report'), Tab(text: 'Recipe'), Tab(text: 'Standards'), Tab(text: 'Questions'), Tab(text: 'Rounds'), Tab(text: 'Compare')],
           ),
         ),
         body: _error != null && _detail == null
@@ -78,6 +79,14 @@ class _OrgProductPageState extends State<OrgProductPage> {
                 : TabBarView(children: [
                     _ReportTab(productId: widget.productId),
                     _RecipeTab(productId: widget.productId, onSaved: _load),
+                    // This product's recipe standards (results, add / edit / remove)
+                    RefreshIndicator(
+                      onRefresh: _load,
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                        children: [RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true)],
+                      ),
+                    ),
                     _QuestionsTab(productId: widget.productId),
                     _RoundsTab(productId: widget.productId, detail: _detail!, onChanged: _load),
                     RoundCompareView(productId: widget.productId),
@@ -613,7 +622,6 @@ class _QuestionsTab extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
-            FormStatusLoader(productId: productId, key: ValueKey('form-$n-${qs.map((q) => q['id']).join(',')}')),
             Text(
               'Survey persons ask these questions, in this order. Keep them the same between rounds you want to compare.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
@@ -892,6 +900,10 @@ class _RoundsTab extends StatelessWidget {
           for (final r in past) ...[card(r), const SizedBox(height: 8)],
           if (rounds.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No rounds yet', text: 'Start the first round to collect consumer feedback.'),
           const SizedBox(height: 6),
+          if (live.isEmpty && asJsonList(detail['standards_failed']).isNotEmpty) ...[
+            StandardsBlocked(failures: asJsonList(detail['standards_failed']), version: intOf(detail['latest_version'])),
+            const SizedBox(height: 8),
+          ],
           FilledButton.icon(onPressed: canStart ? start : null, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start new round')),
           if (!canStart && live.isNotEmpty)
             Padding(
@@ -921,6 +933,7 @@ class _StartRoundSheetState extends State<_StartRoundSheet> {
   late final TextEditingController _target = TextEditingController(text: '${widget.defaultTarget}');
   final TextEditingController _note = TextEditingController();
   bool _saving = false;
+  List<Map<String, dynamic>> _failures = const []; // recipe standards that stopped the round
   String? _error;
 
   @override
@@ -943,11 +956,22 @@ class _StartRoundSheetState extends State<_StartRoundSheet> {
     try {
       await OrgApi.startRound(widget.productId, target: target, note: _note.text);
       if (mounted) Navigator.of(context).pop(true);
+    } on ApiException catch (e) {
+      // The server checks every recipe standard again when a round is started
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _failures = e.failedStandards;
+          _error = e.failedStandards.isEmpty ? e.message : null;
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() {
-        _saving = false;
-        _error = '$e';
-      });
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = '$e';
+        });
+      }
     }
   }
 
@@ -969,6 +993,7 @@ class _StartRoundSheetState extends State<_StartRoundSheet> {
         const SizedBox(height: 12),
         TextField(controller: _note, decoration: const InputDecoration(labelText: 'Note for the research team (optional)', hintText: 'Less sugar')),
         if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
+        if (_failures.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: StandardsBlocked(failures: _failures, version: widget.recipeVersion)),
         const SizedBox(height: 14),
         FilledButton(onPressed: _saving ? null : _start, child: Text(_saving ? 'Starting…' : 'Start Round ${widget.number}')),
         TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
@@ -1105,3 +1130,42 @@ class _RoundCompareViewState extends State<RoundCompareView> {
     );
   }
 }
+
+
+/// Recipe standards that stop a survey round from starting (web: OrgPortal.jsx
+/// StandardsBlocked). Every applicable standard must be met; the server checks again
+/// on every start and there is no override.
+class StandardsBlocked extends StatelessWidget {
+  const StandardsBlocked({super.key, required this.failures, this.version = 0});
+
+  final List<Map<String, dynamic>> failures;
+  final int version;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = failures.length;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.negSoft,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.neg),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("A round can't start: $n recipe standard${n == 1 ? ' is' : 's are'} not met${version > 0 ? ' by recipe v$version' : ''}.",
+            style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.neg)),
+        const SizedBox(height: 4),
+        Text('Change the recipe (or the standard) until every standard is met.', style: TextStyle(color: AppColors.ink, fontSize: 13)),
+        for (final f in failures) ...[
+          const Divider(height: 18),
+          Text(str(f['name']), style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
+          Text('Ingredient: ${str(f['ingredient'], 'Whole recipe')}', style: TextStyle(fontSize: 13, color: AppColors.muted)),
+          Text('Expected: ${str(f['expected'])}', style: TextStyle(fontSize: 13, color: AppColors.muted)),
+          Text('Actual: ${str(f['actual'])}', style: TextStyle(fontSize: 13, color: AppColors.muted)),
+          Text(str(f['reason']), style: TextStyle(fontSize: 13, color: AppColors.neg)),
+        ],
+      ]),
+    );
+  }
+}
+

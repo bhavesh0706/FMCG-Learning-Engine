@@ -179,3 +179,19 @@ def start_survey(client, user: User, product: Product) -> dict:
 def answers_payload(db, product: Product) -> dict:
     questions = db.query(SurveyQuestion).filter_by(product_id=product.id).order_by(SurveyQuestion.position).all()
     return {"answers": [{"question_id": q.id, "value": "Good"} for q in questions]}
+
+
+@pytest.fixture(autouse=True)
+def _no_leftover_recipe_standards():
+    """Recipe standards apply across products (and block rounds): none may leak into the next test."""
+    yield
+    from app.database.database import SessionLocal
+    from app.database.models import RecipeStandard
+
+    db = SessionLocal()
+    try:
+        db.query(RecipeStandard).delete()
+        db.commit()
+    finally:
+        db.close()
+

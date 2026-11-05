@@ -51,10 +51,19 @@ class OrgApi {
       final data = r.data is String && (r.data as String).isNotEmpty ? jsonDecode(r.data as String) : r.data;
       return asJson(data);
     } on DioException catch (e) {
-      throw ApiException(_describe(e));
+      throw ApiException(_describe(e), failedStandards: _failedStandards(e));
     } on FormatException {
       throw ApiException('The server sent data the app could not read.');
     }
+  }
+
+  static List<Map<String, dynamic>> _failedStandards(DioException e) {
+    final data = e.response?.data;
+    final d = data is Map ? data['detail'] : null;
+    if (d is Map && d['code'] == 'recipe_standards_not_met' && d['failed_standards'] is List) {
+      return [for (final f in d['failed_standards'] as List) if (f is Map) Map<String, dynamic>.from(f)];
+    }
+    return const [];
   }
 
   static String _describe(DioException e) {
@@ -65,6 +74,8 @@ class OrgApi {
       final d = data['detail'];
       if (d is String) {
         detail = d;
+      } else if (d is Map && d['message'] is String) {
+        detail = d['message'] as String; // structured errors, e.g. recipe_standards_not_met
       } else if (d is List && d.isNotEmpty) {
         // FastAPI validation errors: [{loc, msg, ...}]
         detail = d.map((x) => x is Map ? '${x['msg'] ?? ''}' : '$x').where((s) => s.isNotEmpty).join(' ');

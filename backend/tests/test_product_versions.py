@@ -187,12 +187,9 @@ def test_the_organization_manages_questions(client, db, org, alice, product):
     assert client.put(f"/products/{product.id}/questions/order", headers=auth(org),
                       json={"question_ids": order}).status_code == 200
     # Survey persons assigned to the live round get the new question first in their survey,
-    # once an Admin approves the changed survey form (requirements point 4).
+    # straight away: the Super Admin's survey questions are final.
     open_round(db, product)
     assign(db, product, alice)
-    assert client.get(f"/products/{product.id}/questions", headers=auth(alice)).status_code == 403
-    approver = make_user(db, role="admin")
-    assert client.post(f"/admin/products/{product.id}/survey-form/approve", headers=auth(approver), json={}).status_code == 200
     seen = client.get(f"/products/{product.id}/questions", headers=auth(alice)).json()["questions"]
     assert seen[0]["text"] == "How crunchy is it?"
     assert client.delete(f"/questions/{qid}", headers=auth(org)).status_code == 200

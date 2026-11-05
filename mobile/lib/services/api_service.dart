@@ -24,9 +24,13 @@ class ApiConfig {
 }
 
 class ApiException implements Exception {
-  ApiException(this.message);
+  ApiException(this.message, {this.failedStandards = const []});
 
   final String message;
+
+  /// Recipe standards that stopped a survey round from starting (HTTP 409,
+  /// code recipe_standards_not_met): name, ingredient, expected, actual, reason.
+  final List<Map<String, dynamic>> failedStandards;
 
   @override
   String toString() => message;

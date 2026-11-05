@@ -11,7 +11,7 @@ import 'home_screens.dart' show MobileHistoryPage, MobileSettingsPage;
 import 'notifications_screen.dart' show NotificationBellButton;
 import 'org_screens.dart' show Loaded, Panel, Pill, StatBox, EmptyNote, agoText, ratingText, showMessage;
 import 'report_screens.dart' show ProductReportPage;
-import 'next_update_screens.dart' show FormApprovalCard, MastersPage, RecipeExtrasView;
+import 'next_update_screens.dart' show MastersPage, RecipeExtrasView;
 
 /* ============================================================
    Admin (role "admin") in the app
@@ -466,8 +466,6 @@ class _ProductDetailsTab extends StatelessWidget {
           ]),
         );
     return ListView(padding: const EdgeInsets.all(16), children: [
-      // Survey form approval (admins approve before survey persons can use it)
-      FormApprovalCard(product: p, canDecide: true),
       Panel(
         color: AppColors.brandSoft,
         child: Text('Products are added and changed by the Super Admin in their portal. You get a notification for every change.',

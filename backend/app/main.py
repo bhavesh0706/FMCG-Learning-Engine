@@ -21,7 +21,6 @@ from app.api.geo import router as geo_router
 from app.api.product_checks import router as product_checks_router
 from app.api.recipe_master import router as recipe_master_router
 from app.api.masters import router as masters_router
-from app.api.survey_forms import router as survey_forms_router
 from app.api.report_reviews import router as report_reviews_router
 from app.api.report_exports import router as report_exports_router
 from app.api.custom_reports import router as custom_reports_router
@@ -198,7 +197,7 @@ app.include_router(
 )
 
 # Next update: Recipe Master, master lists, survey form approval, report review chain, exports
-for _router in (recipe_master_router, masters_router, survey_forms_router, report_reviews_router, report_exports_router,
+for _router in (recipe_master_router, masters_router, report_reviews_router, report_exports_router,
                 custom_reports_router):
     app.include_router(_router)
 

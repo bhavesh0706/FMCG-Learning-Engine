@@ -12,7 +12,6 @@ import 'org_screens.dart';
 /*
   Next update (requirements PDF), the app side of the web's new screens:
     RecipeExtrasView      costing (Cost per KG x Usage %), standards, attachments, earlier steps
-    FormApprovalCard      survey form approval (admins approve / return; Super Admin sees status)
     ReportStatusCard      survey person: report status, admin's note, Submit for Admin review
     ReportReviewsView     admins: reports to approve and forward / return
     OrgSurveysPage        Super Admin: every survey, its report and Mark reviewed
@@ -49,7 +48,8 @@ class NextApi {
   // Custom reports from a prompt (one product or many)
   static Future<Json> reportOptions() => _send('GET', '/reports/options');
   static Future<Json> planReport(Json body) => _send('POST', '/reports/plan', body: body);
-  static Future<Json> standards() => _send('GET', '/recipe-standards');
+  static Future<Json> standards({int? productId}) => _send('GET', productId == null ? '/recipe-standards' : '/recipe-standards?product_id=$productId');
+  static Future<Json> changeStandard(int id, Json body) => _send('PUT', '/recipe-standards/$id', body: body);
   static Future<Json> addStandard(Json body) => _send('POST', '/recipe-standards', body: body);
   static Future<Json> removeStandard(int id) => _send('DELETE', '/recipe-standards/$id');
   static Future<Json> uploadAttachment(int productId, String path, String name) async =>
@@ -63,11 +63,6 @@ class NextApi {
   static Future<Json> setMasterActive(String kind, int id, bool on) =>
       _send('PATCH', '/admin/masters/$kind/$id', body: {'is_active': on});
 
-  // Survey form approval
-  static Future<Json> approveForm(int productId, String note) =>
-      _send('POST', '/admin/products/$productId/survey-form/approve', body: {'note': note.trim().isEmpty ? null : note.trim()});
-  static Future<Json> returnForm(int productId, String note) =>
-      _send('POST', '/admin/products/$productId/survey-form/return', body: {'note': note.trim()});
 
   // Report review chain
   static Future<Json> reportHistory(int responseId) => _send('GET', '/surveys/responses/$responseId/report/history');
@@ -116,10 +111,11 @@ Widget _title(String text) => Padding(
 // ---------------------------------------------------------------- Recipe extras
 
 class RecipeExtrasView extends StatefulWidget {
-  const RecipeExtrasView({super.key, required this.productId, this.canEdit = false});
+  const RecipeExtrasView({super.key, required this.productId, this.canEdit = false, this.standardsOnly = false});
 
   final int productId;
-  final bool canEdit; // Super Admin: upload / remove attachments
+  final bool canEdit; // Super Admin: upload / remove attachments, manage this product's standards
+  final bool standardsOnly; // the product's Standards tab: results and rules only
 
   @override
   State<RecipeExtrasView> createState() => _RecipeExtrasViewState();
@@ -129,6 +125,7 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
   Json? _d;
   String? _error;
   bool _busy = false;
+  List<Json> _productRules = const []; // rules made for this product only (editor)
 
   @override
   void initState() {
@@ -139,7 +136,13 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
   Future<void> _load() async {
     try {
       final d = await NextApi.recipe(widget.productId);
-      if (mounted) setState(() => _d = d);
+      final rules = widget.canEdit ? asJsonList((await NextApi.standards(productId: widget.productId))['standards']) : const <Json>[];
+      if (mounted) {
+        setState(() {
+          _d = d;
+          _productRules = rules;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
@@ -173,6 +176,98 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
     }
   }
 
+  /// Results (expected, actual, MET / NOT MET, reason) and, for the Super Admin, the rules
+  /// made for this product: add, edit, remove.
+  List<Widget> _standardsWidgets(Json standards, List<Json> results) {
+    return [
+      _title('Recipe standards'),
+      if (results.isEmpty)
+        Text('No standard rules apply yet.', style: TextStyle(color: AppColors.muted))
+      else
+        Panel(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Pill(standards['passed'] == true ? 'All standards met' : '${intOf(standards['failed_count'])} not met',
+                tone: standards['passed'] == true ? 'ok' : 'neg'),
+            const SizedBox(height: 6),
+            for (final r in results)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Expanded(child: Text(str(r['name']), style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink))),
+                    Pill(str(r['status'], r['passed'] == true ? 'MET' : 'NOT MET'), tone: r['passed'] == true ? 'ok' : 'neg'),
+                  ]),
+                  if (str(r['expected']).isNotEmpty) Text('Expected: ${str(r['expected'])}', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                  if (str(r['actual']).isNotEmpty) Text('Actual: ${str(r['actual'])}', style: TextStyle(color: AppColors.muted, fontSize: 13)),
+                  Text(str(r['reason'], str(r['detail'])),
+                      style: TextStyle(color: r['passed'] == true ? AppColors.muted : AppColors.neg, fontSize: 13)),
+                ]),
+              ),
+          ]),
+        ),
+      if (widget.canEdit) ...[
+        Row(children: [
+          Expanded(child: _title('Rules for this product')),
+          TextButton.icon(
+            onPressed: () async {
+              if (await showRuleDialog(context, productId: widget.productId)) _load();
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Add rule'),
+          ),
+        ]),
+        if (_productRules.isEmpty) Text('No rules for this product only.', style: TextStyle(color: AppColors.muted)),
+        for (final r in _productRules)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(str(r['name'])),
+            subtitle: Text('${_ruleKinds[str(r['kind'])] ?? ''} · ${ruleCondition(r)}'),
+            onTap: () async {
+              if (await showRuleDialog(context, productId: widget.productId, rule: r)) _load();
+            },
+            trailing: IconButton(
+              tooltip: 'Remove rule',
+              icon: Icon(Icons.delete_outline, color: AppColors.neg),
+              onPressed: () async {
+                await NextApi.removeStandard(intOf(r['id'])).catchError((_) => <String, dynamic>{});
+                _load();
+              },
+            ),
+          ),
+      ],
+    ];
+  }
+
+  /// Rules for the whole category or all products, from before per-product standards:
+  /// shown so the Super Admin can remove them from here.
+  List<Widget> _inheritedRules(List<Json> results) {
+    final inherited = results.where((r) => str(r['scope']).isNotEmpty && str(r['scope']) != 'product').toList();
+    if (inherited.isEmpty) return const [];
+    return [
+      _title('Also applied: category or all products'),
+      Text('Created before standards were set per product. Remove them if they should not apply here.',
+          style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+      for (final r in inherited)
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: Text(str(r['name'])),
+          subtitle: Text('${str(r['scope']) == 'all' ? 'All products' : 'This category'} · ${str(r['expected'])}'),
+          trailing: IconButton(
+            tooltip: 'Remove rule',
+            icon: Icon(Icons.delete_outline, color: AppColors.neg),
+            onPressed: () async {
+              final ok = await confirmAction(context, title: 'Remove “${str(r['name'])}”?',
+                  message: str(r['scope']) == 'all' ? 'It applies to every product.' : 'It applies to every product in this category.',
+                  confirmLabel: 'Remove');
+              if (!ok) return;
+              await NextApi.removeStandard(intOf(r['rule_id'])).catchError((_) => <String, dynamic>{});
+              _load();
+            },
+          ),
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final d = _d;
@@ -185,6 +280,13 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
     final results = asJsonList(standards['results']);
     final files = asJsonList(d['attachments']);
     final legacy = asJson(d['legacy_steps']);
+    if (widget.standardsOnly) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (d['recipe'] == null) Text('Add a recipe on the Recipe tab: the standards are checked against it.', style: TextStyle(color: AppColors.muted)),
+        ..._standardsWidgets(standards, results),
+        ..._inheritedRules(results),
+      ]);
+    }
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (rows.isNotEmpty) ...[
         _title('Costing'),
@@ -215,26 +317,8 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
           ]),
         ),
       ],
-      _title('Recipe standards'),
-      if (results.isEmpty)
-        Text('No standard rules apply yet.', style: TextStyle(color: AppColors.muted))
-      else
-        Panel(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Pill(standards['passed'] == true ? 'All standards met' : '${intOf(standards['failed_count'])} not met',
-                tone: standards['passed'] == true ? 'ok' : 'neg'),
-            const SizedBox(height: 6),
-            for (final r in results)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(r['passed'] == true ? Icons.check_circle : Icons.cancel, size: 18, color: r['passed'] == true ? AppColors.pos : AppColors.neg),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text('${str(r['name'])} · ${str(r['detail'])}')),
-                ]),
-              ),
-          ]),
-        ),
+      // Standards: read-only results here for admins; the Super Admin manages them on the Standards tab
+      if (!widget.canEdit) ..._standardsWidgets(standards, results),
       Row(children: [
         Expanded(child: _title('Process attachments (${files.length})')),
         if (widget.canEdit)
@@ -265,106 +349,6 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
           Padding(padding: const EdgeInsets.only(top: 4), child: Text('${i + 1}. ${str(s['title'])}')),
       ],
     ]);
-  }
-}
-
-// ---------------------------------------------------------------- Survey form approval
-
-class FormApprovalCard extends StatefulWidget {
-  const FormApprovalCard({super.key, required this.product, required this.canDecide, this.onChanged});
-
-  final Json product;
-  final bool canDecide; // admins approve / return
-  final VoidCallback? onChanged;
-
-  @override
-  State<FormApprovalCard> createState() => _FormApprovalCardState();
-}
-
-class _FormApprovalCardState extends State<FormApprovalCard> {
-  final _note = TextEditingController();
-  late String _status = str(widget.product['questions_status'], 'approved');
-  late String _by = str(widget.product['questions_reviewed_by']);
-  late String _savedNote = str(widget.product['questions_note']);
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _note.dispose();
-    super.dispose();
-  }
-
-  Future<void> _decide(bool approve) async {
-    if (!approve && _note.text.trim().isEmpty) {
-      showMessage(context, 'Add a note so the Super Admin knows what to change.', error: true);
-      return;
-    }
-    setState(() => _busy = true);
-    try {
-      final id = intOf(widget.product['id']);
-      final r = approve ? await NextApi.approveForm(id, _note.text) : await NextApi.returnForm(id, _note.text);
-      if (!mounted) return;
-      setState(() {
-        _status = str(r['status']);
-        _by = str(r['reviewed_by']);
-        _savedNote = str(r['note']);
-        _busy = false;
-      });
-      _note.clear();
-      showMessage(context, approve ? 'Survey form approved.' : 'Survey form returned to the Super Admin.');
-      widget.onChanged?.call();
-    } catch (e) {
-      if (mounted) {
-        setState(() => _busy = false);
-        showMessage(context, '$e', error: true);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_status == 'approved') {
-      return _by.isEmpty ? const SizedBox.shrink() : Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Pill('Survey form approved by $_by', tone: 'ok'),
-      );
-    }
-    return Panel(
-      color: _status == 'returned' ? AppColors.negSoft : AppColors.warnSoft,
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(_status == 'returned' ? 'Survey form returned${_savedNote.isNotEmpty ? ': “$_savedNote”' : ''}' : 'Survey form waiting for Admin approval',
-            style: const TextStyle(fontWeight: FontWeight.w800)),
-        if (_status == 'pending')
-          Text("Survey persons can't use it until an Admin approves it.", style: TextStyle(fontSize: 13, color: AppColors.ink2)),
-        if (widget.canDecide && _status == 'pending') ...[
-          const SizedBox(height: 8),
-          TextField(controller: _note, decoration: const InputDecoration(labelText: 'Note (required to return)')),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(child: FilledButton(onPressed: _busy ? null : () => _decide(true), child: const Text('Approve form'))),
-            const SizedBox(width: 8),
-            Expanded(child: OutlinedButton(onPressed: _busy ? null : () => _decide(false), child: const Text('Return'))),
-          ]),
-        ],
-      ]),
-    );
-  }
-}
-
-/// The Super Admin's view of a form's approval status (loads the product).
-class FormStatusLoader extends StatelessWidget {
-  const FormStatusLoader({super.key, required this.productId});
-
-  final int productId;
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<Json>(
-      future: NextApi._send('GET', '/products/$productId'),
-      builder: (context, snap) => snap.hasData
-          ? Padding(padding: const EdgeInsets.only(bottom: 10), child: FormApprovalCard(product: snap.data!, canDecide: false))
-          : const SizedBox.shrink(),
-    );
   }
 }
 
@@ -729,9 +713,131 @@ class _OrgSurveySheetState extends State<_OrgSurveySheet> {
 const _ruleKinds = {
   'required_ingredient': 'Must contain an ingredient',
   'ingredient_share': 'Ingredient Usage % between',
-  'max_cost_per_kg': 'Recipe cost per kg at most',
+  'ingredient_cost_per_kg': 'Ingredient Cost per KG at most',
+  'max_cost_per_kg': 'Recipe cost per kg at most (whole recipe)',
   'costs_complete': 'Every ingredient has a Cost per KG',
 };
+const _needsIngredient = ['required_ingredient', 'ingredient_share', 'ingredient_cost_per_kg'];
+
+String _num(dynamic v) => v == null ? '' : (v is num && v == v.roundToDouble() ? v.toInt().toString() : '$v');
+
+/// The rule's condition in words (web: StandardRuleForm.jsx ruleCondition).
+String ruleCondition(Json r) {
+  final ing = str(r['ingredient']);
+  switch (str(r['kind'])) {
+    case 'required_ingredient':
+      return 'contains $ing';
+    case 'ingredient_share':
+      final lo = r['min_value'], hi = r['max_value'];
+      return '$ing: ${lo != null && hi != null ? '${_num(lo)}% – ${_num(hi)}%' : lo != null ? 'at least ${_num(lo)}%' : 'at most ${_num(hi)}%'}';
+    case 'ingredient_cost_per_kg':
+      return '$ing at most ₹${_num(r['max_value'])}/kg';
+    case 'max_cost_per_kg':
+      return 'recipe at most ₹${_num(r['max_value'])}/kg';
+    default:
+      return 'every ingredient costed';
+  }
+}
+
+/// Add or edit a recipe standard rule. Scope, exactly one: [productId] (this product), or
+/// chosen in the dialog: all products or one category. Returns true when saved.
+Future<bool> showRuleDialog(BuildContext context, {int? productId, Json? rule}) async {
+  final name = TextEditingController(text: str(rule?['name']));
+  final ingredient = TextEditingController(text: str(rule?['ingredient']));
+  final min = TextEditingController(text: _num(rule?['min_value']));
+  final max = TextEditingController(text: _num(rule?['max_value']));
+  var kind = str(rule?['kind'], 'ingredient_share');
+  // '' = not chosen yet, 'all' = every product, otherwise a category id
+  var scope = rule == null ? '' : (rule['applies_to_all'] == true ? 'all' : rule['category_id'] != null ? '${rule['category_id']}' : '');
+  var categories = <Json>[];
+  if (productId == null) {
+    try {
+      categories = await OrgApi.categories(includeInactive: false);
+    } catch (_) {}
+  }
+  if (!context.mounted) return false;
+  String? error;
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, set) {
+        final isCost = kind == 'ingredient_cost_per_kg' || kind == 'max_cost_per_kg';
+        Future<void> save() async {
+          if (name.text.trim().length < 3) {
+            set(() => error = 'Give the rule a name (3 letters or more).');
+            return;
+          }
+          if (productId == null && scope.isEmpty) {
+            set(() => error = 'Choose what the rule applies to.');
+            return;
+          }
+          final body = <String, dynamic>{
+            'name': name.text.trim(),
+            'kind': kind,
+            'ingredient': _needsIngredient.contains(kind) && ingredient.text.trim().isNotEmpty ? ingredient.text.trim() : null,
+            'min_value': kind == 'ingredient_share' ? double.tryParse(min.text.trim()) : null,
+            'max_value': kind == 'ingredient_share' || isCost ? double.tryParse(max.text.trim().replaceAll(',', '')) : null,
+            'product_id': productId,
+            'category_id': productId == null && scope.isNotEmpty && scope != 'all' ? int.tryParse(scope) : null,
+            'applies_to_all': productId == null && scope == 'all',
+          };
+          try {
+            if (rule == null) {
+              await NextApi.addStandard(body);
+            } else {
+              await NextApi.changeStandard(intOf(rule['id']), body);
+            }
+            if (ctx.mounted) Navigator.of(ctx).pop(true);
+          } catch (e) {
+            set(() => error = '$e');
+          }
+        }
+
+        return AlertDialog(
+          title: Text(rule == null ? (productId == null ? 'New standard rule' : 'New rule for this product') : 'Edit rule'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Rule name')),
+              DropdownButtonFormField<String>(
+                initialValue: kind,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Rule type'),
+                items: [for (final e in _ruleKinds.entries) DropdownMenuItem(value: e.key, child: Text(e.value, overflow: TextOverflow.ellipsis))],
+                onChanged: (v) => set(() => kind = v ?? kind),
+              ),
+              if (_needsIngredient.contains(kind))
+                TextField(controller: ingredient, decoration: const InputDecoration(labelText: 'Ingredient, e.g. cardamom powder')),
+              if (kind == 'ingredient_share')
+                TextField(controller: min, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Min %')),
+              if (kind == 'ingredient_share' || isCost)
+                TextField(controller: max, keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(labelText: isCost ? 'Max ₹ per kg' : 'Max %')),
+              if (productId == null)
+                DropdownButtonFormField<String>(
+                  initialValue: scope.isEmpty ? null : scope,
+                  isExpanded: true,
+                  decoration: const InputDecoration(labelText: 'Applies to'),
+                  hint: const Text('Choose…'),
+                  items: [
+                    const DropdownMenuItem(value: 'all', child: Text('All products')),
+                    for (final c in categories)
+                      DropdownMenuItem(value: '${intOf(c['id'])}', child: Text('Only ${str(c['name'])}', overflow: TextOverflow.ellipsis)),
+                  ],
+                  onChanged: (v) => set(() => scope = v ?? ''),
+                ),
+              if (error != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(error!, style: TextStyle(color: AppColors.neg))),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+            FilledButton(onPressed: save, child: Text(rule == null ? 'Add' : 'Save')),
+          ],
+        );
+      },
+    ),
+  );
+  return saved == true;
+}
 
 class RecipeMasterPage extends StatefulWidget {
   const RecipeMasterPage({super.key});
@@ -742,7 +848,6 @@ class RecipeMasterPage extends StatefulWidget {
 
 class _RecipeMasterPageState extends State<RecipeMasterPage> {
   List<Json>? _recipes;
-  List<Json> _rules = const [];
   String? _error;
 
   @override
@@ -753,62 +858,13 @@ class _RecipeMasterPageState extends State<RecipeMasterPage> {
 
   Future<void> _load() async {
     try {
-      final r = await Future.wait([NextApi.recipeMaster(), NextApi.standards()]);
+      final r = [await NextApi.recipeMaster()];
       if (!mounted) return;
       setState(() {
         _recipes = asJsonList(r[0]['recipes']);
-        _rules = asJsonList(r[1]['standards']);
       });
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
-    }
-  }
-
-  Future<void> _addRule() async {
-    final name = TextEditingController(), ingredient = TextEditingController(), min = TextEditingController(), max = TextEditingController();
-    var kind = 'ingredient_share';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, set) => AlertDialog(
-          title: const Text('New standard rule'),
-          content: SingleChildScrollView(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: name, decoration: const InputDecoration(labelText: 'Rule name')),
-              DropdownButtonFormField<String>(
-                initialValue: kind,
-                isExpanded: true,
-                items: [for (final e in _ruleKinds.entries) DropdownMenuItem(value: e.key, child: Text(e.value, overflow: TextOverflow.ellipsis))],
-                onChanged: (v) => set(() => kind = v ?? kind),
-              ),
-              if (kind == 'required_ingredient' || kind == 'ingredient_share')
-                TextField(controller: ingredient, decoration: const InputDecoration(labelText: 'Ingredient, e.g. sugar')),
-              if (kind == 'ingredient_share')
-                TextField(controller: min, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Min %')),
-              if (kind == 'ingredient_share' || kind == 'max_cost_per_kg')
-                TextField(controller: max, keyboardType: TextInputType.number,
-                    decoration: InputDecoration(labelText: kind == 'max_cost_per_kg' ? 'Max ₹ per kg' : 'Max %')),
-            ]),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Add')),
-          ],
-        ),
-      ),
-    );
-    if (ok != true) return;
-    try {
-      await NextApi.addStandard({
-        'name': name.text.trim(),
-        'kind': kind,
-        'ingredient': ingredient.text.trim().isEmpty ? null : ingredient.text.trim(),
-        'min_value': double.tryParse(min.text.trim()),
-        'max_value': double.tryParse(max.text.trim()),
-      });
-      _load();
-    } catch (e) {
-      if (mounted) showMessage(context, '$e', error: true);
     }
   }
 
@@ -839,30 +895,11 @@ class _RecipeMasterPageState extends State<RecipeMasterPage> {
                         tone: asJson(r['standards'])['passed'] == true ? 'ok' : 'neg'),
               ),
             ),
-          Row(children: [
-            Expanded(child: _title('Recipe standards')),
-            TextButton.icon(onPressed: _addRule, icon: const Icon(Icons.add), label: const Text('Add rule')),
-          ]),
-          if (_rules.isEmpty) Text('No rules yet.', style: TextStyle(color: AppColors.muted)),
-          for (final r in _rules)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: Text(str(r['name'])),
-              subtitle: Text([
-                _ruleKinds[str(r['kind'])] ?? '',
-                str(r['ingredient']),
-                if (r['min_value'] != null) 'min ${r['min_value']}',
-                if (r['max_value'] != null) 'max ${r['max_value']}',
-              ].where((x) => x.isNotEmpty).join(' · ')),
-              trailing: IconButton(
-                tooltip: 'Remove rule',
-                icon: Icon(Icons.delete_outline, color: AppColors.neg),
-                onPressed: () async {
-                  await NextApi.removeStandard(intOf(r['id'])).catchError((_) => <String, dynamic>{});
-                  _load();
-                },
-              ),
-            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 12),
+            child: Text('Recipe standards are set per product: open a product, then its Standards tab.',
+                style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+          ),
         ]),
       ),
     );
