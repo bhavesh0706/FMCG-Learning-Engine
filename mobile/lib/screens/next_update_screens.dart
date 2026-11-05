@@ -698,11 +698,11 @@ class _OrgSurveySheetState extends State<_OrgSurveySheet> {
                 for (final q in asJsonList(d['answers']))
                   Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('${str(q['question'])}  ${str(q['value'], '—')}')),
                 // The full analysis page, the same one admins open (read-only for the Super Admin)
-                if (d?['feedback_id'] != null)
+                if (d['feedback_id'] != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
                     child: FilledButton.icon(
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => FeedbackDetailPage(id: intOf(d?['feedback_id'])))),
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => FeedbackDetailPage(id: intOf(d['feedback_id'])))),
                       icon: const Icon(Icons.insights_outlined),
                       label: const Text('Open full analysis'),
                     ),
