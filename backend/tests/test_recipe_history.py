@@ -14,7 +14,6 @@ from app.database.models import Notification, Product, RecipeVersion
 BASE = {
     "batch_size": "10 kg",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],
-    "steps": [{"title": "Mix"}, {"title": "Bake", "duration": "25 min", "temperature": "160 °C"}],
 }
 
 
@@ -52,23 +51,21 @@ def test_every_real_change_is_a_new_version(client, db, admin, product):
     assert again["version"] is None  # nothing changed: no new version
     changed = {**BASE, "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"},
                                         {"name": "Sugar", "quantity": "0.65", "unit": "kg"},
-                                        {"name": "Cinnamon", "quantity": "20", "unit": "g"}],
-               "steps": [{"title": "Mix"}, {"title": "Bake", "duration": "22 min", "temperature": "160 °C"}]}
+                                        {"name": "Cinnamon", "quantity": "20", "unit": "g"}]}
     assert client.put(f"/products/{product.id}/recipe", headers=auth(brand), json=changed).json()["version"] == 2
     versions = _versions(client, admin, product)
     assert [v["version"] for v in versions] == [2, 1]
-    assert versions[0]["changes"] == ["Sugar: 0.8 kg → 0.65 kg", "Added ingredient: Cinnamon (20 g)", "Step 2 Bake: time 25 min → 22 min"]
+    assert versions[0]["changes"] == ["Sugar: 0.8 kg → 0.65 kg", "Added ingredient: Cinnamon (20 g)"]
     assert versions[0]["changed_by_name"] == brand.name and versions[0]["changed_by_role"] == "client"
     assert versions[1]["recipe"]["ingredients"][1]["quantity"] == "0.8"  # the old version is kept in full
 
 
-def test_removed_items_and_reordered_steps_are_described(client, db, admin, product):
+def test_removed_items_are_described(client, db, admin, product):
     brand = _client_for(client, db, admin, product)
     client.put(f"/products/{product.id}/recipe", headers=auth(brand), json=BASE)
-    changed = {**BASE, "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}],
-               "steps": [{"title": "Bake", "duration": "25 min", "temperature": "160 °C"}, {"title": "Mix"}]}
+    changed = {**BASE, "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}]}
     client.put(f"/products/{product.id}/recipe", headers=auth(brand), json=changed)
-    assert _versions(client, admin, product)[0]["changes"] == ["Removed ingredient: Sugar", "Steps reordered"]
+    assert _versions(client, admin, product)[0]["changes"] == ["Removed ingredient: Sugar"]
 
 
 def test_recipe_from_before_history_becomes_version_1(client, db, admin, product):
@@ -141,3 +138,19 @@ def test_versions_are_stored_in_the_database(client, db, admin, product):
     db.expire_all()
     row = db.query(RecipeVersion).filter_by(product_id=product.id).one()
     assert row.changed_by == brand.id and row.recipe["batch_size"] == "10 kg"
+
+
+def test_steps_are_no_longer_saved_but_earlier_steps_stay_readable(client, db, admin, product):
+    """Requirements point 6: no Steps in new recipes; earlier versions keep theirs, read-only."""
+    from app.database.models import Product
+
+    item = db.get(Product, product.id)
+    item.recipe = {"ingredients": [{"name": "Oats", "quantity": "5", "unit": "kg"}], "steps": [{"title": "Mix"}, {"title": "Bake"}]}
+    db.commit()
+    org = make_user(db, role="client")
+    body = {"ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}], "steps": [{"title": "Ignored"}]}
+    saved = client.put(f"/products/{product.id}/recipe", headers=auth(org), json=body)
+    assert saved.status_code == 200 and saved.json()["recipe"]["steps"] == []
+    legacy = client.get(f"/products/{product.id}/recipe", headers=auth(admin)).json()["legacy_steps"]
+    assert [s["title"] for s in legacy["steps"]] == ["Mix", "Bake"] and legacy["version"] == 1
+

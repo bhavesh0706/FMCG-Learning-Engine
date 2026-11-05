@@ -8,6 +8,7 @@ import 'onboarding_screens.dart';
 import 'report_screens.dart';
 import 'survey_flow.dart';
 import 'product_checks_screen.dart';
+import 'next_update_screens.dart' show AnalyticsView, ReportReviewsView;
 
 /* ================================================================
    Shared bits
@@ -459,7 +460,9 @@ class SurveyTile extends StatelessWidget {
         child: InkWell(
           onTap: canOpen
               ? () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => FeedbackDetailPage(id: e.feedbackId!)),
+                    MaterialPageRoute(builder: (_) => FeedbackDetailPage(
+                        id: e.feedbackId!,
+                        responseId: e.key.startsWith('server-') ? int.tryParse(e.key.substring(7)) : null)),
                   )
               : null,
           child: Padding(
@@ -570,12 +573,15 @@ class MobileHistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!Session.isAdmin) return const SurveyHistoryList(ownOnly: true);
     return DefaultTabController(
-      length: 3,
+      length: 5,
       child: Column(
         children: [
           Container(
             color: AppColors.surface,
             child: TabBar(
+              // 5 tabs: scroll sideways on narrow phones instead of squeezing the labels
+              isScrollable: true,
+              tabAlignment: TabAlignment.start,
               labelColor: AppColors.brand,
               unselectedLabelColor: AppColors.muted,
               indicatorColor: AppColors.brand,
@@ -585,6 +591,8 @@ class MobileHistoryPage extends StatelessWidget {
                 Tab(text: 'Surveys'),
                 Tab(text: 'Products'),
                 Tab(text: 'Checks'), // product checks (web: Survey history > Product checks)
+                Tab(text: 'Analytics'), // reports from a prompt, across products
+                Tab(text: 'Reviews'), // report reviews (web: Survey history > Report reviews)
               ],
             ),
           ),
@@ -594,6 +602,8 @@ class MobileHistoryPage extends StatelessWidget {
                 SurveyHistoryList(),
                 ProductReportsList(),
                 ProductChecksView(),
+                ReportReviewsView(),
+                AnalyticsView(),
               ],
             ),
           ),

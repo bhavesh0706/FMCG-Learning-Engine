@@ -309,7 +309,10 @@ def build_stats(items: list[dict]) -> dict:
             value = (ans.get("value") or "").strip()
             if value:
                 q["answered"] += 1
-                q["values"].append(value)
+                if q["type"] == "multiple_choice":  # "A | B": count every ticked option
+                    q["values"].extend(v.strip() for v in value.split("|") if v.strip())
+                else:
+                    q["values"].append(value)
 
     question_list = []
     for q in sorted(questions.values(), key=lambda q: (q["position"], q["question_id"])):
@@ -318,7 +321,7 @@ def build_stats(items: list[dict]) -> dict:
             nums = [int(v) for v in q["values"] if v.isdigit() and 1 <= int(v) <= 5]
             out["average"] = round(sum(nums) / len(nums), 2) if nums else None
             out["distribution"] = {str(k): nums.count(k) for k in range(1, 6)}
-        elif q["type"] in ("yes_no", "single_choice"):
+        elif q["type"] in ("yes_no", "single_choice", "multiple_choice", "preference"):
             out["distribution"] = dict(Counter(q["values"]).most_common())
         else:
             out["text_answers"] = q["values"][:50]
@@ -346,6 +349,12 @@ def build_stats(items: list[dict]) -> dict:
             "age_group": _breakdown(items, lambda i: _age_group(i.get("age"))),
             "city": _breakdown(items, lambda i: _city(i.get("location"))),
             "usage_period": _breakdown(items, lambda i: USAGE_LABELS.get(i.get("usage_period"), "Not given")),
+            # Next update: consolidate by respondent type, Internal / External, country, occupation and class
+            "respondent_type": _breakdown(items, lambda i: i.get("respondent_type") or "Not given"),
+            "audience": _breakdown(items, lambda i: {"internal": "Internal", "external": "External"}.get(i.get("audience") or "", "Not given")),
+            "country": _breakdown(items, lambda i: (i.get("country") or "Not given").strip().title()),
+            "occupation": _breakdown(items, lambda i: i.get("occupation") or "Not given"),
+            "sec_class": _breakdown(items, lambda i: i.get("sec_class") or "Not given"),
         },
     }
 

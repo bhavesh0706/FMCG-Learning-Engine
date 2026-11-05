@@ -1,3 +1,6 @@
+import MastersDialog from "./MastersDialog";
+import { approveSurveyForm, errorText, returnSurveyForm } from "../services/nextApi";
+import { AttachmentsCard, CostingCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { confirmDialog } from "./ConfirmDialog";
 import Modal from "./Modal";
@@ -66,8 +69,11 @@ const TYPES = {
   rating: "Rating 1–5",
   yes_no: "Yes / No",
   single_choice: "Choice",
+  multiple_choice: "Multiple choice",
+  preference: "Preference (Sample A vs B)",
   text: "Text answer",
 };
+const OPTION_TYPES = ["single_choice", "multiple_choice", "preference"];
 
 const MIN_Q = 5;
 const MAX_Q = 10;
@@ -433,6 +439,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
 
   const dialogs = (
     <>
+      {dialog?.type === "masters" && <MastersDialog onClose={() => setDialog(null)} />}
       {dialog?.type === "category" && (
         <CategoryDialog
           category={dialog.category}
@@ -542,6 +549,11 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           </p>
         </div>
         <div className="catalog-head-actions">
+          {!canManage && (
+            <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "masters" })}>
+              Master lists
+            </button>
+          )}
           {canManage && (
             <>
               <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "category" })}>
@@ -1038,7 +1050,7 @@ const emptyQuestion = { text: "", question_type: "rating", options: "", required
 
 // How a question feeds the client summary of the consolidated report.
 const REPORT_ROLES = {
-  preference: { label: "Product preference", hint: "This product vs the alternative. Put this product as the FIRST option.", types: ["single_choice", "yes_no"] },
+  preference: { label: "Product preference", hint: "This product vs the alternative. Put this product as the FIRST option.", types: ["single_choice", "yes_no", "preference"] },
   price: { label: "Price willingness", hint: "Price points as options, e.g. 3 ghc, 4 ghc, 5 ghc.", types: ["single_choice"] },
   score: { label: "Overall score", hint: "1–5 rating, or options from lowest to highest, e.g. 7 marks … 10 marks.", types: ["rating", "single_choice"] },
   improvement: { label: "Improvement areas", hint: "What customers would change.", types: ["single_choice", "text"] },
@@ -1048,6 +1060,52 @@ const REPORT_ROLES = {
 
 // readOnly: the admin dashboard lists the questions but can't change them (the
 // organization manages them in its portal; the server refuses admin changes too).
+/* Survey form approval (requirements point 4): the Super Admin edits the questions,
+   an Admin approves the form before survey persons can use it. */
+function FormApproval({ product, readOnly, onChanged, onNotice }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const status = product.questions_status || "approved";
+  const decide = async (approve) => {
+    if (!approve && !note.trim()) {
+      onNotice?.({ tone: "error", text: "Add a note so the Super Admin knows what to change." });
+      return;
+    }
+    setBusy(true);
+    try {
+      await (approve ? approveSurveyForm(product.id, note.trim() || null) : returnSurveyForm(product.id, note.trim()));
+      setNote("");
+      onNotice?.({ tone: "ok", text: approve ? "Survey form approved: survey persons can use it." : "Survey form returned to the Super Admin." });
+      onChanged?.();
+    } catch (err) {
+      onNotice?.({ tone: "error", text: errorText(err, "The decision couldn't be saved.") });
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (status === "approved") {
+    return product.questions_reviewed_by ? (
+      <p className="form-status is-ok">Survey form approved by {product.questions_reviewed_by}{product.questions_note ? ` · “${product.questions_note}”` : ""}</p>
+    ) : null;
+  }
+  return (
+    <div className={`form-status is-${status === "returned" ? "neg" : "warn"}`}>
+      <p>
+        <strong>{status === "returned" ? "Returned by the Admin" : "Waiting for Admin approval"}</strong>
+        {status === "returned" && product.questions_note ? `: “${product.questions_note}”` : ""}
+        {status === "pending" && " · survey persons can't use this form until an Admin approves it."}
+      </p>
+      {readOnly && status === "pending" && (
+        <div className="form-status-actions">
+          <input className="input" placeholder="Note (required to return)" value={note} onChange={(e) => setNote(e.target.value)} />
+          <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => decide(true)}>Approve form</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => decide(false)}>Return with note</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false }) {
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1075,10 +1133,9 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       question_type: editing.question_type,
       required: editing.required,
       report_role: editing.report_role || null,
-      options:
-        editing.question_type === "single_choice"
-          ? editing.options.split("\n").map((o) => o.trim()).filter(Boolean)
-          : null,
+      options: OPTION_TYPES.includes(editing.question_type)
+        ? editing.options.split("\n").map((o) => o.trim()).filter(Boolean)
+        : null,
     };
     try {
       if (editing.id) await updateQuestion(editing.id, body);
@@ -1163,10 +1220,17 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
           </span>
         )}
       </label>
-      {editing.question_type === "single_choice" && (
+      {OPTION_TYPES.includes(editing.question_type) && (
         <label className="field">
-          <span className="field-label">Options (2–8, one per line)</span>
-          <textarea className="input" rows={4} value={editing.options} placeholder={"Too sweet\nJust right\nNot sweet enough"}
+          <span className="field-label">
+            {editing.question_type === "preference"
+              ? "The two samples (one per line; empty = Sample A and Sample B)"
+              : editing.question_type === "multiple_choice"
+              ? "Options (2–10, one per line; customers can tick several)"
+              : "Options (2–8, one per line)"}
+          </span>
+          <textarea className="input" rows={editing.question_type === "preference" ? 2 : 4} value={editing.options}
+            placeholder={editing.question_type === "preference" ? "Sample A\nSample B" : "Too sweet\nJust right\nNot sweet enough"}
             onChange={(e) => setEditing({ ...editing, options: e.target.value })} />
         </label>
       )}
@@ -1181,6 +1245,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 
   return (
     <div>
+      <FormApproval product={product} readOnly={readOnly} onChanged={onChanged} onNotice={onNotice} />
       <div className="tab-head">
         <div className="tab-intro">
           <strong>Survey questions</strong>
@@ -1256,7 +1321,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 
 /* ---------------- Recipe ---------------- */
 
-const blankIngredient = () => ({ name: "", quantity: "", unit: "", notes: "" });
+const blankIngredient = () => ({ name: "", quantity: "", unit: "", cost_per_kg: "", notes: "" });
 const blankStep = () => ({ title: "", details: "", temperature: "", duration: "" });
 
 // "82" + "kg" -> grams (mass) or millilitres (volume); null when it can't be compared.
@@ -1269,15 +1334,6 @@ function amountOf(i) {
 }
 
 // "30 min", "1 h", "1.5 hr", "45 sec" -> minutes; null when unclear.
-function minutesOf(text) {
-  const m = String(text || "").toLowerCase().match(/([\d.]+)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\b/);
-  if (!m) return null;
-  const v = parseFloat(m[1]);
-  if (!Number.isFinite(v)) return null;
-  return m[2].startsWith("h") ? v * 60 : m[2].startsWith("s") ? v / 60 : v;
-}
-const fmtMinutes = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ` ${Math.round(m % 60)} min` : ""}` : `${Math.round(m)} min`);
-
 // readOnly: the admin dashboard shows recipes but can't change them (the organization
 // manages recipes in its portal; the server refuses admin changes too).
 export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
@@ -1286,12 +1342,16 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState({ batch: false, ingredients: false, steps: false });
+  // Costing, standards, attachments, earlier steps (from the server)
+  const [extras, setExtras] = useState(null);
+  const reloadExtras = () => getRecipe(product.id).then((d) => setExtras(d)).catch(() => {});
 
   useEffect(() => {
     let alive = true;
     getRecipe(product.id)
       .then((d) => {
         if (!alive) return;
+        setExtras(d);
         const r = d?.recipe || {};
         const loaded = {
           batch_size: r.batch_size || "",
@@ -1315,14 +1375,6 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
     setRecipe((r) => ({ ...r, [key]: r[key].map((row, k) => (k === i ? { ...row, [field]: value } : row)) }));
   const addRow = (key) => setRecipe((r) => ({ ...r, [key]: [...r[key], key === "steps" ? blankStep() : blankIngredient()] }));
   const removeRow = (key, i) => setRecipe((r) => ({ ...r, [key]: r[key].filter((_, k) => k !== i) }));
-  const moveStep = (i, dir) =>
-    setRecipe((r) => {
-      const steps = [...r.steps];
-      const j = i + dir;
-      if (j < 0 || j >= steps.length) return r;
-      [steps[i], steps[j]] = [steps[j], steps[i]];
-      return { ...r, steps };
-    });
   const edit = (part, on = true) => {
     setEditing((e) => ({ ...e, [part]: on }));
     // Start an empty list with one row to fill in.
@@ -1334,12 +1386,16 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
     try {
       const clean = {
         batch_size: recipe.batch_size.trim() || null,
-        ingredients: recipe.ingredients.filter((i) => i.name.trim()),
-        steps: recipe.steps.filter((x) => x.title.trim()),
+        ingredients: recipe.ingredients.filter((i) => i.name.trim()).map((i) => ({
+          ...i,
+          cost_per_kg: i.cost_per_kg === "" || i.cost_per_kg == null ? null : Number(String(i.cost_per_kg).replace(/,/g, "")),
+        })),
+        steps: [], // no Steps in new versions (earlier versions keep theirs, read-only)
         notes: recipe.notes.trim() || null,
       };
       const res = await saveRecipe(product.id, clean);
-      const next = { ...recipe, ingredients: clean.ingredients, steps: clean.steps };
+      if (res) setExtras(res);
+      const next = { ...recipe, ingredients: clean.ingredients.map((i) => ({ ...i, cost_per_kg: i.cost_per_kg ?? "" })), steps: [] };
       setRecipe(next);
       setSaved(JSON.stringify(next));
       setEditing({ batch: false, ingredients: false, steps: false });
@@ -1366,8 +1422,6 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const comparable = amounts.length > 0 && amounts.every(Boolean) && kinds.size === 1;
   const total = comparable ? amounts.reduce((n, a) => n + a.value, 0) : 0;
   const totalLabel = comparable ? (kinds.has("mass") ? (total >= 1000 ? `${+(total / 1000).toFixed(2)} kg` : `${+total.toFixed(1)} g`) : (total >= 1000 ? `${+(total / 1000).toFixed(2)} l` : `${+total.toFixed(1)} ml`)) : null;
-  const stepMinutes = recipe.steps.map((x) => minutesOf(x.duration));
-  const totalMinutes = recipe.steps.length && stepMinutes.every((m) => m != null) ? stepMinutes.reduce((a, b) => a + b, 0) : null;
 
   return (
     <div className="recipe">
@@ -1375,7 +1429,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         <strong>Recipe</strong>
         <p className="muted">
           How {product.name} is made, from raw materials to the packed product. Consolidated reports use it to link customer
-          feedback to an exact ingredient or step, e.g. "7 of 10 find it too sweet: reduce sugar in step 1".
+          feedback to an exact ingredient, e.g. "7 of 10 find it too sweet: reduce sugar from 8 kg to 7 kg".
         </p>
       </div>
       {readOnly && (
@@ -1422,7 +1476,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         {editing.ingredients ? (
           <div className="ing-edit">
             <div className="ing-edit-head" aria-hidden="true">
-              <span>Ingredient</span><span>Quantity</span><span>Unit</span><span>Purpose in the recipe</span><span />
+              <span>Ingredient</span><span>Quantity</span><span>Unit</span><span>Cost per KG (₹)</span><span>Purpose in the recipe</span><span />
             </div>
             {recipe.ingredients.map((ing, i) => (
               <div className="ing-edit-row" key={i}>
@@ -1432,6 +1486,8 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
                   onChange={(e) => setList("ingredients", i, "quantity", e.target.value)} />
                 <input className="input" aria-label="Unit" placeholder="kg" value={ing.unit}
                   onChange={(e) => setList("ingredients", i, "unit", e.target.value)} />
+                <input className="input" aria-label="Cost per KG" inputMode="decimal" placeholder="e.g. 45" value={ing.cost_per_kg ?? ""}
+                  onChange={(e) => setList("ingredients", i, "cost_per_kg", e.target.value.replace(/[^0-9.,]/g, ""))} />
                 <input className="input" aria-label="Purpose" placeholder="e.g. Sweetness" value={ing.notes}
                   onChange={(e) => setList("ingredients", i, "notes", e.target.value)} />
                 <button type="button" className="icon-btn danger" aria-label={`Remove ingredient ${i + 1}`} onClick={() => removeRow("ingredients", i)}>×</button>
@@ -1491,84 +1547,11 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
       </section>
 
       {/* ---- production process ---- */}
-      <section className="recipe-card">
-        <header className="recipe-card-head">
-          <div>
-            <h3>Production process <span className="count-badge">{recipe.steps.filter((x) => x.title.trim()).length} steps</span></h3>
-            <p className="muted">
-              How {product.name} is made, in order{totalMinutes != null ? ` · about ${fmtMinutes(totalMinutes)} in total` : ""}.
-            </p>
-          </div>
-          {!editing.steps && !readOnly && (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("steps")}>
-              {recipe.steps.length ? "Edit steps" : "Add steps"}
-            </button>
-          )}
-        </header>
-
-        {editing.steps ? (
-          <div className="step-edit">
-            {recipe.steps.map((st, i) => (
-              <div className="step-edit-card" key={i}>
-                <div className="step-edit-top">
-                  <span className="step-no">Step {i + 1}</span>
-                  <span className="step-edit-tools">
-                    <button type="button" className="icon-btn" aria-label="Move step up" disabled={i === 0} onClick={() => moveStep(i, -1)}>↑</button>
-                    <button type="button" className="icon-btn" aria-label="Move step down" disabled={i === recipe.steps.length - 1} onClick={() => moveStep(i, 1)}>↓</button>
-                    <button type="button" className="icon-btn danger" aria-label={`Remove step ${i + 1}`} onClick={() => removeRow("steps", i)}>×</button>
-                  </span>
-                </div>
-                <div className="step-edit-grid">
-                  <label className="field step-name">
-                    <span className="field-label">Step name</span>
-                    <input className="input" placeholder="e.g. Cook the corn grits" value={st.title}
-                      onChange={(e) => setList("steps", i, "title", e.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span className="field-label">Temperature</span>
-                    <input className="input" placeholder="e.g. 85 °C" value={st.temperature}
-                      onChange={(e) => setList("steps", i, "temperature", e.target.value)} />
-                  </label>
-                  <label className="field">
-                    <span className="field-label">Time</span>
-                    <input className="input" placeholder="e.g. 30 min" value={st.duration}
-                      onChange={(e) => setList("steps", i, "duration", e.target.value)} />
-                  </label>
-                  <label className="field step-instructions">
-                    <span className="field-label">Instructions</span>
-                    <textarea className="input" rows={2} placeholder="What the operator does in this step"
-                      value={st.details} onChange={(e) => setList("steps", i, "details", e.target.value)} />
-                  </label>
-                </div>
-              </div>
-            ))}
-            <div className="recipe-edit-foot">
-              <button type="button" className="link-btn" onClick={() => addRow("steps")}>+ Add step</button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("steps", false)}>Done</button>
-            </div>
-          </div>
-        ) : recipe.steps.length ? (
-          <ol className="process">
-            {recipe.steps.map((st, i) => (
-              <li key={i}>
-                <span className="process-no" aria-hidden="true">{i + 1}</span>
-                <div className="process-body">
-                  <div className="process-title">
-                    <strong>{st.title || <span className="muted">Untitled step</span>}</strong>
-                    <span className="process-tags">
-                      {st.temperature && <span className="ptag">🌡 {st.temperature}</span>}
-                      {st.duration && <span className="ptag">⏱ {st.duration}</span>}
-                    </span>
-                  </div>
-                  {st.details && <p className="process-details">{st.details}</p>}
-                </div>
-              </li>
-            ))}
-          </ol>
-        ) : (
-          <p className="recipe-empty">No steps yet. Add them in order, from raw materials to packing.</p>
-        )}
-      </section>
+      {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
+      <CostingCard costing={extras?.costing} />
+      <StandardsCard standards={extras?.standards} />
+      <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />
+      <LegacyStepsCard legacy={extras?.legacy_steps} />
 
       {/* ---- notes ---- */}
       <section className="recipe-card">

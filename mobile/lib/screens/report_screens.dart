@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../main.dart';
 import '../services/survey_api.dart';
 import 'org_product_screens.dart' show RoundCompareView;
+import 'next_update_screens.dart' show ReportDownloads;
 
 /*
   Product reports on the phone: the same data and consolidated report as the
@@ -550,6 +551,13 @@ class _ProductReportPageState extends State<ProductReportPage> {
                   ),
                 ))
           : RefreshIndicator(color: AppColors.brand, onRefresh: _load, child: _body()),
+      // Excel / PowerPoint of the shown round (web: report downloads)
+      bottomNavigationBar: _data == null
+          ? null
+          : SafeArea(
+              minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: ReportDownloads(productId: widget.productId, round: _round),
+            ),
     );
   }
 

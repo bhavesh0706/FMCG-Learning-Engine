@@ -33,8 +33,10 @@ os.environ.update(
         "FMCG_PBKDF2_ROUNDS": "1000",  # fast hashing in tests; production default is 600,000
         "AI_SERVICE_URL": "http://127.0.0.1:9",  # nothing listens here
         "AI_CONNECT_RETRIES": "0",
+        "FMCG_STORAGE_ROOT": str(_TMP / "storage"),  # tests never write into the project folder
         "FMCG_RECORDINGS_DIR": str(_TMP / "recordings"),
         "FMCG_QUEUE_DIR": str(_TMP / "queue"),
+        "FMCG_ATTACHMENTS_DIR": str(_TMP / "recipe_files"),
         "CORS_ORIGINS": "http://localhost:5173",
         "LOG_LEVEL": "WARNING",
     }

@@ -46,6 +46,11 @@ import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalize
 import axios from "axios";
 import { AddMemberDialog, AssignProductsDialog, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
 import ProductChecks from "./components/ProductChecks";
+import ReportReviews from "./components/ReportReviews";
+import ReportStatus from "./components/ReportStatus";
+import ReportDownloads from "./components/ReportDownloads";
+import AnalyticsPage from "./components/AnalyticsPage";
+import { listReportReviews } from "./services/nextApi";
 import { startAnalysis, waitForAnalysis, announceDataChanged, DATA_CHANGED } from "./services/analysisApi";
 
 
@@ -1090,7 +1095,8 @@ function RefreshGlyph() {
   );
 }
 
-function FeedbackDetail({ record, onBack, onRecordUpdated }) {
+// Also used read-only by the Super Admin's Surveys page (components/OrgSurveys.jsx).
+export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = false }) {
   const videoRef = useRef(null);
   const [videoError, setVideoError] = useState(false);
   const [videoDuration, setVideoDuration] = useState(0);
@@ -1210,9 +1216,11 @@ function FeedbackDetail({ record, onBack, onRecordUpdated }) {
 
   return (
     <section className="feedback-detail">
-      <button type="button" className="back-link" onClick={onBack}>
-        <ChevronIcon dir="left" /> Survey history
-      </button>
+      {onBack && (
+        <button type="button" className="back-link" onClick={onBack}>
+          <ChevronIcon dir="left" /> Survey history
+        </button>
+      )}
 
       <div className="results-head">
         <div className="results-title">
@@ -1230,16 +1238,18 @@ function FeedbackDetail({ record, onBack, onRecordUpdated }) {
         </div>
         <div className="results-actions">
           <SentimentPill sentiment={sentiment} />
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={reanalyze}
-            disabled={reanalyzing}
-            title="Run the analysis again on this recording and update its results"
-          >
-            {reanalyzing ? <span className="spinner btn-spinner" aria-hidden="true" /> : <RefreshGlyph />}
-            {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
-          </button>
+          {!readOnly && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={reanalyze}
+              disabled={reanalyzing}
+              title="Run the analysis again on this recording and update its results"
+            >
+              {reanalyzing ? <span className="spinner btn-spinner" aria-hidden="true" /> : <RefreshGlyph />}
+              {reanalyzing ? "Re-analyzing…" : "Re-analyze"}
+            </button>
+          )}
           <button type="button" className="btn btn-secondary" onClick={copySummary} disabled={!record.summary}>
             {copied ? "Summary copied" : "Copy summary"}
           </button>
@@ -2235,6 +2245,11 @@ const HISTORY_SORTS = {
 function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "products", onTabChange }) {
   // Product checks waiting for review (badge on the tab)
   const [checkCounts, setCheckCounts] = useState({});
+  // Survey reports waiting for an admin (badge on the Report reviews tab)
+  const [reviewCounts, setReviewCounts] = useState({});
+  useEffect(() => {
+    listReportReviews("pending_admin").then((r) => setReviewCounts(r?.counts || {})).catch(() => {});
+  }, [tab]);
   useEffect(() => {
     listProductChecks("pending").then((r) => setCheckCounts(r?.counts || {})).catch(() => {});
   }, [tab]);
@@ -2318,6 +2333,13 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
             Product checks
             {checkCounts.pending > 0 && <span className="seg-count" aria-label={`${checkCounts.pending} need review`}> {checkCounts.pending}</span>}
           </button>
+          <button type="button" role="tab" aria-selected={tab === "analytics"} className={tab === "analytics" ? "is-on" : ""} onClick={() => onTabChange?.("analytics")}>
+            Analytics
+          </button>
+          <button type="button" role="tab" aria-selected={tab === "reviews"} className={tab === "reviews" ? "is-on" : ""} onClick={() => onTabChange?.("reviews")}>
+            Report reviews
+            {reviewCounts.pending_admin > 0 && <span className="seg-count" aria-label={`${reviewCounts.pending_admin} to review`}> {reviewCounts.pending_admin}</span>}
+          </button>
         </div>
         {tab === "products" && (
           <button type="button" className="btn btn-secondary" onClick={load} disabled={data.loading}>
@@ -2326,7 +2348,11 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
         )}
       </div>
 
-      {tab === "checks" ? (
+      {tab === "analytics" ? (
+        <AnalyticsPage />
+      ) : tab === "reviews" ? (
+        <ReportReviews onCounts={setReviewCounts} />
+      ) : tab === "checks" ? (
         <ProductChecks onCounts={setCheckCounts} />
       ) : tab === "surveys" ? (
         <AllSurveysList onOpenFeedback={onOpenFeedback} />
@@ -3296,6 +3322,7 @@ function MySurveyDetail({ responseId, onBack }) {
           {sv.round && <span className="round-chip">Round {sv.round}</span>}
           <span className={`status-chip is-${st.tone}`}>{st.label}</span>
         </div>
+        <ReportStatus responseId={sv.id ?? responseId} status={sv.report_status} analyzed={sv.status === "analyzed"} />
       </header>
 
       {!fb && (
@@ -3742,7 +3769,11 @@ function BreakdownTable({ rows }) {
   );
 }
 
-const BREAKDOWNS = { gender: "Gender", age_group: "Age group", city: "City", usage_period: "When used" };
+const BREAKDOWNS = {
+  gender: "Gender", age_group: "Age group", city: "City", usage_period: "When used",
+  // Next update: report dimensions
+  respondent_type: "Respondent type", audience: "Internal / External", country: "Country", occupation: "Occupation", sec_class: "Class (SEC)",
+};
 
 /* ================================================================
    Client summary: the classic product-test report (A, B, C …),
@@ -3943,7 +3974,7 @@ function ConsolidatedReportView({ report, product, forClient = false }) {
                     <DistributionBars distribution={Object.fromEntries(["5", "4", "3", "2", "1"].map((k) => [`${k} ★`, qr.distribution?.[k] || 0]))} total={qr.answered} />
                   </>
                 )}
-                {(qr.type === "yes_no" || qr.type === "single_choice") && (
+                {["yes_no", "single_choice", "multiple_choice", "preference"].includes(qr.type) && (
                   <DistributionBars distribution={qr.distribution} total={qr.answered} />
                 )}
                 {qr.type === "text" && (() => {
@@ -4156,6 +4187,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
             ))}
           </div>
         )}
+        {!comparing && <ReportDownloads productId={productId} round={round} />}
       </header>
 
       {comparing ? (

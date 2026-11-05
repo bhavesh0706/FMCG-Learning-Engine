@@ -99,6 +99,34 @@ def run_migrations():
             )).rowcount
         if done:
             print(f"Database updated: {done} existing products stay open without a round")
+    # Next update (requirements PDF): respondent details, Internal/External, report
+    # review status, survey form approval. Existing data keeps working:
+    for column, ddl in (("country", "VARCHAR(80) NULL"), ("occupation", "VARCHAR(80) NULL"),
+                        ("sec_class", "VARCHAR(40) NULL"), ("respondent_type", "VARCHAR(60) NULL")):
+        _add_column("respondents", column, ddl)
+    _add_column("survey_responses", "audience", "VARCHAR(20) NULL")
+    had_report_status = _has_column("survey_responses", "report_status")
+    _add_column("survey_responses", "report_status", "VARCHAR(30) NULL")
+    _add_column("survey_responses", "report_status_at", "DATETIME NULL")
+    if not had_report_status:  # surveys analyzed before the review chain start as "generated"
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE survey_responses SET report_status = 'generated' WHERE status = 'analyzed'"))
+    had_form_status = _has_column("products", "questions_status")
+    _add_column("products", "questions_status", "VARCHAR(20) NOT NULL DEFAULT 'approved'")
+    _add_column("products", "questions_note", "TEXT NULL")
+    _add_column("products", "questions_reviewed_by", "VARCHAR(150) NULL")
+    _add_column("products", "questions_reviewed_at", "DATETIME NULL")
+    if not had_form_status:  # forms already in use stay usable: approved
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE products SET questions_status = 'approved'"))
+    # Tables of these features may exist from an earlier version with fewer columns:
+    # add what's missing (create_all never changes an existing table).
+    sync_columns(["product_checks", "report_review_events", "master_values", "recipe_standards",
+                  "recipe_attachments", "password_reset_codes", "custom_report_requests"])
+
+    from app.services.masters import seed_defaults
+
+    seed_defaults()
 
     # 3. Data steps (each one does nothing once done).
     backfill_feedback_tone()
@@ -287,3 +315,46 @@ def link_unclaimed_surveys() -> int:
 if __name__ == "__main__":
     run_migrations()
     print("Database is up to date.")
+
+
+def sync_columns(table_names) -> None:
+    """
+    Bring existing tables up to their model: add every missing column (data kept), and
+    make old extra columns that are NOT NULL without a default optional (MySQL), so new
+    rows can be saved. Never drops anything.
+    """
+    from sqlalchemy import inspect
+
+    from app.database.database import Base
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    for name in table_names:
+        table = Base.metadata.tables.get(name)
+        if table is None or name not in existing_tables:
+            continue
+        present = {c["name"]: c for c in inspector.get_columns(name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            ddl = column.type.compile(dialect=engine.dialect)
+            default = getattr(column.default, "arg", None)
+            if not column.nullable and isinstance(default, (int, float, str)) and not callable(default):
+                value = default if isinstance(default, (int, float)) else "'" + str(default).replace("'", "''") + "'"
+                ddl += f" NOT NULL DEFAULT {value}"
+            else:
+                ddl += " NULL"
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {name} ADD COLUMN {column.name} {ddl}"))
+            print(f"Database updated: added {name}.{column.name}")
+        if engine.dialect.name == "mysql":
+            for col_name, info in present.items():
+                if col_name in table.columns or info.get("nullable", True) or info.get("default") is not None:
+                    continue
+                if info.get("autoincrement") is True:
+                    continue
+                ddl = info["type"].compile(dialect=engine.dialect)
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {name} MODIFY COLUMN {col_name} {ddl} NULL"))
+                print(f"Database updated: {name}.{col_name} is now optional (not used any more)")
+

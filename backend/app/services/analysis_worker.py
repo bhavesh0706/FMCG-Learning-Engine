@@ -271,13 +271,19 @@ def apply_reanalysis(new_id: int, target_id: int) -> int:
         db.commit()
         if duplicate_media:
             try:
-                Path(duplicate_media).unlink(missing_ok=True)
+                from app.services.storage import get_storage
+
+                found = get_storage().resolve(duplicate_media)  # only ever inside the storage folders
+                if found is not None:
+                    found.unlink(missing_ok=True)
             except Exception:
                 pass
         if target.response_id:
             survey = db.get(SurveyResponse, target.response_id)
             if survey:
                 survey.status = "analyzed"
+                if not survey.report_status:
+                    survey.report_status = "generated"
                 try:  # same product check as a first analysis; a reviewer's decision is kept
                     from app.services.product_check import run_check
 
@@ -319,6 +325,12 @@ def _swap_ids(value, old, new):
 
 
 def run_job(job_id, path, filename, response_id, kind="analyze", target_feedback_id=None):
+    from app.services.storage import get_storage
+
+    found = get_storage().resolve(path)  # a key ("queue/<file>") or an older absolute path
+    if found is None:
+        print(f"Analysis worker: job {job_id}: the uploaded file {path!r} isn't in the queue folder.", flush=True)
+    path = str(found) if found else path
     started = time.time()
     print(f"Analysis worker: job {job_id} started ({filename}).", flush=True)
     stop = threading.Event()

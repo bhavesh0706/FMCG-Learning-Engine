@@ -1,7 +1,8 @@
 """
 Finding a recording on this computer.
 
-feedback_records.video_path stores the full path where the upload was saved, on the
+feedback_records.video_path stores a storage key ("videos/123_x.mp3", services/storage.py).
+Older rows hold the full path where the upload was saved, on the
 computer that received it, for example
     C:\\Users\\iONE IT\\Documents\\FMCG-Learning-Engine\\uploads\\videos\\123_x.mp3
 After the data moves to another computer (Windows -> Mac, another folder, a restored
@@ -19,60 +20,18 @@ Only files inside an uploads folder are ever returned.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+from app.services.storage import get_storage
 
 
 def uploads_roots() -> list[Path]:
-    """The uploads folders of this installation (first = where new uploads go)."""
-    roots: list[Path] = []
-    configured = os.environ.get("FMCG_RECORDINGS_DIR")
-    if configured:
-        roots.append(Path(configured).parent)  # .../uploads (recordings go to .../uploads/videos)
-    roots.append(PROJECT_ROOT / "uploads")
-    unique: list[Path] = []
-    for r in roots:
-        if r not in unique:
-            unique.append(r)
-    return unique
-
-
-def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-        return True
-    except (ValueError, OSError):
-        return False
+    """The folders searched for recordings on this computer (storage areas and older roots)."""
+    st = get_storage()
+    return list(dict.fromkeys([st.areas["videos"], st.areas["audio"]] + st.legacy_roots))
 
 
 def resolve_recording(stored: str | None) -> Path | None:
-    """The recording's file on this computer, or None when it isn't here."""
-    if not stored:
-        return None
-    direct = Path(stored)
-    if direct.is_file():
-        return direct
-
-    normalised = stored.replace("\\", "/")
-    marker = normalised.lower().rfind("/uploads/")
-    relative = normalised[marker + len("/uploads/"):] if marker >= 0 else ""
-    name = PurePosixPath(normalised).name
-
-    configured = os.environ.get("FMCG_RECORDINGS_DIR")
-    if configured and name:
-        candidate = Path(configured) / name  # recordings kept elsewhere (e.g. a mounted disk)
-        if candidate.is_file() and _inside(candidate, Path(configured)):
-            return candidate
-
-    for root in uploads_roots():
-        candidates = []
-        if relative:
-            candidates.append(root / Path(*PurePosixPath(relative).parts))
-        if name:
-            candidates += [root / "videos" / name, root / "audio" / name, root / name]
-        for candidate in candidates:
-            if candidate.is_file() and _inside(candidate, root):
-                return candidate
-    return None
+    """The recording's file on this computer (a storage key or an older absolute path), or None.
+    See services/storage.py: keys are joined with this computer's configured folders."""
+    return get_storage().resolve(stored)

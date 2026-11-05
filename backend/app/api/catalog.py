@@ -28,7 +28,8 @@ router = APIRouter(tags=["Catalog"])
 MIN_QUESTIONS = 5   # a product is "survey ready" with at least this many questions
 MAX_QUESTIONS = 10  # the executive asks at most this many
 
-QuestionType = Literal["rating", "yes_no", "single_choice", "text"]
+# multiple_choice: tick any number of options. preference: Sample A vs Sample B.
+QuestionType = Literal["rating", "yes_no", "single_choice", "multiple_choice", "preference", "text"]
 
 
 # ============================================================
@@ -95,7 +96,7 @@ class ProductUpdate(BaseModel):
 
 # What a question means for the client summary, and which answer types fit each.
 REPORT_ROLES = {
-    "preference": ("single_choice", "yes_no"),       # this product vs the alternative; first option = this product
+    "preference": ("single_choice", "yes_no", "preference"),  # this product vs the alternative; first option = this product
     "price": ("single_choice",),                     # price points, e.g. 3 ghc / 4 ghc / 5 ghc
     "score": ("rating", "single_choice"),            # 1-5 stars, or options like "7 marks"..."10 marks"
     "improvement": ("single_choice", "text"),        # what to change
@@ -116,12 +117,20 @@ class QuestionIn(BaseModel):
 
     @model_validator(mode="after")
     def check_options(self):
-        if self.question_type == "single_choice":
-            opts = [o.strip() for o in (self.options or []) if o and o.strip()]
-            if len(opts) < 2 or len(opts) > 8:
-                raise ValueError("A single-choice question needs 2 to 8 options.")
+        opts = [o.strip() for o in (self.options or []) if o and o.strip()]
+        if self.question_type in ("single_choice", "multiple_choice"):
+            most = 8 if self.question_type == "single_choice" else 10
+            if len(opts) < 2 or len(opts) > most:
+                kind = "single-choice" if self.question_type == "single_choice" else "multiple-choice"
+                raise ValueError(f"A {kind} question needs 2 to {most} options.")
             if len({o.lower() for o in opts}) != len(opts):
                 raise ValueError("Options must be different from each other.")
+            self.options = opts
+        elif self.question_type == "preference":
+            # Sample A vs Sample B: exactly two samples (their labels can be renamed).
+            opts = opts or ["Sample A", "Sample B"]
+            if len(opts) != 2 or opts[0].lower() == opts[1].lower():
+                raise ValueError("A preference question compares exactly two different samples.")
             self.options = opts
         else:
             self.options = None  # rating is always 1-5; yes/no and text have no options
@@ -142,6 +151,15 @@ class QuestionUpdate(QuestionIn):
         # Options are validated against the final type in the endpoint.
         return self
 
+
+
+def _form_changed(db: Session, product_or_id, request: Request) -> None:
+    """The Super Admin changed a survey form: an Admin approves it before survey persons use it."""
+    from app.services.survey_forms import mark_pending
+
+    product = product_or_id if isinstance(product_or_id, Product) else db.get(Product, int(product_or_id))
+    if product is not None:
+        mark_pending(db, product, account(request))
 
 class QuestionOrder(BaseModel):
     question_ids: List[int] = Field(min_length=1)
@@ -285,6 +303,11 @@ def _product_out(
         "live_round": (rounds if rounds is not None else live_rounds(db, [p.id])).get(p.id),
         # False: an existing product that stays open without the Super Admin starting a round.
         "needs_round": bool(getattr(p, "needs_round", 1)),
+        # Survey form approval: approved | pending | returned (an Admin approves the questions)
+        "questions_status": getattr(p, "questions_status", None) or "approved",
+        "questions_note": getattr(p, "questions_note", None),
+        "questions_reviewed_by": getattr(p, "questions_reviewed_by", None),
+        "questions_reviewed_at": p.questions_reviewed_at.isoformat() + "Z" if getattr(p, "questions_reviewed_at", None) else None,
         # Product versions (= recipe versions). recipe_versions: every saved version
         # (Catalog); survey_versions: the ones in fieldwork, which a survey person can
         # choose when taking a survey ([{version, rounds, live}]).
@@ -559,6 +582,7 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
 
     # One transaction: the product and its starting questions are saved together, or not at all.
     product = Product(**body.model_dump(exclude=STARTING_QUESTION_FIELDS))
+    product.questions_status = "pending"  # new survey form: an Admin approves it first
     db.add(product)
     conflict = f'"{body.name}" already exists in {category.name}, or the SKU is already used.'
     try:
@@ -578,7 +602,9 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
 
 def _check_assigned(db: Session, user, product_id: int):
     if product_id in hidden_product_ids(db, user):
-        raise HTTPException(status_code=403, detail="This product isn't assigned to you. Ask your admin.")
+        from app.services.product_access import refusal_reason
+
+        raise HTTPException(status_code=403, detail=refusal_reason(db, product_id))
 
 
 @router.get("/products/{product_id}")
@@ -707,6 +733,7 @@ def add_question(product_id: int, body: QuestionIn, request: Request, db: Sessio
         report_role=body.report_role,
     )
     db.add(question)
+    _form_changed(db, product_id, request)
     db.commit()
     db.refresh(question)
     audit.note(request, target_id=product_id,
@@ -745,6 +772,7 @@ def update_question(question_id: int, body: QuestionUpdate, request: Request, db
         question.is_active = 1 if data["is_active"] else 0
     db.flush()
     _renumber(db, question.product_id)
+    _form_changed(db, question.product_id, request)
     db.commit()
     db.refresh(question)
     audit.note(request, target_id=question.product_id,
@@ -759,6 +787,7 @@ def deactivate_question(question_id: int, request: Request, db: Session = Depend
     question.is_active = 0
     db.flush()
     _renumber(db, question.product_id)
+    _form_changed(db, question.product_id, request)
     db.commit()
     audit.note(request, target_id=question.product_id,
                summary=f"Removed survey question #{question_id} from product #{question.product_id}")
@@ -774,5 +803,6 @@ def reorder_questions(product_id: int, body: QuestionOrder, request: Request, db
         raise HTTPException(status_code=400, detail="Send every active question of this product exactly once.")
     for position, qid in enumerate(body.question_ids, start=1):
         questions[qid].position = position
+    _form_changed(db, product_id, request)
     db.commit()
     return {"questions": [_question_out(q) for q in _active_questions(db, product_id)]}

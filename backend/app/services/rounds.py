@@ -442,3 +442,4 @@ def notify_round_ended(db: Session, product: Product, r: SurveyRound, account: d
         data={**info, "round": r.number, "round_id": r.id, "done": done, "target": r.target},
         dedupe_key=f"round:{r.id}:ended",
     )
+

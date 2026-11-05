@@ -41,6 +41,7 @@ class Ingredient(BaseModel):
     quantity: Optional[str] = Field(default=None, max_length=40)  # "450", "2.5", "a pinch"
     unit: Optional[str] = Field(default=None, max_length=30)  # g, kg, ml, %, ...
     notes: Optional[str] = Field(default=None, max_length=300)
+    cost_per_kg: Optional[float] = Field(default=None, ge=0, le=10_000_000)  # Cost in Use = Cost per KG x Usage %
 
     _c = field_validator("name", "quantity", "unit", "notes", mode="before")(_clean)
 
@@ -57,6 +58,8 @@ class Step(BaseModel):
 class RecipeIn(BaseModel):
     batch_size: Optional[str] = Field(default=None, max_length=120)  # "10 kg batch = 100 cups of 100 g"
     ingredients: List[Ingredient] = Field(default_factory=list, max_length=60)
+    # Steps are no longer part of a recipe (the process is described with notes and
+    # attachments). Sent steps are ignored; earlier versions keep theirs, read-only.
     steps: List[Step] = Field(default_factory=list, max_length=60)
     notes: Optional[str] = Field(default=None, max_length=3000)
 
@@ -67,7 +70,9 @@ def get_recipe(product_id: int, request: Request, db: Session = Depends(get_db))
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
-    return {"product_id": product.id, "product_name": product.name, "recipe": product.recipe}
+    from app.api.recipe_master import recipe_extras
+
+    return {"product_id": product.id, "product_name": product.name, "recipe": product.recipe, **recipe_extras(db, product)}
 
 
 @router.put("/products/{product_id}/recipe")
@@ -78,10 +83,10 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
         raise HTTPException(status_code=404, detail="Product not found.")
     recipe = body.model_dump()
     recipe["ingredients"] = [i for i in recipe["ingredients"] if i["name"]]
-    recipe["steps"] = [s for s in recipe["steps"] if s["title"]]
+    recipe["steps"] = []  # no Steps in new versions; earlier versions keep theirs (read-only)
     recipe["updated_at"] = datetime.utcnow().isoformat()
     old = product.recipe or None
-    product.recipe = recipe if (recipe["ingredients"] or recipe["steps"]) else None
+    product.recipe = recipe if (recipe["ingredients"] or recipe.get("notes") or recipe.get("batch_size")) else None
     db.commit()
     who = account(request)
     version = save_version(db, product, old, product.recipe, who)
@@ -90,7 +95,10 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
                    summary=f"Changed the recipe of product #{product.id} ({product.name}) to version {version.version}")
         if who.get("role") == "client":
             notify_admins_of_client_change(db, product, version)
-    return {"product_id": product.id, "recipe": product.recipe, "version": version.version if version else None}
+    from app.api.recipe_master import recipe_extras
+
+    return {"product_id": product.id, "recipe": product.recipe, "version": version.version if version else None,
+            **recipe_extras(db, product)}
 
 
 @router.get("/products/{product_id}/recipe/versions")

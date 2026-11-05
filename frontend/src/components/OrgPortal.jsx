@@ -1,3 +1,7 @@
+import AnalyticsPage from "./AnalyticsPage";
+import OrgSurveys from "./OrgSurveys";
+import RecipeMaster from "./RecipeMaster";
+import ReportDownloads from "./ReportDownloads";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL } from "../config";
 import { changePassword, changePasswordSimple, changePasswordWithCode, getSetupStatus, sendMyPasswordCode, signOut, signOutEverywhere } from "../services/auth";
@@ -296,7 +300,7 @@ function PortalShell({ user, ReportView }) {
   }, [refreshUnread, page]);
 
   useEffect(() => {
-    if (!window.location.hash || !["overview", "products", "catalog", "updates", "account"].includes(parts[0])) {
+    if (!window.location.hash || !["overview", "products", "catalog", "recipes", "surveys", "analytics", "updates", "account"].includes(parts[0])) {
       window.history.replaceState(null, "", "#/overview");
     }
     document.title = `${user?.name || "Super Admin"} · Consumer insights`;
@@ -309,6 +313,10 @@ function PortalShell({ user, ReportView }) {
   // Products and categories: the same Catalog page as the admin dashboard, with the
   // organization's add / change / deactivate / delete (each change notifies the admins).
   else if (page === "catalog") body = <CatalogPage mode="organization" />;
+  // Next update: Recipe Master (costing, standards) and every survey with its report review
+  else if (page === "recipes") body = <RecipeMaster onOpenProduct={(id) => go(`products/${id}/recipe`)} />;
+  else if (page === "surveys") body = <OrgSurveys />;
+  else if (page === "analytics") body = <AnalyticsPage />;
   else if (page === "updates") body = <UpdatesPage onSeen={() => setUnread(0)} />;
   else if (page === "account") body = <AccountPage />;
   else body = <OverviewPage user={user} />;
@@ -317,6 +325,9 @@ function PortalShell({ user, ReportView }) {
     ["overview", "Overview"],
     ["products", "Products"],
     ["catalog", "Catalog"],
+    ["recipes", "Recipes"],
+    ["surveys", "Surveys"],
+    ["analytics", "Analytics"],
     ["updates", "Updates"],
   ];
   return (
@@ -709,6 +720,7 @@ function ProductPage({ productId, tab, round, ReportView }) {
               ))}
             </select>
           )}
+          {tab === "report" && shownRound && <ReportDownloads productId={productId} round={shownRound} />}
           <button type="button" className="btn btn-primary" onClick={() => setDialog(true)} disabled={!detail.can_start_round} title={startTitle}>
             Start new round
           </button>
@@ -835,7 +847,7 @@ function RecipeSection({ product, detail, onNotice, onSaved, onStart }) {
       )}
       <section className="panel product-panel">
         <p className="muted org-recipe-note">
-          The report's recommendations refer to these ingredients and steps. Saving a change creates a new version and tells the
+          The report's recommendations refer to these ingredients. Saving a change creates a new version and tells the
           research team; start a new round to test it with consumers.
         </p>
         <RecipeTab product={product} onNotice={onNotice} onSaved={onSaved} />

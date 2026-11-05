@@ -10,6 +10,7 @@ import '../services/session.dart';
 import '../services/survey_api.dart';
 import '../services/survey_queue.dart';
 import '../widgets/media_player.dart';
+import 'next_update_screens.dart' show NextApi;
 import 'capture_screens.dart';
 
 /*
@@ -78,6 +79,11 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   final _surveyLocation = TextEditingController();
   String? _gender;
   String? _usage;
+  // Next update: country, respondent type, occupation, class (SEC) and Internal / External
+  final _country = TextEditingController(text: 'India');
+  String? _respondentType, _occupation, _secClass;
+  String _audience = 'external';
+  Map<String, List<String>> _masters = const {};
   bool _consent = false;
 
   // Answers and recording
@@ -123,6 +129,13 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     // Signed in: the survey is done by this account's executive.
     _executive.text = Session.user.value?.name ?? AppProfile.executiveName.value;
     _surveyLocation.text = AppProfile.lastSurveyLocation.value;
+    NextApi.masters().then((m) {
+      if (!mounted) return;
+      setState(() => _masters = {
+            for (final k in const ['respondent_type', 'occupation', 'sec_class'])
+              k: [for (final v in (m[k] is List ? m[k] as List : const [])) if (v is Map) '${v['name']}'],
+          });
+    }).catchError((_) {});
     _autoLocationText = _surveyLocation.text;
     _usage = widget.keepUsage;
     _loadCatalog();
@@ -191,7 +204,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
 
   @override
   void dispose() {
-    for (final c in [_name, _mobile, _age, _city, _address, _executive, _surveyLocation, ..._textControllers.values]) {
+    for (final c in [_name, _mobile, _age, _city, _address, _country, _executive, _surveyLocation, ..._textControllers.values]) {
       c.dispose();
     }
     super.dispose();
@@ -539,6 +552,10 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           'gender': _gender,
           'age': int.tryParse(_age.text.trim()),
           'location': _city.text.trim(),
+          'country': _country.text.trim().isEmpty ? null : _country.text.trim(),
+          'respondent_type': _respondentType,
+          'occupation': _occupation,
+          'sec_class': _secClass,
           'consent_given': true,
         },
         response: {
@@ -547,6 +564,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           if (_version != null) 'recipe_version': _version!.version,
           'executive_name': _executive.text.trim(),
           'usage_period': _usage,
+          'audience': _audience,
           'location': _surveyLocation.text.trim(),
           'latitude': _lat,
           'longitude': _lng,
@@ -842,7 +860,38 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         ),
         _field(_city, 'City or locality *', capitalization: TextCapitalization.words),
         _field(_address, 'Address (optional)', capitalization: TextCapitalization.sentences),
+        _field(_country, 'Country', capitalization: TextCapitalization.words),
+        for (final (key, label) in const [('respondent_type', 'Respondent type'), ('occupation', 'Occupation'), ('sec_class', 'Class (SEC)')])
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: DropdownButtonFormField<String>(
+              initialValue: key == 'respondent_type' ? _respondentType : key == 'occupation' ? _occupation : _secClass,
+              isExpanded: true,
+              decoration: InputDecoration(labelText: label),
+              items: [for (final v in _masters[key] ?? const <String>[]) DropdownMenuItem(value: v, child: Text(v))],
+              onChanged: (v) => setState(() {
+                if (key == 'respondent_type') {
+                  _respondentType = v;
+                } else if (key == 'occupation') {
+                  _occupation = v;
+                } else {
+                  _secClass = v;
+                }
+              }),
+            ),
+          ),
         const _SectionLabel('This survey'),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'external', label: Text('External')),
+              ButtonSegment(value: 'internal', label: Text('Internal')),
+            ],
+            selected: {_audience},
+            onSelectionChanged: (s) => setState(() => _audience = s.first),
+          ),
+        ),
         if (Session.user.value != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
@@ -1044,16 +1093,32 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           ],
         );
       case 'single_choice':
+      case 'preference': // Sample A vs Sample B
         answer = Column(
           children: [
-            for (final o in q.options) _RadioOption(label: o, selected: value == o, onTap: () => _answer(q, o)),
+            for (final o in (q.options.isEmpty ? const ['Sample A', 'Sample B'] : q.options))
+              _RadioOption(label: o, selected: value == o, onTap: () => _answer(q, o)),
           ],
         );
+      case 'multiple_choice': // any number of options, saved as "A | B"
+        final picked = value.split('|').map((v) => v.trim()).where((v) => v.isNotEmpty).toSet();
+        answer = Wrap(spacing: 8, runSpacing: 8, children: [
+          for (final o in q.options)
+            FilterChip(
+              label: Text(o),
+              selected: picked.contains(o),
+              onSelected: (on) {
+                final next = {...picked};
+                on ? next.add(o) : next.remove(o);
+                _answer(q, q.options.where(next.contains).join(' | '));
+              },
+            ),
+        ]);
       default:
         final controller = _textControllers.putIfAbsent(q.id, () => TextEditingController(text: value));
         // The last text question's return key is "Done" (closes the keyboard); earlier
         // ones are "Next" (moves to the next text field).
-        final lastText = _questions.lastWhere((x) => !const {'rating', 'yes_no', 'single_choice'}.contains(x.type), orElse: () => q).id == q.id;
+        final lastText = _questions.lastWhere((x) => !const {'rating', 'yes_no', 'single_choice', 'multiple_choice', 'preference'}.contains(x.type), orElse: () => q).id == q.id;
         answer = TextField(
           controller: controller,
           minLines: 2,

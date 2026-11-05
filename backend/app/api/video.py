@@ -1,7 +1,6 @@
 from pathlib import Path
 from datetime import datetime
 import json
-import os
 import time
 import re
 
@@ -56,16 +55,11 @@ PROJECT_ROOT = (
     Path(__file__).resolve().parents[3]
 )
 
-# FMCG_RECORDINGS_DIR moves the stored recordings (e.g. to a mounted disk).
-VIDEO_DIR = Path(
-    os.environ.get("FMCG_RECORDINGS_DIR")
-    or PROJECT_ROOT / "uploads" / "videos"
-)
+# Recordings folder from backend/.env (services/storage.py: FMCG_STORAGE_ROOT,
+# FMCG_RECORDINGS_DIR); the database stores a key ("videos/<file>"), not this path.
+from app.services.storage import get_storage  # noqa: E402
 
-VIDEO_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+VIDEO_DIR = get_storage().area_dir("videos")
 
 # Temporary audio is handled by the AI service (ai_service/work).
 
@@ -579,9 +573,8 @@ def save_feedback_record(
                 original_filename
             ),
 
-            video_path=str(
-                video_path
-            ),
+            # A storage key ("videos/123_x.mp4"), valid on every computer
+            video_path=get_storage().to_stored(video_path),
 
             duration_seconds=(
                 float(duration_seconds)
@@ -635,6 +628,9 @@ def save_feedback_record(
 
             response.status = "analyzed"
             response.analyzed_at = datetime.utcnow()
+            if not response.report_status:  # report review chain starts here (api/report_reviews.py)
+                response.report_status = "generated"
+                response.report_status_at = datetime.utcnow()
             # Is the feedback about the selected product? A clear mismatch keeps the
             # survey out of every report until an admin reviews it (services/product_check.py).
             try:
@@ -769,7 +765,7 @@ async def upload_video(
     # --------------------------------------------------------
 
     # Size-capped copy (FMCG_MAX_UPLOAD_MB); 413 above the cap, 400 when empty.
-    video_path = save_upload(file, VIDEO_DIR, safe_name(file.filename))
+    video_path = save_upload(file, get_storage().area_dir("videos"), safe_name(file.filename))
 
     try:
 

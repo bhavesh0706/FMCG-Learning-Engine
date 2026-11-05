@@ -80,6 +80,11 @@ ADMIN = [
 # them: these answer 403 for every role except "client".
 ORG_CONTENT = [
     ({"PUT"}, r"^/products/\d+/recipe$"),
+    # Recipe standards and the recipe process attachments (Recipe Master)
+    ({"POST"}, r"^/recipe-standards$"),
+    ({"PUT", "DELETE"}, r"^/recipe-standards/\d+$"),
+    ({"POST"}, r"^/products/\d+/recipe/attachments$"),
+    ({"DELETE"}, r"^/recipe-attachments/\d+$"),
     ({"POST"}, r"^/products/\d+/questions$"),
     ({"PUT"}, r"^/products/\d+/questions/order$"),
     ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
@@ -102,10 +107,26 @@ ORG_CATALOG = [
 # only aggregated results: no customer details, survey persons or recordings.
 CLIENT_ALLOWED = [
     ({"GET"}, r"^/auth/me$"),
+    # Custom reports from a prompt (Excel / PowerPoint, one or many products)
+    ({"GET"}, r"^/reports/(options|file/\d+)$"),
+    ({"POST"}, r"^/reports/plan$"),
+    # Every survey's full analysis page and its recording (read-only; re-analysis stays with admins)
+    ({"GET"}, r"^/feedback/\d+(/(video|audio|media))?$"),
     ({"POST"}, r"^/auth/(logout-all|change-password|me/password-code)$"),
     (None, r"^/org(/|$)"),
     ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
     ({"GET"}, r"^/products/\d+/recipe/versions$"),
+    # Recipe Master: list, standards, attachments
+    ({"GET"}, r"^/recipes$"),
+    ({"GET", "POST"}, r"^/recipe-standards$"),
+    ({"PUT", "DELETE"}, r"^/recipe-standards/\d+$"),
+    ({"GET", "POST"}, r"^/products/\d+/recipe/attachments$"),
+    ({"GET"}, r"^/recipe-attachments/\d+/file$"),
+    ({"DELETE"}, r"^/recipe-attachments/\d+$"),
+    # Report downloads (Excel, PowerPoint), master lists, a survey report's review history
+    ({"GET"}, r"^/product-feedback/\d+/export\.(xlsx|pptx)$"),
+    ({"GET"}, r"^/masters$"),
+    ({"GET"}, r"^/surveys/responses/\d+/report/history$"),
     # Survey questions of a product: read, add, edit, reorder, remove
     ({"GET", "POST"}, r"^/products/\d+/questions$"),
     ({"PUT"}, r"^/products/\d+/questions/order$"),
@@ -121,7 +142,9 @@ PASSWORD_CHANGE_ALLOWED = [
     ({"POST"}, r"^/auth/change-password$"),
 ]
 
-MEDIA = re.compile(r"^/feedback/\d+/(video|audio|media)")
+# Links that may carry the sign-in token in the address (?token=): media players, and
+# the downloads the mobile app opens in the phone's browser (report exports, recipe files).
+MEDIA = re.compile(r"^/feedback/\d+/(video|audio|media)|^/product-feedback/\d+/export\.(xlsx|pptx)$|^/recipe-attachments/\d+/file$|^/reports/file/\d+$")
 
 _PUBLIC = [(m, re.compile(p)) for m, p in PUBLIC]
 _ADMIN = [(m, re.compile(p)) for m, p in ADMIN]
@@ -182,6 +205,17 @@ def _account(token: Optional[str]) -> Optional[dict]:
 SURVEY_CREATE = re.compile(r"^/surveys/responses$")
 
 
+def _refusal(product_id: int) -> str:
+    from app.database.database import SessionLocal
+    from app.services.product_access import refusal_reason
+
+    db = SessionLocal()
+    try:
+        return refusal_reason(db, product_id)
+    finally:
+        db.close()
+
+
 def _may_survey(token: str, product_id: int) -> bool:
     from app.services.product_access import can_survey
 
@@ -224,7 +258,7 @@ class ProductAssignmentGuard:
             headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
             token = headers.get("authorization", "").removeprefix("Bearer ").strip()
             if not await run_in_threadpool(_may_survey, token, product_id):
-                response = JSONResponse(status_code=403, content={"detail": "This product isn't assigned to you. Ask your admin."})
+                response = JSONResponse(status_code=403, content={"detail": await run_in_threadpool(_refusal, product_id)})
                 return await response(scope, receive, send)
 
         sent = False

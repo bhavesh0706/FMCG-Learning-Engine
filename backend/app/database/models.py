@@ -136,6 +136,12 @@ class Product(Base):
     # and any product after a new recipe version). 0 = an existing product surveyed
     # before rounds were required: it stays open as before (services/product_access.py).
     needs_round = Column(Integer, nullable=False, default=1)
+    # Survey form approval (point 4): the Super Admin edits the questions, an Admin
+    # approves them before survey persons can use the form. approved | pending | returned
+    questions_status = Column(String(20), nullable=False, default="approved")  # the API sets "pending" on changes
+    questions_note = Column(Text, nullable=True)
+    questions_reviewed_by = Column(String(150), nullable=True)
+    questions_reviewed_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -191,6 +197,10 @@ class Respondent(Base):
     gender = Column(String(30), nullable=True)
     age = Column(Integer, nullable=True)
     location = Column(String(200), nullable=True, index=True)
+    country = Column(String(80), nullable=True, index=True)
+    occupation = Column(String(80), nullable=True, index=True)       # from the Occupation master
+    sec_class = Column(String(40), nullable=True, index=True)        # SEC A / B / C ... (Class master)
+    respondent_type = Column(String(60), nullable=True, index=True)  # End consumer / Retailer ... (master)
 
     # Consent to collect and use the data, recorded before the survey.
     consent_given = Column(Integer, nullable=False, default=0)
@@ -235,6 +245,12 @@ class SurveyResponse(Base):
 
     # draft -> submitted -> analyzed (or failed)
     status = Column(String(30), nullable=False, default="draft", index=True)
+    # Internal / External survey (point 4): who the respondent is to the company.
+    audience = Column(String(20), nullable=True, index=True)
+    # Report review (point 9): generated -> pending_admin -> forwarded (approved by
+    # admin) -> reviewed (by the Super Admin); returned = sent back to the survey person.
+    report_status = Column(String(30), nullable=True, index=True)
+    report_status_at = Column(DateTime, nullable=True)
 
     # Structured individual analysis (answers + audio/video combined):
     # positives, issues, neutral, suggestions, aspects with ratings, sentiment.
@@ -608,3 +624,94 @@ class ProductCheck(Base):
     reviewed_at = Column(DateTime, nullable=True)
     corrected_product_id = Column(Integer, nullable=True)
     remarks = Column(Text, nullable=True)
+
+
+# ============================================================
+# MASTER LISTS: Occupation, Class (SEC) and Respondent type (points 4 and 5)
+# ============================================================
+
+class MasterValue(Base):
+    __tablename__ = "master_values"
+
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(30), nullable=False, index=True)  # occupation | sec_class | respondent_type
+    name = Column(String(80), nullable=False)
+    position = Column(Integer, nullable=False, default=0)
+    is_active = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================
+# RECIPE STANDARDS (point 3): rules every recipe is checked against
+# ============================================================
+
+class RecipeStandard(Base):
+    __tablename__ = "recipe_standards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(160), nullable=False)
+    # required_ingredient | ingredient_share | max_cost_per_kg | costs_complete
+    kind = Column(String(30), nullable=False)
+    ingredient = Column(String(120), nullable=True)
+    min_value = Column(Float, nullable=True)
+    max_value = Column(Float, nullable=True)
+    category_id = Column(Integer, nullable=True, index=True)  # None = every category
+    is_active = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(150), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================
+# RECIPE ATTACHMENTS (point 2): supporting files of a recipe's process
+# ============================================================
+
+class RecipeAttachment(Base):
+    __tablename__ = "recipe_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, nullable=False, index=True)
+    recipe_version = Column(Integer, nullable=True)
+    filename = Column(String(255), nullable=False)
+    stored_path = Column(String(500), nullable=False)
+    content_type = Column(String(120), nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    uploaded_by = Column(String(150), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================
+# REPORT REVIEW HISTORY (point 9): every step of a survey report's review
+# ============================================================
+
+class ReportReviewEvent(Base):
+    __tablename__ = "report_review_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    response_id = Column(Integer, nullable=False, index=True)
+    from_status = Column(String(30), nullable=True)
+    to_status = Column(String(30), nullable=False)
+    by_user_id = Column(Integer, nullable=True)
+    by_name = Column(String(150), nullable=True)
+    by_role = Column(String(20), nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+# ============================================================
+# CUSTOM REPORTS: a prompt -> a checked plan -> an Excel / PowerPoint file
+# (services/custom_reports.py). Also the log of every prompt.
+# ============================================================
+
+class CustomReportRequest(Base):
+    __tablename__ = "custom_report_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=True, index=True)
+    user_name = Column(String(150), nullable=True)
+    user_role = Column(String(20), nullable=True)
+    format = Column(String(10), nullable=False)  # xlsx | pptx
+    prompt = Column(Text, nullable=True)
+    plan = Column(JSON, nullable=True)
+    planned_by = Column(String(20), nullable=True)  # ai | keywords | standard
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+

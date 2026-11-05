@@ -23,7 +23,6 @@ from app.database.models import (
 RECIPE = {
     "batch_size": "10 kg",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],
-    "steps": [{"title": "Mix"}, {"title": "Bake", "duration": "25 min"}],
 }
 LESS_SUGAR = {**RECIPE, "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.65", "unit": "kg"}]}
 

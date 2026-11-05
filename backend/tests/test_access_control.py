@@ -77,11 +77,14 @@ def test_requests_without_a_token_are_refused(client, alice, product):
 # ---------------- recordings and results ----------------
 
 def _feedback_for(db, response_id, tmp_path) -> FeedbackRecord:
-    media = tmp_path / "rec.m4a"
+    # Saved like the app saves recordings: in the recordings folder, stored as a key
+    from app.services.storage import get_storage
+
+    media = get_storage().area_dir("videos") / f"{response_id}_{tmp_path.name}_rec.m4a"
     media.write_bytes(b"fake media")
     record = FeedbackRecord(
         original_filename="rec.m4a",
-        video_path=str(media),
+        video_path=get_storage().to_stored(media),
         duration_seconds=60.0,
         uploaded_at=datetime.utcnow(),
         overall_summary="Liked the taste.",

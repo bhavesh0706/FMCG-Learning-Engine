@@ -43,6 +43,8 @@ dependencies:
   flutter_secure_storage: 11.2.0   # sign-in token in the iOS Keychain / Android Keystore
   video_player: ^2.14.0
   path_provider: ^2.1.6
+  # Next update: report downloads and recipe attachments open in the phone's browser
+  url_launcher: ^6.3.1
   permission_handler: ^13.0.2
   geolocator: ^14.0.1
 

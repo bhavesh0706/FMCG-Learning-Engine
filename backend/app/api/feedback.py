@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.api.ownership import feedback_or_404
 from app.services.recordings import resolve_recording
+from app.services.storage import get_storage
 from app.database.database import get_db
 from app.database.models import FeedbackRecord
 
@@ -45,7 +46,8 @@ def format_feedback_record(record):
     return {
         "id": record.id,
         "filename": record.original_filename,
-        "video_path": record.video_path,
+        # A storage key ("videos/123_x.mp4"); the file plays through /feedback/{id}/video.
+        "video_path": get_storage().public_key(record.video_path),
         "video_duration_seconds": record.duration_seconds,
         "processing_time_seconds": record.processing_time_seconds,
         "uploaded_at": (

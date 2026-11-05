@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { getCategories, getProducts, getProductQuestions, reverseGeocode } from "../services/feedbackApi";
 import { CATALOG_CHANGED, DATA_CHANGED } from "../services/appEvents";
 import { getSession } from "../services/auth";
+import { getMasters } from "../services/nextApi";
 import { API_BASE_URL } from "../config";
 
 /*
@@ -85,7 +86,29 @@ const GENDERS = ["Male", "Female", "Other", "Prefer not to say"];
 
 const EXECUTIVE_KEY = "fmcg.survey.executiveName";
 
-const EMPTY_RESPONDENT = { name: "", mobile: "", address: "", gender: "", age: "", location: "", consent: false };
+const EMPTY_RESPONDENT = {
+  name: "", mobile: "", address: "", gender: "", age: "", location: "", consent: false,
+  // Next update: country, respondent type, occupation and class (from the master lists)
+  country: "India", respondent_type: "", occupation: "", sec_class: "",
+};
+
+/* Multiple choice: tick any number of options; the answer is "A | B". */
+function MultiChoice({ label, options, value, onChange }) {
+  const picked = String(value || "").split("|").map((v) => v.trim()).filter(Boolean);
+  const toggle = (o) => {
+    const next = picked.includes(o) ? picked.filter((p) => p !== o) : [...picked, o];
+    onChange(options.filter((x) => next.includes(x)).join(" | "));
+  };
+  return (
+    <div className="choice-group is-compact" role="group" aria-label={label}>
+      {options.map((o) => (
+        <button key={o} type="button" className={`choice${picked.includes(o) ? " is-on" : ""}`} aria-pressed={picked.includes(o)} onClick={() => toggle(o)}>
+          {picked.includes(o) ? "✓ " : ""}{o}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const errorText = (err, fallback) => {
   const d = err?.response?.data?.detail;
@@ -189,6 +212,13 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   const signedInName = getSession()?.user?.name || "";
   const [executiveName, setExecutiveName] = useState(() => signedInName || readExecutive());
   const [usagePeriod, setUsagePeriod] = useState(initialContext?.usagePeriod ?? "");
+  // Internal (staff, family) or External (real customers) survey
+  const [audience, setAudience] = useState(initialContext?.audience ?? "external");
+  // Master lists: occupation, class (SEC), respondent type
+  const [masters, setMasters] = useState({ occupation: [], sec_class: [], respondent_type: [] });
+  useEffect(() => {
+    getMasters().then(setMasters).catch(() => {});
+  }, []);
   const [surveyLocation, setSurveyLocation] = useState(initialContext?.surveyLocation ?? "");
   const [coords, setCoords] = useState(initialContext?.coords ?? null);
   const [gpsState, setGpsState] = useState("idle"); // idle | locating | resolving | error
@@ -392,6 +422,10 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         gender: respondent.gender || null,
         age: respondent.age === "" ? null : Number(respondent.age),
         location: respondent.location.trim(),
+        country: (respondent.country || "").trim() || null,
+        respondent_type: respondent.respondent_type || null,
+        occupation: respondent.occupation || null,
+        sec_class: respondent.sec_class || null,
         consent_given: true,
       },
       response: {
@@ -400,13 +434,14 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         ...(chosenVersion ? { recipe_version: chosenVersion.version } : {}),
         executive_name: (signedInName || executiveName).trim(),
         usage_period: usagePeriod,
+        audience,
         location: surveyLocation.trim(),
         latitude: coords?.latitude ?? null,
         longitude: coords?.longitude ?? null,
       },
       answers: questions.map((q) => ({ question_id: q.id, value: String(answers[q.id] ?? "").trim() })),
       // Kept for "Next respondent, same product".
-      context: { categoryId, productId, recipeVersion: chosenVersion?.version ?? null, usagePeriod,
+      context: { categoryId, productId, recipeVersion: chosenVersion?.version ?? null, usagePeriod, audience,
         surveyLocation: surveyLocation.trim(), coords },
     });
   }
@@ -689,11 +724,32 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         onChange={(e) => setRespondent({ ...respondent, address: e.target.value })} />
                     )}
                   </Field>
+                  <Field label="Country">
+                    {(id) => (
+                      <input id={id} className="input" placeholder="e.g. India" value={respondent.country}
+                        onChange={(e) => setRespondent({ ...respondent, country: e.target.value })} />
+                    )}
+                  </Field>
+                  {[["respondent_type", "Respondent type"], ["occupation", "Occupation"], ["sec_class", "Class (SEC)"]].map(([key, label]) => (
+                    <Field key={key} label={label}>
+                      {(id) => (
+                        <select id={id} className="input" value={respondent[key]} onChange={(e) => setRespondent({ ...respondent, [key]: e.target.value })}>
+                          <option value="">Choose</option>
+                          {(masters[key] || []).map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
+                        </select>
+                      )}
+                    </Field>
+                  ))}
                 </div>
               </fieldset>
 
               <fieldset className="form-section" disabled={locked}>
                 <legend>This survey</legend>
+                <div className="field">
+                  <span className="field-label" id="audience-label">Internal / External</span>
+                  <ChoiceGroup label="Internal / External" options={["External", "Internal"]} compact
+                    value={audience === "internal" ? "Internal" : "External"} onChange={(v) => setAudience(v.toLowerCase())} />
+                </div>
                 <div className="form-grid cols-2">
                   {signedInName ? (
                     <Field label="Surveyed by">
@@ -798,8 +854,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         {q.question_type === "yes_no" && (
                           <ChoiceGroup label={q.text} options={["Yes", "No"]} value={value} onChange={set} compact />
                         )}
-                        {q.question_type === "single_choice" && (
-                          <ChoiceGroup label={q.text} options={Array.isArray(q.options) ? q.options : []} value={value} onChange={set} />
+                        {(q.question_type === "single_choice" || q.question_type === "preference") && (
+                          <ChoiceGroup label={q.text} options={Array.isArray(q.options) ? q.options : ["Sample A", "Sample B"]}
+                            value={value} onChange={set} compact={q.question_type === "preference"} />
+                        )}
+                        {q.question_type === "multiple_choice" && (
+                          <MultiChoice label={q.text} options={Array.isArray(q.options) ? q.options : []} value={value} onChange={set} />
                         )}
                         {q.question_type === "text" && (
                           <textarea aria-labelledby={labelId} className="input" rows={3}

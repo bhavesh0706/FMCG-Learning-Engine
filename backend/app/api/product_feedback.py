@@ -684,13 +684,22 @@ def report_is_stale(db: Session, product_id: int, report=None) -> bool:
 
 def _compose(db: Session, product: Product, pairs) -> tuple:
     """(response_ids, stats, narrative) of a report built from these analyzed surveys."""
+    response_ids, items, summaries, translations, started = compose_items(db, product, pairs)
+    stats = build_stats(items)
+    narrative = write_narrative(product.name, stats, summaries, translations, recipe=product.recipe)
+    return response_ids, stats, narrative, started
+
+
+def compose_items(db: Session, product: Product, pairs, translate: bool = True) -> tuple:
+    """(response_ids, items, summaries, translations, started): every survey's report details,
+    without asking the AI anything (custom reports build their statistics from these)."""
     product_id = product.id
     started = time.time()
     response_ids = [resp.id for resp, _ in pairs]
 
     # Usually already done in the background; otherwise one request for the rest.
     try:
-        translated = ensure_translations(db, response_ids=response_ids)
+        translated = ensure_translations(db, response_ids=response_ids) if translate else 0
         if translated:
             print(f"Consolidated report: translated {translated} remaining answers in {time.time() - started:.0f}s.")
     except Exception as e:
@@ -743,15 +752,18 @@ def _compose(db: Session, product: Product, pairs) -> tuple:
             "location": person.location if person else None,
             "survey_location": resp.location,  # where the survey/placement happened
             "usage_period": resp.usage_period,
+            # Next update: report dimensions (no personal details)
+            "country": person.country if person else None,
+            "occupation": person.occupation if person else None,
+            "sec_class": person.sec_class if person else None,
+            "respondent_type": person.respondent_type if person else None,
+            "audience": resp.audience,
         })
         summary = _summary_text(rec)
         if summary:
             summaries.append(summary[:400])
 
-    stats = build_stats(items)
-    narrative = write_narrative(product.name, stats, summaries, translations, recipe=product.recipe)
-
-    return response_ids, stats, narrative, started
+    return response_ids, items, summaries, translations, started
 
 
 def build_product_report(db: Session, product_id: int):

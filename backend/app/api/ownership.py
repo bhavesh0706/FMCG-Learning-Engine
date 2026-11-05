@@ -100,11 +100,12 @@ def respondent_usable_or_404(db: Session, request: Request, respondent_id: int) 
 
 
 def feedback_or_404(db: Session, request: Request, feedback_id: int) -> FeedbackRecord:
-    """A recording's result: admins, or the owner of the survey it belongs to."""
+    """A recording's result: admins, the Super Admin (read-only: the access rules allow
+    it only GET), or the owner of the survey it belongs to."""
     record = db.get(FeedbackRecord, feedback_id)
     if record is None:
         _not_found(f"Feedback record {feedback_id}")
-    if is_admin(request):
+    if is_admin(request) or is_client(request):
         return record
     if record.response_id is None:  # older uploads without a survey: admins only
         _not_found(f"Feedback record {feedback_id}")

@@ -4,6 +4,7 @@ import '../main.dart';
 import '../services/org_api.dart';
 import 'org_screens.dart';
 import 'report_screens.dart' show ToneBar;
+import 'next_update_screens.dart' show FormStatusLoader, RecipeExtrasView, ReportDownloads;
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
@@ -165,6 +166,7 @@ class _ReportTabState extends State<_ReportTab> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
+            if (n > 0) Padding(padding: const EdgeInsets.only(bottom: 10), child: ReportDownloads(productId: widget.productId, round: selected)),
             if (numbers.isNotEmpty)
               DropdownButtonFormField<int>(
                 isExpanded: true,
@@ -319,7 +321,6 @@ class _RecipeTab extends StatelessWidget {
       load: () => OrgApi.recipe(productId),
       builder: (context, recipe, reload) {
         final ingredients = asJsonList(recipe['ingredients']);
-        final steps = asJsonList(recipe['steps']);
         Future<void> edit() async {
           final saved = await Navigator.of(context).push<bool>(
             MaterialPageRoute(builder: (_) => RecipeEditorPage(productId: productId, recipe: recipe)),
@@ -334,11 +335,11 @@ class _RecipeTab extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
             Text(
-              'The report\'s recommendations refer to these ingredients and steps. Saving a change creates a new version and tells the research team.',
+              'The report\'s recommendations refer to these ingredients. Saving a change creates a new version and tells the research team.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
             ),
             const SizedBox(height: 12),
-            if (ingredients.isEmpty && steps.isEmpty)
+            if (ingredients.isEmpty)
               Panel(
                 child: Column(children: [
                   const EmptyNote(icon: Icons.menu_book_outlined, title: 'No recipe yet', text: 'Add how the product is made.'),
@@ -376,33 +377,9 @@ class _RecipeTab extends StatelessWidget {
                 ]),
               ),
               const SizedBox(height: 8),
-              Panel(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('Production steps · ${steps.length}', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
-                  const SizedBox(height: 6),
-                  for (var k = 0; k < steps.length; k++)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 5),
-                      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        CircleAvatar(
-                          radius: 11,
-                          backgroundColor: AppColors.brandSoft,
-                          child: Text('${k + 1}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.brand)),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text(str(steps[k]['title']), style: TextStyle(color: AppColors.ink, fontWeight: FontWeight.w600)),
-                            if ([steps[k]['temperature'], steps[k]['duration']].any((v) => str(v).isNotEmpty))
-                              Text([str(steps[k]['temperature']), str(steps[k]['duration'])].where((s) => s.isNotEmpty).join(' · '),
-                                  style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                            if (str(steps[k]['details']).isNotEmpty) Text(str(steps[k]['details']), style: TextStyle(fontSize: 12.5, color: AppColors.ink2)),
-                          ]),
-                        ),
-                      ]),
-                    ),
-                ]),
-              ),
+              // Costing (Cost per KG x Usage %), standards, attachments, earlier steps (read-only)
+              RecipeExtrasView(productId: productId, canEdit: true),
+              const SizedBox(height: 8),
               if (str(recipe['notes']).isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Panel(
@@ -437,8 +414,7 @@ class RecipeEditorPage extends StatefulWidget {
 class _RecipeEditorPageState extends State<RecipeEditorPage> {
   late final TextEditingController _batch = TextEditingController(text: str(widget.recipe['batch_size']));
   late final TextEditingController _notes = TextEditingController(text: str(widget.recipe['notes']));
-  final List<List<TextEditingController>> _ingredients = []; // name, quantity, unit, notes
-  final List<List<TextEditingController>> _steps = []; // title, temperature, duration, details
+  final List<List<TextEditingController>> _ingredients = []; // name, quantity, unit, notes, cost per kg
   // Rows removed while editing: disposed when the editor closes (their fields may
   // still be on screen during the frame that removes them).
   final List<TextEditingController> _removed = [];
@@ -449,25 +425,20 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   void initState() {
     super.initState();
     for (final i in asJsonList(widget.recipe['ingredients'])) {
-      _ingredients.add([for (final k in ['name', 'quantity', 'unit', 'notes']) TextEditingController(text: str(i[k]))]);
-    }
-    for (final s in asJsonList(widget.recipe['steps'])) {
-      _steps.add([for (final k in ['title', 'temperature', 'duration', 'details']) TextEditingController(text: str(s[k]))]);
+      _ingredients.add([for (final k in ['name', 'quantity', 'unit', 'notes', 'cost_per_kg']) TextEditingController(text: str(i[k]))]);
     }
     if (_ingredients.isEmpty) _addIngredient();
-    if (_steps.isEmpty) _addStep();
   }
 
   @override
   void dispose() {
-    for (final c in [_batch, _notes, ..._ingredients.expand((r) => r), ..._steps.expand((r) => r), ..._removed]) {
+    for (final c in [_batch, _notes, ..._ingredients.expand((r) => r), ..._removed]) {
       c.dispose();
     }
     super.dispose();
   }
 
-  void _addIngredient() => setState(() => _ingredients.add(List.generate(4, (_) => TextEditingController())));
-  void _addStep() => setState(() => _steps.add(List.generate(4, (_) => TextEditingController())));
+  void _addIngredient() => setState(() => _ingredients.add(List.generate(5, (_) => TextEditingController())));
 
   Future<void> _save() async {
     FocusManager.instance.primaryFocus?.unfocus(); // Save works with the keyboard open
@@ -477,12 +448,16 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
       'notes': t(_notes),
       'ingredients': [
         for (final r in _ingredients)
-          if (r[0].text.trim().isNotEmpty) {'name': r[0].text.trim(), 'quantity': t(r[1]), 'unit': t(r[2]), 'notes': t(r[3])},
+          if (r[0].text.trim().isNotEmpty)
+            {
+              'name': r[0].text.trim(),
+              'quantity': t(r[1]),
+              'unit': t(r[2]),
+              'notes': t(r[3]),
+              'cost_per_kg': double.tryParse(r[4].text.trim().replaceAll(',', '')),
+            },
       ],
-      'steps': [
-        for (final r in _steps)
-          if (r[0].text.trim().isNotEmpty) {'title': r[0].text.trim(), 'temperature': t(r[1]), 'duration': t(r[2]), 'details': t(r[3])},
-      ],
+      'steps': [], // no Steps in new versions (earlier versions keep theirs, read-only)
     };
     setState(() {
       _saving = true;
@@ -501,9 +476,14 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     }
   }
 
-  Widget _field(TextEditingController c, String label, {int lines = 1, String? hint}) => Padding(
+  Widget _field(TextEditingController c, String label, {int lines = 1, String? hint, TextInputType? keyboard}) => Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: TextField(controller: c, minLines: lines, maxLines: lines == 1 ? 1 : 4, decoration: InputDecoration(labelText: label, hintText: hint)),
+        child: TextField(
+            controller: c,
+            minLines: lines,
+            maxLines: lines == 1 ? 1 : 4,
+            keyboardType: keyboard,
+            decoration: InputDecoration(labelText: label, hintText: hint)),
       );
 
   @override
@@ -539,37 +519,14 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                     Expanded(child: _field(_ingredients[k][1], 'Quantity')),
                     const SizedBox(width: 8),
                     Expanded(child: _field(_ingredients[k][2], 'Unit', hint: 'kg, g, ml, %')),
+                    const SizedBox(width: 8),
+                    Expanded(child: _field(_ingredients[k][4], 'Cost per KG (₹)', hint: '45', keyboard: const TextInputType.numberWithOptions(decimal: true))),
                   ]),
                 ),
                 Padding(padding: const EdgeInsets.only(right: 8), child: _field(_ingredients[k][3], 'Why it\'s there (optional)')),
               ]),
             ),
           TextButton.icon(onPressed: _addIngredient, icon: const Icon(Icons.add), label: const Text('Add ingredient')),
-          _section('Production steps'),
-          for (var k = 0; k < _steps.length; k++)
-            Panel(
-              padding: const EdgeInsets.fromLTRB(12, 12, 4, 4),
-              child: Column(children: [
-                Row(children: [
-                  Expanded(child: _field(_steps[k][0], 'Step ${k + 1}')),
-                  IconButton(
-                    tooltip: 'Remove step',
-                    onPressed: () => setState(() => _removed.addAll(_steps.removeAt(k))),
-                    icon: Icon(Icons.close, color: AppColors.muted),
-                  ),
-                ]),
-                Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Row(children: [
-                    Expanded(child: _field(_steps[k][1], 'Temperature', hint: '85 °C')),
-                    const SizedBox(width: 8),
-                    Expanded(child: _field(_steps[k][2], 'Duration', hint: '30 min')),
-                  ]),
-                ),
-                Padding(padding: const EdgeInsets.only(right: 8), child: _field(_steps[k][3], 'Details (optional)', lines: 2)),
-              ]),
-            ),
-          TextButton.icon(onPressed: _addStep, icon: const Icon(Icons.add), label: const Text('Add step')),
           _section('Notes'),
           _field(_notes, 'Storage, shelf life, packaging (optional)', lines: 3),
           if (_error != null) Text(_error!, style: TextStyle(color: AppColors.neg)),
@@ -595,7 +552,15 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
 // ---------------------------------------------------------------- survey questions
 
-const _typeLabels = {'rating': 'Rating 1–5', 'yes_no': 'Yes / No', 'single_choice': 'Single choice', 'text': 'Text answer'};
+const _typeLabels = {
+  'rating': 'Rating 1–5',
+  'yes_no': 'Yes / No',
+  'single_choice': 'Single choice',
+  'multiple_choice': 'Multiple choice',
+  'preference': 'Preference (Sample A vs B)',
+  'text': 'Text answer',
+};
+const _optionTypes = {'single_choice', 'multiple_choice', 'preference'};
 
 class _QuestionsTab extends StatelessWidget {
   const _QuestionsTab({required this.productId});
@@ -648,6 +613,7 @@ class _QuestionsTab extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
+            FormStatusLoader(productId: productId, key: ValueKey('form-$n-${qs.map((q) => q['id']).join(',')}')),
             Text(
               'Survey persons ask these questions, in this order. Keep them the same between rounds you want to compare.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
@@ -749,7 +715,7 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
       setState(() => _error = 'Write the question (at least 5 characters).');
       return;
     }
-    if (_type == 'single_choice' && options.length < 2) {
+    if ((_type == 'single_choice' || _type == 'multiple_choice') && options.length < 2) {
       setState(() => _error = 'Add at least two answer options, one per line.');
       return;
     }
@@ -757,7 +723,7 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
       'text': _text.text.trim(),
       'question_type': _type,
       'required': _required,
-      'options': _type == 'single_choice' ? options : null,
+      'options': _optionTypes.contains(_type) ? (_type == 'preference' && options.isEmpty ? null : options) : null,
     };
     setState(() {
       _saving = true;
@@ -796,13 +762,16 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
             items: [for (final e in _typeLabels.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
             onChanged: (v) => setState(() => _type = v ?? 'rating'),
           ),
-          if (_type == 'single_choice') ...[
+          if (_optionTypes.contains(_type)) ...[
             const SizedBox(height: 12),
             TextField(
               controller: _options,
-              minLines: 3,
+              minLines: _type == 'preference' ? 2 : 3,
               maxLines: 6,
-              decoration: const InputDecoration(labelText: 'Answer options', hintText: 'One per line'),
+              decoration: InputDecoration(
+                labelText: _type == 'preference' ? 'The two samples (empty = Sample A, Sample B)' : 'Answer options',
+                hintText: _type == 'preference' ? 'Sample A\nSample B' : 'One per line',
+              ),
             ),
           ],
           SwitchListTile(

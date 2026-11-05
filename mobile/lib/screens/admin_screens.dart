@@ -11,6 +11,7 @@ import 'home_screens.dart' show MobileHistoryPage, MobileSettingsPage;
 import 'notifications_screen.dart' show NotificationBellButton;
 import 'org_screens.dart' show Loaded, Panel, Pill, StatBox, EmptyNote, agoText, ratingText, showMessage;
 import 'report_screens.dart' show ProductReportPage;
+import 'next_update_screens.dart' show FormApprovalCard, MastersPage, RecipeExtrasView;
 
 /* ============================================================
    Admin (role "admin") in the app
@@ -325,7 +326,15 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
           children: [
             Text('The products executives survey. Products and categories are added and changed by the Super Admin.',
                 style: TextStyle(color: AppColors.muted, height: 1.4)),
-            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MastersPage())),
+                icon: const Icon(Icons.list_alt_outlined),
+                label: const Text('Master lists'),
+              ),
+            ),
+            const SizedBox(height: 4),
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(children: [
@@ -457,6 +466,8 @@ class _ProductDetailsTab extends StatelessWidget {
           ]),
         );
     return ListView(padding: const EdgeInsets.all(16), children: [
+      // Survey form approval (admins approve before survey persons can use it)
+      FormApprovalCard(product: p, canDecide: true),
       Panel(
         color: AppColors.brandSoft,
         child: Text('Products are added and changed by the Super Admin in their portal. You get a notification for every change.',
@@ -475,6 +486,8 @@ class _ProductDetailsTab extends StatelessWidget {
           row('Status', p['survey_ready'] == true ? 'Ready for surveys' : 'Not ready for surveys'),
         ]),
       ),
+      // Recipe costing, standards, attachments (read-only for admins)
+      RecipeExtrasView(productId: intOf(p['id'])),
     ]);
   }
 }

@@ -21,6 +21,7 @@ from pathlib import Path
 from app.database.database import SessionLocal
 from app.database.models import FeedbackRecord
 from app.services.recordings import resolve_recording, uploads_roots
+from app.services.storage import get_storage
 
 
 def main() -> None:
@@ -31,7 +32,9 @@ def main() -> None:
         for rec in rows:
             if not rec.video_path:
                 continue
-            if Path(rec.video_path).is_file():
+            # OK: a storage key ("videos/x.mp4") or a path that exists as stored
+            if (get_storage().path_for(rec.video_path) is not None and resolve_recording(rec.video_path) is not None) \
+                    or Path(rec.video_path).is_file():
                 ok.append(rec)
             elif resolve_recording(rec.video_path) is not None:
                 found.append(rec)

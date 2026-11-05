@@ -21,7 +21,6 @@ Register in app/main.py:
     analysis_worker.start()
 """
 
-import os
 import shutil
 import time
 from datetime import datetime
@@ -44,8 +43,11 @@ router = APIRouter(prefix="/analysis", tags=["Analysis queue"])
 # Re-analysis also lives under /feedback/{id}/ (no prefix on this router).
 reanalyze_router = APIRouter(tags=["Analysis queue"])
 
-QUEUE_DIR = Path(os.environ.get("FMCG_QUEUE_DIR") or Path(__file__).resolve().parents[2] / "uploads" / "queue")
-QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+# Uploads waiting for analysis (services/storage.py: FMCG_STORAGE_ROOT, FMCG_QUEUE_DIR);
+# jobs store a key ("queue/<file>"), resolved again by the worker.
+from app.services.storage import get_storage  # noqa: E402
+
+QUEUE_DIR = get_storage().area_dir("queue")
 
 ALLOWED = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".mp3", ".wav", ".m4a", ".ogg", ".weba", ".aac"}
 
@@ -107,12 +109,12 @@ def queue_analysis(
             return JSONResponse(status_code=202, content=_job_out(db, running, include_result=False))
 
     # Size-capped copy (FMCG_MAX_UPLOAD_MB); 413 above the cap, 400 when empty.
-    stored = save_upload(file, QUEUE_DIR, name)
+    stored = save_upload(file, get_storage().area_dir("queue"), name)
 
     job = AnalysisJob(
         status="queued",
         filename=name,
-        stored_path=str(stored),
+        stored_path=get_storage().to_stored(stored),
         response_id=response_id,
         user_id=user.id if user else None,
     )
@@ -175,7 +177,7 @@ def _queue_reanalysis(feedback_id: int, user: Optional[User], db: Session) -> An
 
     # Work on a copy, so the stored recording is never touched.
     name = Path(record.original_filename or source.name).name
-    stored = QUEUE_DIR / f"{int(time.time() * 1000)}_re_{feedback_id}_{name}"
+    stored = get_storage().area_dir("queue") / f"{int(time.time() * 1000)}_re_{feedback_id}_{name}"
     shutil.copy2(source, stored)
 
     job = AnalysisJob(
@@ -183,7 +185,7 @@ def _queue_reanalysis(feedback_id: int, user: Optional[User], db: Session) -> An
         kind="reanalyze",
         target_feedback_id=feedback_id,
         filename=name,
-        stored_path=str(stored),
+        stored_path=get_storage().to_stored(stored),
         response_id=record.response_id,  # shows "Analyzing…" for that survey meanwhile
         user_id=user.id if user else None,
     )

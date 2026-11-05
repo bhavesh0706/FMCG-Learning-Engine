@@ -16,7 +16,7 @@ sent to Whisper/Qwen and is not used in consolidated product reports.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -181,6 +181,12 @@ class RespondentCreate(BaseModel):
         max_length=200,
     )
 
+    # Next update: country, occupation and class (masters), respondent type (master)
+    country: Optional[str] = Field(default=None, max_length=80)
+    occupation: Optional[str] = Field(default=None, max_length=80)
+    sec_class: Optional[str] = Field(default=None, max_length=40)
+    respondent_type: Optional[str] = Field(default=None, max_length=60)
+
     consent_given: bool = False
 
     @field_validator(
@@ -189,6 +195,10 @@ class RespondentCreate(BaseModel):
         "address",
         "gender",
         "location",
+        "country",
+        "occupation",
+        "sec_class",
+        "respondent_type",
         mode="before",
     )
     @classmethod
@@ -210,6 +220,8 @@ class SurveyResponseCreate(BaseModel):
     product_id: int
 
     respondent_id: int
+    # Internal (staff, family) or External (real customers) survey
+    audience: Optional[Literal["internal", "external"]] = None
 
     # The product version the customer tasted (recipe_versions.version). Optional:
     # without it the survey joins the product's live round, as before.
@@ -293,6 +305,10 @@ def _respondent_out(respondent: Respondent) -> dict:
         "gender": respondent.gender,
         "age": respondent.age,
         "location": respondent.location,
+        "country": respondent.country,
+        "occupation": respondent.occupation,
+        "sec_class": respondent.sec_class,
+        "respondent_type": respondent.respondent_type,
         "consent_given": bool(respondent.consent_given),
         "consent_at": respondent.consent_at,
         "created_at": respondent.created_at,
@@ -380,6 +396,9 @@ def _response_out(
         "longitude": response.longitude,
 
         "status": response.status,
+        "audience": getattr(response, "audience", None),
+        # Report review: generated / pending_admin / forwarded / returned / reviewed
+        "report_status": getattr(response, "report_status", None),
 
         "analysis": response.analysis,
         "overall_rating": response.overall_rating,
@@ -424,6 +443,10 @@ def create_respondent(
         gender=body.gender,
         age=body.age,
         location=body.location,
+        country=body.country,
+        occupation=body.occupation,
+        sec_class=body.sec_class,
+        respondent_type=body.respondent_type,
         consent_given=1,
         consent_at=now,
         # The account that recorded this customer (record-level access, ownership.py).
@@ -505,6 +528,7 @@ def create_survey_response(
         location=body.location,
         latitude=body.latitude,
         longitude=body.longitude,
+        audience=body.audience,
         status="draft",
     )
 
@@ -650,7 +674,20 @@ def save_answers(
                     ),
                 )
 
-        elif question.question_type == "single_choice":
+        elif question.question_type == "multiple_choice":
+
+            # Any number of options, stored as "Option A | Option B".
+            allowed = {str(option).strip().lower(): str(option).strip() for option in (question.options or [])}
+            if value is not None:
+                picked = [v.strip() for v in value.split("|") if v.strip()]
+                if not picked or any(v.lower() not in allowed for v in picked):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Answers for question {question.position} must be among the available options.",
+                    )
+                value = " | ".join(dict.fromkeys(allowed[v.lower()] for v in picked))
+
+        elif question.question_type in ("single_choice", "preference"):
 
             allowed = {
                 str(option).strip().lower()

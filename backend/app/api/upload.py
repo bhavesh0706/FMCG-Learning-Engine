@@ -28,7 +28,9 @@ async def upload_file(file: UploadFile = File(...)):
                 "Only CSV and Excel files are supported."
             )
 
-        file_path = UPLOAD_DIR / file.filename
+        from app.api.uploads_limit import safe_name
+
+        file_path = UPLOAD_DIR / safe_name(file.filename, "upload.csv")  # never outside UPLOAD_DIR
 
         with open(file_path, "wb") as f:
             f.write(await file.read())

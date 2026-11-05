@@ -6,6 +6,7 @@ import '../services/session.dart';
 import 'home_screens.dart' show MobileSettingsPage;
 import 'org_catalog_screen.dart';
 import 'org_product_screens.dart';
+import 'next_update_screens.dart' show AnalyticsPage, OrgSurveysPage, RecipeMasterPage;
 
 /* ============================================================
    Organization (client role) in the app
@@ -255,7 +256,7 @@ class _OrgShellState extends State<OrgShell> {
   int _unread = 0;
   final _keys = List.generate(4, (_) => GlobalKey());
 
-  static const _titles = ['Overview', 'Products', 'Catalog', 'Updates'];
+  static const _titles = ['Overview', 'Products', 'Catalog', 'Updates', 'Surveys'];
 
   @override
   void initState() {
@@ -302,6 +303,16 @@ class _OrgShellState extends State<OrgShell> {
         ]),
         actions: [
           IconButton(
+            tooltip: 'Recipe Master',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const RecipeMasterPage())),
+            icon: const Icon(Icons.menu_book_outlined),
+          ),
+          IconButton(
+            tooltip: 'Analytics',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AnalyticsPage())),
+            icon: const Icon(Icons.insights_outlined),
+          ),
+          IconButton(
             tooltip: 'Settings',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MobileSettingsPage())),
             icon: CircleAvatar(
@@ -319,6 +330,7 @@ class _OrgShellState extends State<OrgShell> {
         OrgProductsPage(key: _keys[1]),
         OrgCatalogPage(key: _keys[2]),
         OrgUpdatesPage(key: _keys[3]),
+        const OrgSurveysPage(), // every survey and its report review
       ]),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
@@ -332,6 +344,7 @@ class _OrgShellState extends State<OrgShell> {
             selectedIcon: const Icon(Icons.notifications),
             label: 'Updates',
           ),
+          const NavigationDestination(icon: Icon(Icons.fact_check_outlined), selectedIcon: Icon(Icons.fact_check), label: 'Surveys'),
         ],
       ),
     );

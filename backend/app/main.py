@@ -19,6 +19,12 @@ from app.api.org import router as org_router
 from app.api.rounds import router as rounds_router
 from app.api.geo import router as geo_router
 from app.api.product_checks import router as product_checks_router
+from app.api.recipe_master import router as recipe_master_router
+from app.api.masters import router as masters_router
+from app.api.survey_forms import router as survey_forms_router
+from app.api.report_reviews import router as report_reviews_router
+from app.api.report_exports import router as report_exports_router
+from app.api.custom_reports import router as custom_reports_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
 from app.services.audit import install_audit
@@ -72,6 +78,27 @@ install_audit(app)
 # Request IDs, one JSON access-log line per request, API security headers.
 install_observability(app)
 
+
+# Unexpected server errors: a JSON answer that passes through CORS (registered before
+# CORSMiddleware, so it sits inside it). Without this the browser only says
+# "Network Error". The traceback goes to the backend log; outside production the
+# message includes the error itself, so it can be reported and fixed.
+@app.middleware("http")
+async def errors_as_json(request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as error:  # noqa: BLE001 (last-resort handler)
+        import logging
+
+        from fastapi.responses import JSONResponse
+
+        logging.getLogger("fmcg.errors").exception("Unhandled error on %s %s", request.method, request.url.path)
+        detail = "Server error. Please try again."
+        if config.APP_ENV != "production":
+            detail = f"Server error on {request.url.path}: {type(error).__name__}: {str(error)[:400]}"
+        return JSONResponse(status_code=500, content={"detail": detail})
+
+
 app.add_middleware(
     CORSMiddleware,
 
@@ -83,6 +110,9 @@ app.add_middleware(
     allow_methods=["*"],
 
     allow_headers=["*"],
+
+    # Downloads keep their names (Excel, PowerPoint, attachments): the browser may read this header
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -166,6 +196,11 @@ app.include_router(
 app.include_router(
     product_checks_router
 )
+
+# Next update: Recipe Master, master lists, survey form approval, report review chain, exports
+for _router in (recipe_master_router, masters_router, survey_forms_router, report_reviews_router, report_exports_router,
+                custom_reports_router):
+    app.include_router(_router)
 
 
 # Start the background analysis worker (works on every FastAPI version).

@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'screens/capture_screens.dart';
 import 'screens/home_screens.dart';
 import 'screens/notifications_screen.dart';
+import 'screens/next_update_screens.dart' show ReportStatusCard;
 import 'screens/onboarding_screens.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
@@ -1943,10 +1944,11 @@ class _HistoryEmpty extends StatelessWidget {
    ============================================================ */
 
 class FeedbackDetailPage extends StatefulWidget {
-  const FeedbackDetailPage({super.key, required this.id, this.preview});
+  const FeedbackDetailPage({super.key, required this.id, this.preview, this.responseId});
 
   final int id;
   final FeedbackRecord? preview; // list data, shown while the full record loads
+  final int? responseId; // the survey: its report review status (survey persons)
 
   @override
   State<FeedbackDetailPage> createState() => _FeedbackDetailPageState();
@@ -1990,7 +1992,7 @@ class _FeedbackDetailPageState extends State<FeedbackDetailPage> {
           final record = snapshot.data ?? widget.preview;
           if (record == null) return const Center(child: CircularProgressIndicator());
           final loadingFull = snapshot.connectionState != ConnectionState.done;
-          return _DetailBody(record: record, loadingFull: loadingFull);
+          return _DetailBody(record: record, loadingFull: loadingFull, responseId: widget.responseId);
         },
       ),
     );
@@ -1998,7 +2000,9 @@ class _FeedbackDetailPageState extends State<FeedbackDetailPage> {
 }
 
 class _DetailBody extends StatelessWidget {
-  const _DetailBody({required this.record, required this.loadingFull});
+  const _DetailBody({required this.record, required this.loadingFull, this.responseId});
+
+  final int? responseId;
 
   final FeedbackRecord record;
   final bool loadingFull;
@@ -2012,6 +2016,9 @@ class _DetailBody extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 40),
       children: [
+        // Report review (survey persons): status and "Submit for Admin review"
+        if (responseId != null && !Session.isAdmin)
+          Padding(padding: const EdgeInsets.only(bottom: 12), child: ReportStatusCard(responseId: responseId!)),
         // Title block
         Text(
           record.filename,
