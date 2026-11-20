@@ -155,7 +155,6 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   bool get _hasEntries =>
       _name.text.trim().isNotEmpty || _answers.values.any((v) => v.trim().isNotEmpty) || _media != null;
 
-  @override
   // Action plans: the cities this person may survey, per product (empty = anywhere)
   List<Json> _myPlans = [];
 

@@ -4,7 +4,7 @@ uvicorn==0.54.0
 python-multipart==0.0.32
 pydantic==2.13.5
 requests==2.34.2
-cryptography==49.0.0     # decrypts OPENAI_API_KEY_ENC (services/secret_store.py)
+cryptography==50.0.2     # decrypts OPENAI_API_KEY_ENC (services/secret_store.py)
 numpy==2.5.3
 faster-whisper==1.2.1    # brings ctranslate2, av, onnxruntime, tokenizers, huggingface_hub
 onnxruntime==1.30.0

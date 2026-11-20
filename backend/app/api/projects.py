@@ -32,7 +32,7 @@ Status (never stored, always from the rounds of the project's version):
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -462,7 +462,6 @@ def _plans_state(db: Session, project: Project) -> dict:
     rounds = _version_rounds(db, project, product)
     live = next((r for r in rounds if r.status == R.LIVE), None)
     numbers = sorted({v for (v,) in db.query(RecipeVersion.version).filter(RecipeVersion.product_id == project.product_id)})
-    is_latest = not numbers or project.product_version >= numbers[-1]
     last = rounds[-1] if rounds else None
     done = R.done_counts(db, [r.id for r in rounds]) if rounds else {}
 

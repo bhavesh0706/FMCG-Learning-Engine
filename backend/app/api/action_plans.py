@@ -15,7 +15,7 @@ GET  /admin/products/{id}/plan-surveys[?round=N]  Admin: each plan's team and th
 """
 
 from datetime import datetime
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field

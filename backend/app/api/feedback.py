@@ -9,11 +9,8 @@ DELETE /feedback/{id}         Admins only (access.py)
 Record-level checks live in ownership.py; other people get 404.
 """
 
-import mimetypes
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.ownership import feedback_or_404

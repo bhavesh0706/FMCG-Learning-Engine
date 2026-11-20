@@ -7,7 +7,7 @@ Fixing mistakes with surveys (rounds) and recipe versions:
 """
 
 import pytest
-from conftest import _unique, answers_payload, assign, auth, make_user
+from conftest import _unique, assign, auth, make_user
 
 from app.database.models import ActionPlan, ProductAssignment, RecipeVersion, SurveyRound
 

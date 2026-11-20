@@ -7,7 +7,7 @@ a Windows path), and app.services.recordings finds the file in this computer's u
 from datetime import datetime
 
 import pytest
-from conftest import auth, make_user, playback_token
+from conftest import make_user, playback_token
 
 from app.database.models import FeedbackRecord
 from app.services import recordings
