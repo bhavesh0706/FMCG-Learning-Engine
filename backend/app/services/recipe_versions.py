@@ -1,7 +1,11 @@
 """
 Recipe version history (products.recipe keeps only the latest version).
 
-save_version()   called by PUT /products/{id}/recipe after every real change
+save_version()   called by PUT /products/{id}/recipe after every real change. While a live
+                 survey (round) tests the latest version and no consumer has tasted it yet,
+                 that version is updated in place (the survey keeps its version);
+                 otherwise every real change is a new version, as before.
+delete_latest_version()  removes a version saved by mistake (latest, unused by any survey)
 changes_between() a short, human list of what changed, e.g.
                   ["Sugar: 0.8 kg → 0.65 kg", "Added ingredient: Cinnamon", "Step 2 Bake: 25 min → 22 min"]
 latest_changes()  {product_id: latest version info} for the Catalog list badges
@@ -19,7 +23,7 @@ from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database.models import Product, RecipeVersion, User
+from app.database.models import Product, RecipeAttachment, RecipeVersion, SurveyResponse, SurveyRound, User
 
 CLIENT_RECIPE_UPDATED = "client_recipe_updated"
 MAX_CHANGES = 12
@@ -96,9 +100,14 @@ def changes_between(old: Optional[dict], new: Optional[dict]) -> list[str]:
     return out
 
 
-def _next_version(db: Session, product_id: int) -> int:
-    current = db.query(func.max(RecipeVersion.version)).filter(RecipeVersion.product_id == product_id).scalar()
-    return int(current or 0) + 1
+def first_version(product: Product) -> int:
+    """The product's first recipe version number (set when it was added; default 1)."""
+    return max(1, int(getattr(product, "start_version", None) or 1))
+
+
+def _next_version(db: Session, product: Product) -> int:
+    current = db.query(func.max(RecipeVersion.version)).filter(RecipeVersion.product_id == product.id).scalar()
+    return int(current) + 1 if current else first_version(product)
 
 
 def save_version(db: Session, product: Product, old: Optional[dict], new: Optional[dict], account: dict) -> Optional[RecipeVersion]:
@@ -110,13 +119,32 @@ def save_version(db: Session, product: Product, old: Optional[dict], new: Option
     if comparable(old) == comparable(new):
         return None
     if old and not db.query(RecipeVersion.id).filter(RecipeVersion.product_id == product.id).first():
-        db.add(RecipeVersion(product_id=product.id, version=1, recipe=old, changed_by_name=None,
+        db.add(RecipeVersion(product_id=product.id, version=first_version(product), recipe=old, changed_by_name=None,
                              changed_by_role=None, changes=["Recipe as it was before version history"],
                              created_at=product.updated_at or datetime.utcnow()))
         db.flush()
+    latest = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id)
+              .order_by(RecipeVersion.version.desc()).first())
+    if latest is not None and version_in_unanswered_survey(db, product.id, latest.version):
+        # A survey was started on this version but nobody has tasted it yet (e.g. the survey
+        # was started before the recipe was complete): update the version in place, so the
+        # survey keeps testing it instead of needing a new survey for "version 2".
+        previous = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id,
+                                                   RecipeVersion.version < latest.version)
+                    .order_by(RecipeVersion.version.desc()).first())
+        latest.recipe = new
+        latest.changes = changes_between(previous.recipe if previous else None, new) or [
+            f"Same recipe as version {previous.version}" if previous else "Recipe cleared"]
+        latest.changed_by, latest.changed_by_name, latest.changed_by_role = (
+            account.get("id"), account.get("name"), account.get("role"))
+        latest.created_at = datetime.utcnow()
+        db.commit()
+        db.refresh(latest)
+        latest.edited_in_place = True  # not stored: tells the caller no new number started
+        return latest
     version = RecipeVersion(
         product_id=product.id,
-        version=_next_version(db, product.id),
+        version=_next_version(db, product),
         recipe=new,
         changed_by=account.get("id"),
         changed_by_name=account.get("name"),
@@ -129,6 +157,64 @@ def save_version(db: Session, product: Product, old: Optional[dict], new: Option
     db.commit()
     db.refresh(version)
     return version
+
+
+def version_surveyed(db: Session, product_id: int, version: int) -> bool:
+    """True once any survey response (even an unfinished one) used this recipe version."""
+    round_ids = [rid for (rid,) in db.query(SurveyRound.id).filter(SurveyRound.product_id == product_id,
+                                                                   SurveyRound.recipe_version == version)]
+    q = db.query(SurveyResponse.id).filter(SurveyResponse.product_id == product_id)
+    cond = SurveyResponse.recipe_version == version
+    if round_ids:
+        cond = cond | SurveyResponse.round_id.in_(round_ids)
+    return q.filter(cond).first() is not None
+
+
+def version_in_unanswered_survey(db: Session, product_id: int, version: int) -> bool:
+    """A LIVE survey (round) tests this version and no consumer response has used it yet.
+    (After a survey ends, a recipe change is a new version for the next survey, as before.)"""
+    started = db.query(SurveyRound.id).filter(SurveyRound.product_id == product_id,
+                                              SurveyRound.recipe_version == version,
+                                              SurveyRound.status == "live").first()
+    return started is not None and not version_surveyed(db, product_id, version)
+
+
+class VersionError(ValueError):
+    def __init__(self, message: str, status: int = 409):
+        super().__init__(message)
+        self.status = status
+
+
+def delete_latest_version(db: Session, product: Product, number: int) -> Optional[RecipeVersion]:
+    """
+    Deletes a recipe version saved by mistake. Only the latest version, and only while no
+    survey uses it. The product's recipe goes back to the previous version (or none);
+    files attached to the deleted version move to the previous one. Returns the version
+    that is now current (None: no recipe left).
+    """
+    v = db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == number).first()
+    if v is None:
+        raise VersionError(f"Version {number} doesn't exist for this product.", 404)
+    latest = db.query(func.max(RecipeVersion.version)).filter(RecipeVersion.product_id == product.id).scalar()
+    if number != latest:
+        raise VersionError(f"Only the latest version (v{latest}) can be deleted.")
+    used = (db.query(SurveyRound.number).filter(SurveyRound.product_id == product.id, SurveyRound.recipe_version == number)
+            .order_by(SurveyRound.number).all())
+    if used:
+        names = ", ".join(f"Survey {n}" for (n,) in used)
+        raise VersionError(f"Version {number} is used by {names}. Delete that survey first "
+                           "(possible while it has no responses), then delete the version.")
+    if version_surveyed(db, product.id, number):
+        raise VersionError(f"Consumers have already tasted version {number}, so it is kept.")
+    previous = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version < number)
+                .order_by(RecipeVersion.version.desc()).first())
+    db.query(RecipeAttachment).filter(RecipeAttachment.product_id == product.id,
+                                      RecipeAttachment.recipe_version == number).update(
+        {RecipeAttachment.recipe_version: previous.version if previous else None}, synchronize_session=False)
+    db.delete(v)
+    product.recipe = previous.recipe if previous else None
+    db.commit()
+    return previous
 
 
 def notify_admins_of_client_change(db: Session, product: Product, version: RecipeVersion) -> int:

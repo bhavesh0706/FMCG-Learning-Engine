@@ -142,13 +142,15 @@ def notify_admins_of_catalog_change(
     verbs = {"added": "added", "updated": "updated", "deactivated": "deactivated",
              "reactivated": "reactivated", "deleted": "permanently deleted"}
     verb = verbs.get(action, action)
+    # Categories are called "projects" on screen; the stored entity stays "category".
+    shown = entity  # "category" / "product" (projects are their own page)
     changes = [c for c in (changes or []) if c]
     detail = f": {'; '.join(changes)}" if changes else ""
     admins = [uid for (uid,) in db.query(User.id).filter(User.role == "admin", User.is_active == 1).all()]
     return notify(
         db, admins, CLIENT_CATALOG_CHANGED,
-        title=f"{entity.capitalize()} {verb} by {who}",
-        message=f"{who} {verb} the {entity} {name}{detail}.",
+        title=f"{shown.capitalize()} {verb} by {who}",
+        message=f"{who} {verb} the {shown} {name}{detail}.",
         data={"entity": entity, "action": action, "name": name, "product_id": product_id,
               "category_id": category_id, "changes": changes, "client_name": who,
               "changed_at": datetime.utcnow().isoformat(timespec="seconds") + "Z"},

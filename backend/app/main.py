@@ -12,6 +12,7 @@ from app.api.product_feedback import router as product_feedback_router
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
 from app.api.analysis import router as analysis_router, reanalyze_router
+from app.api.resumable_uploads import router as resumable_uploads_router
 from app.api.recipes import router as recipes_router
 from app.api.question_templates import router as question_templates_router
 from app.api.notifications import router as notifications_router
@@ -21,9 +22,14 @@ from app.api.geo import router as geo_router
 from app.api.product_checks import router as product_checks_router
 from app.api.recipe_master import router as recipe_master_router
 from app.api.masters import router as masters_router
+from app.api.lov import router as lov_router
 from app.api.report_reviews import router as report_reviews_router
 from app.api.report_exports import router as report_exports_router
 from app.api.custom_reports import router as custom_reports_router
+from app.api.org_accounts import router as org_accounts_router
+from app.api.action_plans import router as action_plans_router
+from app.api.projects import admin_router as admin_projects_router
+from app.api.projects import router as projects_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
 from app.services.audit import install_audit
@@ -156,6 +162,11 @@ app.include_router(
     analysis_router
 )
 
+# Resumable recording uploads (mobile offline mode: continue after a dropped connection)
+app.include_router(
+    resumable_uploads_router
+)
+
 # Re-analysis of an existing recording: POST /feedback/{id}/reanalyze
 app.include_router(
     reanalyze_router
@@ -196,10 +207,16 @@ app.include_router(
     product_checks_router
 )
 
-# Next update: Recipe Master, master lists, survey form approval, report review chain, exports
-for _router in (recipe_master_router, masters_router, report_reviews_router, report_exports_router,
-                custom_reports_router):
+# Next update: Recipe Master, master lists, survey form approval, report review chain, exports,
+# action plans, and Projects (Super Admin portal: /org/projects)
+for _router in (recipe_master_router, masters_router, lov_router, report_reviews_router, report_exports_router,
+                custom_reports_router, org_accounts_router, action_plans_router, projects_router, admin_projects_router):
     app.include_router(_router)
+
+# Encrypted recordings: public key, passkey-authorised playback, recording passkeys
+from app.api.recordings import router as recordings_router  # noqa: E402
+
+app.include_router(recordings_router)
 
 
 # Start the background analysis worker (works on every FastAPI version).

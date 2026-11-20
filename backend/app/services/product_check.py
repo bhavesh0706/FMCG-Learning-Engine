@@ -167,7 +167,7 @@ def _notify_mismatch(db: Session, response: SurveyResponse, check: ProductCheck)
                f"Selected {sel}, but the customer talks about {det}. It's kept out of the reports until you review it.",
                data=data, dedupe_key=f"product_mismatch:{response.id}:{check.checked_at.isoformat()}")
         if response.user_id:
-            notify(db, [response.user_id], "product_mismatch", "Survey needs a product check",
+            notify(db, [response.user_id], "product_mismatch", "Survey needs product verification",
                    f"Your survey #{response.id} was for {sel}, but the customer seems to talk about {det}. Your admin will review it.",
                    data=data, dedupe_key=f"product_mismatch_person:{response.id}:{check.checked_at.isoformat()}")
     except Exception as e:  # never lose the survey over a notification

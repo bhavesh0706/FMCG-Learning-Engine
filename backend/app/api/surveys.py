@@ -15,11 +15,13 @@ Personal respondent information is stored in the database but is not
 sent to Whisper/Qwen and is not used in consolidated product reports.
 """
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, field_validator
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from pydantic import BaseModel, Field, field_validator, model_validator
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.ownership import account, response_or_404, respondent_or_404, respondent_usable_or_404
@@ -149,6 +151,39 @@ def _validate_product_for_survey(
 # PYDANTIC REQUEST MODELS
 # ============================================================
 
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _iso_utc(value):
+    """A stored (naive UTC) time as ISO 8601 with Z, or None."""
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ") if value else None
+
+
+def _client_uuid(value):
+    """A UUID chosen by the phone, lower-case; None when not sent."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    text_value = str(value).strip()
+    if not _UUID.match(text_value):
+        raise ValueError("client_uuid must be a UUID.")
+    return text_value.lower()
+
+
+def _replayed(db: Session, model, client_uuid: Optional[str], owner_column: str, owner_id):
+    """
+    The record already created for this client_uuid (a retried offline upload), or None.
+    A uuid that belongs to another account is refused rather than revealed.
+    """
+    if not client_uuid:
+        return None
+    existing = db.query(model).filter(model.client_uuid == client_uuid).first()
+    if existing is None:
+        return None
+    if getattr(existing, owner_column) != owner_id:
+        raise HTTPException(status_code=409, detail="This submission id is already used by another record.")
+    return existing
+
+
 class RespondentCreate(BaseModel):
     name: str = Field(
         min_length=2,
@@ -183,11 +218,24 @@ class RespondentCreate(BaseModel):
 
     # Next update: country, occupation and class (masters), respondent type (master)
     country: Optional[str] = Field(default=None, max_length=80)
+    # From the LOV lists STATE and CITY (inside the chosen country / state). Optional,
+    # so app versions without these fields keep working.
+    state: Optional[str] = Field(default=None, max_length=120)
+    city: Optional[str] = Field(default=None, max_length=120)
     occupation: Optional[str] = Field(default=None, max_length=80)
     sec_class: Optional[str] = Field(default=None, max_length=40)
     respondent_type: Optional[str] = Field(default=None, max_length=60)
 
     consent_given: bool = False
+
+    # Offline mode: the phone's id for this customer. Sending the same id again
+    # (a retried upload) returns the record already created instead of a duplicate.
+    client_uuid: Optional[str] = None
+
+    @field_validator("client_uuid", mode="before")
+    @classmethod
+    def check_client_uuid(cls, value):
+        return _client_uuid(value)
 
     @field_validator(
         "name",
@@ -196,6 +244,8 @@ class RespondentCreate(BaseModel):
         "gender",
         "location",
         "country",
+        "state",
+        "city",
         "occupation",
         "sec_class",
         "respondent_type",
@@ -257,6 +307,49 @@ class SurveyResponseCreate(BaseModel):
         le=180,
     )
 
+    # The GPS fix (same on Android, iOS and the web): accuracy radius in metres,
+    # when it was taken (ISO 8601; an offline survey keeps its original time) and
+    # where: android | ios | web.
+    location_accuracy: Optional[float] = Field(default=None, ge=0, le=100000)
+    location_captured_at: Optional[datetime] = None
+    location_source: Optional[str] = None
+
+    # Offline mode: the phone's submission id (see RespondentCreate.client_uuid).
+    client_uuid: Optional[str] = None
+
+    @field_validator("client_uuid", mode="before")
+    @classmethod
+    def check_client_uuid(cls, value):
+        return _client_uuid(value)
+
+    @field_validator("location_source", mode="before")
+    @classmethod
+    def clean_source(cls, value):
+        value = (str(value).strip().lower() if value is not None else "") or None
+        return value if value in (None, "android", "ios", "web") else None  # an unknown platform isn't an error
+
+    @field_validator("location_captured_at")
+    @classmethod
+    def utc_capture_time(cls, value):
+        # Stored as naive UTC like every other time. A time in the future (a phone with a
+        # wrong clock) or before 2020 is dropped, never a reason to refuse the survey.
+        if value is None:
+            return None
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        if value > datetime.utcnow() + timedelta(minutes=10) or value.year < 2020:
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def coordinates_together(self):
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Send both latitude and longitude, or neither.")
+        if self.latitude is None:
+            # No position: accuracy, time and platform mean nothing on their own.
+            self.location_accuracy = self.location_captured_at = self.location_source = None
+        return self
+
     @field_validator(
         "executive_name",
         "usage_period",
@@ -306,6 +399,8 @@ def _respondent_out(respondent: Respondent) -> dict:
         "age": respondent.age,
         "location": respondent.location,
         "country": respondent.country,
+        "state": respondent.state,
+        "city": respondent.city,
         "occupation": respondent.occupation,
         "sec_class": respondent.sec_class,
         "respondent_type": respondent.respondent_type,
@@ -394,6 +489,9 @@ def _response_out(
         "location": response.location,
         "latitude": response.latitude,
         "longitude": response.longitude,
+        "location_accuracy": getattr(response, "location_accuracy", None),
+        "location_captured_at": _iso_utc(getattr(response, "location_captured_at", None)),
+        "location_source": getattr(response, "location_source", None),
 
         "status": response.status,
         "audience": getattr(response, "audience", None),
@@ -436,7 +534,13 @@ def create_respondent(
 
     now = datetime.utcnow()
 
+    me_id = account(request).get("id")
+    existing = _replayed(db, Respondent, body.client_uuid, "created_by", me_id)
+    if existing is not None:
+        return _respondent_out(existing)
+
     respondent = Respondent(
+        client_uuid=body.client_uuid,
         name=body.name,
         mobile=body.mobile,
         address=body.address,
@@ -444,17 +548,27 @@ def create_respondent(
         age=body.age,
         location=body.location,
         country=body.country,
+        state=body.state,
+        city=body.city,
         occupation=body.occupation,
         sec_class=body.sec_class,
         respondent_type=body.respondent_type,
         consent_given=1,
         consent_at=now,
         # The account that recorded this customer (record-level access, ownership.py).
-        created_by=account(request).get("id"),
+        created_by=me_id,
     )
 
     db.add(respondent)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # The same offline submission arrived twice at the same moment: return the first one.
+        db.rollback()
+        existing = _replayed(db, Respondent, body.client_uuid, "created_by", me_id)
+        if existing is None:
+            raise
+        return _respondent_out(existing)
     db.refresh(respondent)
 
     return _respondent_out(respondent)
@@ -485,11 +599,17 @@ def get_respondent(
 def create_survey_response(
     body: SurveyResponseCreate,
     request: Request,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """
     Start one survey session for one respondent and one product.
     """
+
+    # A retried offline upload: return the survey already created for this submission.
+    existing = _replayed(db, SurveyResponse, body.client_uuid, "user_id", account(request).get("id"))
+    if existing is not None:
+        return _response_out(db, existing)
 
     product = _validate_product_for_survey(
         db,
@@ -515,9 +635,17 @@ def create_survey_response(
         survey_round = round_for_new_survey(db, product.id, body.recipe_version, user=me_user)
     except RoundError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
+    # Action plans: a team member surveys only the cities allocated to them
+    from app.services.action_plans import PlanError, plan_for_survey
+
+    try:
+        action_plan_id = plan_for_survey(db, survey_round.id if survey_round else None, me_user, respondent.city)
+    except PlanError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     response = SurveyResponse(
         product_id=product.id,
         round_id=survey_round.id if survey_round else None,
+        action_plan_id=action_plan_id,
         recipe_version=survey_round.recipe_version if survey_round else body.recipe_version,
         respondent_id=respondent.id,
         # The survey belongs to the signed-in account from the start
@@ -528,18 +656,65 @@ def create_survey_response(
         location=body.location,
         latitude=body.latitude,
         longitude=body.longitude,
+        location_accuracy=round(body.location_accuracy, 1) if body.location_accuracy is not None else None,
+        location_captured_at=body.location_captured_at,
+        location_source=body.location_source,
         audience=body.audience,
         status="draft",
+        client_uuid=body.client_uuid,
     )
 
     db.add(response)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = _replayed(db, SurveyResponse, body.client_uuid, "user_id", me.get("id"))
+        if existing is None:
+            raise
+        return _response_out(db, existing)
     db.refresh(response)
+    # Taken offline: the place fields hold the GPS position ("GPS 28.60, 77.43 ...").
+    # Look the address up now that the survey reached the server (after the reply).
+    from app.api.geo import is_gps_placeholder
+
+    if response.latitude is not None and (is_gps_placeholder(response.location) or is_gps_placeholder(respondent.location)):
+        background.add_task(fill_places_from_gps, response.id)
 
     return _response_out(
         db,
         response,
     )
+
+
+def fill_places_from_gps(response_id: int) -> None:
+    """Replaces GPS placeholders of an offline survey with the address of its position:
+    the survey location, and the customer's area (plus country/state/city when empty).
+    Best effort: without an address the position text stays (the coordinates are saved)."""
+    from app.api.geo import is_gps_placeholder, reverse_place
+    from app.database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        response = db.get(SurveyResponse, response_id)
+        if response is None or response.latitude is None:
+            return
+        respondent = db.get(Respondent, response.respondent_id) if response.respondent_id else None
+        try:
+            place = reverse_place(response.latitude, response.longitude)
+        except HTTPException:
+            return
+        label = (place.get("label") or "").strip()
+        if label and is_gps_placeholder(response.location):
+            response.location = label[:200]
+        if respondent is not None and is_gps_placeholder(respondent.location):
+            respondent.location = ((place.get("locality") or label).strip() or respondent.location)[:200]
+            for field, size in (("country", 80), ("state", 120), ("city", 120)):
+                if not (getattr(respondent, field, None) or "").strip() and place.get(field):
+                    setattr(respondent, field, str(place[field])[:size])
+        db.commit()
+    finally:
+        db.close()
 
 
 # ============================================================

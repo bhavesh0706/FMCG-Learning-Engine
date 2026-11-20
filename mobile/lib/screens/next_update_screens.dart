@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:url_launcher/url_launcher.dart';
 
 import '../main.dart';
@@ -8,6 +9,7 @@ import '../services/api_service.dart';
 import '../services/org_api.dart';
 import '../services/session.dart';
 import 'org_screens.dart';
+import '../widgets/search_dropdown.dart';
 
 /*
   Next update (requirements PDF), the app side of the web's new screens:
@@ -45,6 +47,16 @@ class NextApi {
   // Recipe Master, standards, attachments
   static Future<Json> recipe(int productId) => _send('GET', '/products/$productId/recipe');
   static Future<Json> recipeMaster() => _send('GET', '/recipes');
+  // Recipe plan and action plans (web: components/ActionPlans.jsx)
+  static Future<Json> recipePlan(int productId) => _send('GET', '/products/$productId/recipe-plan');
+  static Future<Json> actionPlans(int productId) => _send('GET', '/products/$productId/action-plans');
+  // Super Admin accounts (each change needs the signed-in Super Admin's password)
+  static Future<Json> superAdmins() => _send('GET', '/org/super-admins');
+  static Future<Json> addSuperAdmin(Json body) => _send('POST', '/org/super-admins', body: body);
+  static Future<Json> resetSuperAdmin(int id, String password) =>
+      _send('POST', '/org/super-admins/$id/reset-password', body: {'current_password': password});
+  static Future<Json> setSuperAdminActive(int id, bool active, String password) =>
+      _send('PUT', '/org/super-admins/$id', body: {'is_active': active, 'current_password': password});
   // Custom reports from a prompt (one product or many)
   static Future<Json> reportOptions() => _send('GET', '/reports/options');
   static Future<Json> planReport(Json body) => _send('POST', '/reports/plan', body: body);
@@ -397,7 +409,7 @@ class _ReportStatusCardState extends State<ReportStatusCard> {
     return Panel(
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const Expanded(child: Text('Report review', style: TextStyle(fontWeight: FontWeight.w800))),
+          const Expanded(child: Text('Report approval', style: TextStyle(fontWeight: FontWeight.w800))),
           Pill(reportLabels[status] ?? status, tone: reportTones[status] ?? 'muted'),
         ]),
         if (status == 'returned' && returned != null && str(returned['note']).isNotEmpty)
@@ -664,7 +676,7 @@ class _OrgSurveySheetState extends State<_OrgSurveySheet> {
         builder: (context, scroll) => d == null
             ? const Center(child: CircularProgressIndicator())
             : ListView(controller: scroll, padding: const EdgeInsets.fromLTRB(20, 8, 20, 24), children: [
-                Text('Survey #${widget.id} · ${str(d['product_name'])}', style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+                Text('Survey #${widget.id} · ${str(d['product_name'])}', style: const TextStyle(fontFamily: kDisplayFont, fontSize: 19, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
                 Text([str(d['customer']), str(d['city']), str(d['country']), str(d['respondent_type']),
                   if (str(d['audience']).isNotEmpty) str(d['audience']) == 'internal' ? 'Internal' : 'External', str(d['occupation']), str(d['sec_class'])]
@@ -798,7 +810,7 @@ Future<bool> showRuleDialog(BuildContext context, {int? productId, Json? rule}) 
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               TextField(controller: name, decoration: const InputDecoration(labelText: 'Rule name')),
-              DropdownButtonFormField<String>(
+              SearchDropdownField<String>(
                 initialValue: kind,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Rule type'),
@@ -813,7 +825,7 @@ Future<bool> showRuleDialog(BuildContext context, {int? productId, Json? rule}) 
                 TextField(controller: max, keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: InputDecoration(labelText: isCost ? 'Max ₹ per kg' : 'Max %')),
               if (productId == null)
-                DropdownButtonFormField<String>(
+                SearchDropdownField<String>(
                   initialValue: scope.isEmpty ? null : scope,
                   isExpanded: true,
                   decoration: const InputDecoration(labelText: 'Applies to'),
@@ -1002,7 +1014,7 @@ class ReportDownloads extends StatelessWidget {
         child: SingleChildScrollView(
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
             Text('PowerPoint report',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+                style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
             const SizedBox(height: 4),
             Text('Describe what the slides should contain. The numbers always come from the surveys.', style: TextStyle(color: AppColors.muted)),
             const SizedBox(height: 12),
@@ -1033,8 +1045,8 @@ class ReportDownloads extends StatelessWidget {
 }
 
 const _promptExamples = {
-  'pptx': ['Executive summary in 5 slides', 'Only complaints, with recipe recommendations', 'Compare all rounds', 'Only retailers, by city'],
-  'xlsx': ['Every survey with its answers', 'Only concerns and recommended actions', 'Compare all rounds', 'Breakdown by respondent type and city'],
+  'pptx': ['Executive summary in 5 slides', 'Only complaints, with recipe recommendations', 'Compare all surveys', 'Only retailers, by city'],
+  'xlsx': ['Every survey with its answers', 'Only concerns and recommended actions', 'Compare all surveys', 'Breakdown by respondent type and city'],
 };
 
 /// Prompt -> preview -> download (web: components/ReportPrompt.jsx).
@@ -1049,8 +1061,12 @@ class ReportPromptPanel extends StatefulWidget {
   State<ReportPromptPanel> createState() => _ReportPromptPanelState();
 }
 
+/// PowerPoint requests start with this design brief (backend: custom_reports.DESIGN_BRIEF);
+/// the person adds what they need after it. The brief alone gives the standard deck.
+const designBrief = 'Act as a senior UI/UX designer and create a clear, visually engaging PowerPoint presentation: ';
+
 class _ReportPromptPanelState extends State<ReportPromptPanel> {
-  final _prompt = TextEditingController();
+  late final _prompt = TextEditingController(text: widget.format == 'pptx' ? designBrief : '');
   Json? _plan;
   bool _busy = false;
   String? _error;
@@ -1102,6 +1118,8 @@ class _ReportPromptPanelState extends State<ReportPromptPanel> {
         decoration: InputDecoration(
           labelText: 'What should the $_kind contain?',
           hintText: 'Leave empty for the standard report',
+          helperText: widget.format == 'pptx' ? 'Write your request after the design brief; the brief alone gives the standard deck.' : null,
+          helperMaxLines: 2,
           counterText: '',
         ),
       ),
@@ -1109,7 +1127,7 @@ class _ReportPromptPanelState extends State<ReportPromptPanel> {
       Wrap(spacing: 6, runSpacing: 6, children: [
         for (final x in _promptExamples[widget.format]!)
           ActionChip(label: Text(x), onPressed: () => setState(() {
-                _prompt.text = x;
+                _prompt.text = (widget.format == 'pptx' ? designBrief : '') + x;
                 _plan = null;
               })),
       ]),
@@ -1213,12 +1231,318 @@ class _AnalyticsViewState extends State<AnalyticsView> {
               value: _picked.contains(intOf(p['id'])),
               onChanged: (v) => setState(() => v == true ? _picked.add(intOf(p['id'])) : _picked.remove(intOf(p['id']))),
               title: Text(str(p['name'])),
-              subtitle: Text(p['rounds'] is List && (p['rounds'] as List).isNotEmpty ? 'Rounds ${(p['rounds'] as List).join(', ')}' : 'No rounds yet'),
+              subtitle: Text(p['rounds'] is List && (p['rounds'] as List).isNotEmpty ? 'Surveys ${(p['rounds'] as List).join(', ')}' : 'No surveys yet'),
             ),
         ],
         const SizedBox(height: 16),
         ReportPromptPanel(format: 'pptx', productIds: _picked.toList()),
       ],
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------- Super Admins (web: SuperAdminsCard.jsx)
+
+/// Every Super Admin login of the organization: add one, reset another's password,
+/// disable / reactivate. Each change asks for your own password; a new or reset login
+/// gets a one-time starting password, changed at the first sign-in.
+class SuperAdminsPage extends StatefulWidget {
+  const SuperAdminsPage({super.key});
+
+  @override
+  State<SuperAdminsPage> createState() => _SuperAdminsPageState();
+}
+
+class _SuperAdminsPageState extends State<SuperAdminsPage> {
+  List<Json>? _rows;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final r = await NextApi.superAdmins();
+      if (mounted) setState(() => _rows = asJsonList(r['super_admins']));
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  /// Asks for your password; returns it, or null when cancelled.
+  Future<String?> _askPassword(String title, String message) async {
+    final pw = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(message, style: TextStyle(color: AppColors.muted)),
+          const SizedBox(height: 10),
+          TextField(controller: pw, obscureText: true, autofocus: true, decoration: const InputDecoration(labelText: 'Your password')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Confirm')),
+        ],
+      ),
+    );
+    return ok == true && pw.text.isNotEmpty ? pw.text : null;
+  }
+
+  Future<void> _showCredentials(Json result, {bool reset = false}) async {
+    final u = asJson(result['user']);
+    final text = 'Email: ${str(u['email'])}\nStarting password: ${str(result['password'])}\n'
+        "You'll choose your own password at the first sign-in.";
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(reset ? 'New starting password' : 'Super Admin added'),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(str(u['name']), style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+          const SizedBox(height: 6),
+          SelectableText(text),
+          const SizedBox(height: 8),
+          Text('Shown only now. Send it privately.', style: TextStyle(color: AppColors.muted, fontSize: 12.5)),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: text));
+              if (ctx.mounted) showMessage(ctx, 'Copied.');
+            },
+            child: const Text('Copy'),
+          ),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Done')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _add() async {
+    final name = TextEditingController(), email = TextEditingController(), pw = TextEditingController();
+    String? error;
+    final result = await showDialog<Json>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, set) => AlertDialog(
+          title: const Text('Add Super Admin'),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: name, decoration: const InputDecoration(labelText: 'Full name')),
+              TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Sign-in email')),
+              TextField(controller: pw, obscureText: true, decoration: const InputDecoration(labelText: 'Your password (to confirm)')),
+              if (error != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(error!, style: TextStyle(color: AppColors.neg))),
+            ]),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  final r = await NextApi.addSuperAdmin({'name': name.text.trim(), 'email': email.text.trim(), 'current_password': pw.text});
+                  if (ctx.mounted) Navigator.of(ctx).pop(r);
+                } catch (e) {
+                  set(() => error = '$e');
+                }
+              },
+              child: const Text('Add'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    await _load();
+    if (mounted) await _showCredentials(result);
+  }
+
+  Future<void> _reset(Json u) async {
+    final pw = await _askPassword("Reset ${str(u['name'])}'s password?", "A new starting password is shown once; they're signed out everywhere.");
+    if (pw == null || !mounted) return;
+    try {
+      final r = await NextApi.resetSuperAdmin(intOf(u['id']), pw);
+      await _load();
+      if (mounted) await _showCredentials(r, reset: true);
+    } catch (e) {
+      if (mounted) showMessage(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _toggle(Json u) async {
+    final active = u['is_active'] == true;
+    final pw = await _askPassword(active ? "Disable ${str(u['name'])}?" : "Reactivate ${str(u['name'])}?",
+        active ? "They're signed out everywhere and can't sign in until reactivated." : 'They can sign in again.');
+    if (pw == null || !mounted) return;
+    try {
+      await NextApi.setSuperAdminActive(intOf(u['id']), !active, pw);
+      if (mounted) showMessage(context, active ? "${str(u['name'])} is disabled." : "${str(u['name'])} is active again.");
+      await _load();
+    } catch (e) {
+      if (mounted) showMessage(context, '$e', error: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rows = _rows;
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      appBar: AppBar(title: const Text('Super Admins')),
+      floatingActionButton: FloatingActionButton.extended(onPressed: _add, icon: const Icon(Icons.person_add_alt_1), label: const Text('Add Super Admin')),
+      body: _error != null
+          ? Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, style: TextStyle(color: AppColors.neg))))
+          : rows == null
+              ? const Center(child: CircularProgressIndicator())
+              : RefreshIndicator(
+                  onRefresh: _load,
+                  child: ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 96), children: [
+                    Text("Everyone who can manage this organization's products, recipes, standards, questions and surveys.",
+                        style: TextStyle(color: AppColors.muted)),
+                    const SizedBox(height: 8),
+                    for (final u in rows)
+                      Card(
+                        child: ListTile(
+                          title: Text(u['is_me'] == true ? '${str(u['name'])} (you)' : str(u['name'])),
+                          subtitle: Text([
+                            str(u['email']),
+                            if (u['must_change_password'] == true) 'must choose a password at the next sign-in',
+                          ].join(' · ')),
+                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Pill(u['is_active'] == true ? 'Active' : 'Disabled', tone: u['is_active'] == true ? 'ok' : 'neg'),
+                            if (u['is_me'] != true)
+                              PopupMenuButton<String>(
+                                tooltip: 'Actions',
+                                onSelected: (a) => a == 'reset' ? _reset(u) : _toggle(u),
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(value: 'reset', child: Text('Reset password')),
+                                  PopupMenuItem(value: 'toggle', child: Text(u['is_active'] == true ? 'Disable' : 'Reactivate')),
+                                ],
+                              ),
+                          ]),
+                        ),
+                      ),
+                  ]),
+                ),
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------- Action plans (web: ActionPlans.jsx)
+
+/// The product's recipe plan and the action plans of its current round: progress, dates,
+/// cities and each team member's cities. Read-only in the app; planning and team
+/// allocation are done on the web (Super Admin: Action plans tab; Admin: Who can survey).
+class ActionPlansView extends StatefulWidget {
+  const ActionPlansView({super.key, required this.productId});
+
+  final int productId;
+
+  @override
+  State<ActionPlansView> createState() => _ActionPlansViewState();
+}
+
+class _ActionPlansViewState extends State<ActionPlansView> {
+  Json? _recipe;
+  Json? _plans;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final r = await Future.wait([NextApi.recipePlan(widget.productId), NextApi.actionPlans(widget.productId)]);
+      if (mounted) setState(() {
+        _recipe = asJson(r[0]['recipe_plan']);
+        _plans = r[1];
+        _error = null;
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  static String _dates(Json p) {
+    final s = str(p['start_date']), e = str(p['end_date']);
+    return s.isEmpty && e.isEmpty ? 'No dates set' : '${s.isEmpty ? '…' : s} – ${e.isEmpty ? '…' : e}';
+  }
+
+  static List<String> _list(dynamic v) => [for (final x in (v as List? ?? const [])) '$x'];
+
+  @override
+  Widget build(BuildContext context) {
+    if (_error != null) return Center(child: Padding(padding: const EdgeInsets.all(20), child: Text(_error!, style: TextStyle(color: AppColors.neg))));
+    if (_plans == null) return const Center(child: CircularProgressIndicator());
+    final round = asJson(_plans!['round']);
+    final plans = asJsonList(_plans!['plans']);
+    final rp = _recipe ?? {};
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView(padding: const EdgeInsets.all(16), children: [
+        Panel(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Recipe plan', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
+            const SizedBox(height: 6),
+            if (rp.isEmpty)
+              Text('No recipe plan yet.', style: TextStyle(color: AppColors.muted))
+            else ...[
+              Text('${rp['target'] ?? '–'} consumer responses'),
+              Text(_dates(rp)),
+              Text(_list(rp['cities']).isEmpty ? 'Any city' : _list(rp['cities']).join(', ')),
+              if (str(rp['notes']).isNotEmpty) Text(str(rp['notes']), style: TextStyle(color: AppColors.muted)),
+            ],
+          ]),
+        ),
+        const SizedBox(height: 12),
+        Text(round.isEmpty ? 'Action plans' : 'Action plans · Survey ${intOf(round['number'])} · recipe v${intOf(round['recipe_version'])}',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        Text(round.isEmpty ? 'Start a survey to plan its execution.' : '${plans.length} plans · target ${intOf(round['target'])} consumers',
+            style: TextStyle(color: AppColors.muted)),
+        const SizedBox(height: 8),
+        for (final p in plans)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Panel(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(child: Text(str(p['name']), style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink))),
+                  Text('${intOf(p['done'])} of ${intOf(p['target'])}', style: TextStyle(color: AppColors.muted)),
+                ]),
+                const SizedBox(height: 6),
+                LinearProgressIndicator(
+                  value: intOf(p['target']) == 0 ? 0 : (intOf(p['done']) / intOf(p['target'])).clamp(0, 1).toDouble(),
+                  minHeight: 6,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                const SizedBox(height: 6),
+                Text(_dates(p)),
+                Wrap(spacing: 6, runSpacing: 4, children: [
+                  for (final c in _list(p['cities'])) Pill(c, tone: 'info'),
+                  if (_list(p['cities']).isEmpty) Pill('Any city', tone: 'muted'),
+                ]),
+                const SizedBox(height: 6),
+                Text('Team ${asJsonList(p['members']).length}',
+                    style: const TextStyle(fontWeight: FontWeight.w700)),
+                for (final m in asJsonList(p['members']))
+                  Text('• ${str(m['name'])} · ${_list(m['cities']).isEmpty ? 'any city' : _list(m['cities']).join(', ')}'),
+                if (asJsonList(p['members']).isEmpty) Text('No one allocated yet.', style: TextStyle(color: AppColors.muted)),
+              ]),
+            ),
+          ),
+        const SizedBox(height: 4),
+        Text('Plans are created on the web (Super Admin: product → Action plans) and teams allocated there by Admins.',
+            style: TextStyle(fontSize: 12, color: AppColors.muted)),
+      ]),
     );
   }
 }

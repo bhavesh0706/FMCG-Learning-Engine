@@ -232,7 +232,7 @@ def user_for_token(db: Session, token: Optional[str]) -> Optional[User]:
         return None
     if int(claims.get("ver", 0)) != int(user.token_version or 0):
         return None
-    if db.get(RevokedToken, token_hash(token)) is not None:
+    if db.query(RevokedToken.id).filter(RevokedToken.token_hash == token_hash(token)).first() is not None:
         return None
     return user
 
@@ -243,7 +243,7 @@ def revoke_token(db: Session, token: str) -> None:
     if not claims:
         return
     key = token_hash(token)
-    if db.get(RevokedToken, key) is None:
+    if db.query(RevokedToken.id).filter(RevokedToken.token_hash == key).first() is None:
         db.add(RevokedToken(token_hash=key, user_id=claims["uid"], expires_at=datetime.utcfromtimestamp(int(claims["exp"]))))
         db.commit()
 

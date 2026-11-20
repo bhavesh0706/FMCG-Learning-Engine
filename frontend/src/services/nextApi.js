@@ -9,7 +9,12 @@ import { API_BASE_URL } from "./feedbackApi";
 const api = axios.create({ baseURL: API_BASE_URL });
 const data = (p) => p.then((r) => r.data);
 
-export const errorText = (err, fallback) => err?.response?.data?.detail || err?.message || fallback;
+export const errorText = (err, fallback) => {
+  const d = err?.response?.data?.detail;
+  if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof d.message === "string") return d.message; // e.g. standards locked by a collecting survey
+  return err?.message || fallback;
+};
 
 // Recipe Master, standards, attachments
 export const getRecipeMaster = () => data(api.get("/recipes"));

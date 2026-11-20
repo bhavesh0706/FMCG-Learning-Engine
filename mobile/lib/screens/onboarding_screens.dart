@@ -55,32 +55,19 @@ class AppLogo extends StatelessWidget {
 
   final double size;
 
+  /// The application logo (assets/logo.png): the same mark as the launcher icon and the web.
   @override
   Widget build(BuildContext context) {
     return Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(size * 0.28),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppColors.sky, AppColors.teal],
-        ),
+        borderRadius: BorderRadius.circular(size * 0.22),
         boxShadow: [
-          BoxShadow(color: AppColors.sky.withValues(alpha: 0.35), blurRadius: size * 0.4, offset: Offset(0, size * 0.12)),
+          BoxShadow(color: AppColors.navy900.withValues(alpha: 0.30), blurRadius: size * 0.35, offset: Offset(0, size * 0.10)),
         ],
       ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Icon(Icons.chat_bubble_rounded, size: size * 0.62, color: AppColors.navy900),
-          Padding(
-            padding: EdgeInsets.only(bottom: size * 0.06),
-            child: Icon(Icons.mic_rounded, size: size * 0.34, color: AppColors.mist),
-          ),
-        ],
-      ),
+      child: Image.asset('assets/logo.png', width: size, height: size, semanticLabel: 'FMCG Video Learning Engine'),
     );
   }
 }
@@ -152,7 +139,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       offset: Offset(0, 16 * (1 - _nameFade.value)),
                       child: const Text(
                         appName,
-                        style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
+                        style: TextStyle(color: Colors.white, fontFamily: kDisplayFont, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
                       ),
                     ),
                   ),
@@ -227,7 +214,7 @@ class _SheetScaffold extends StatelessWidget {
                       children: [
                         Text(title,
                             textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5, color: AppColors.ink)),
+                            style: TextStyle(fontFamily: kDisplayFont, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5, color: AppColors.ink)),
                         const SizedBox(height: 8),
                         Text(subtitle,
                             textAlign: TextAlign.center,
@@ -326,47 +313,15 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
-/// Wording per role on the login screen ("Signing in as"). It never decides access:
-/// the account's role on the server picks the dashboard (nextScreen()).
-class _RoleCopy {
-  const _RoleCopy(this.tab, this.title, this.sub, this.label, this.keyboard, this.forgot, this.foot);
-  final String tab, title, sub, label, forgot, foot;
-  final TextInputType keyboard;
-}
-
-const _roleCopy = <String, _RoleCopy>{
-  'executive': _RoleCopy(
-    'Survey person',
-    'Sign in to take surveys',
-    'Use the mobile number and password your admin gave you.',
-    'Mobile number',
-    TextInputType.phone,
-    'Ask your admin to reset it on the Team page, then sign in with the new password.',
-    'No account yet? Ask your admin to add you.',
-  ),
-  'admin': _RoleCopy(
-    'Admin',
-    'Admin sign-in',
-    'Manage products, your survey team and reports.',
-    'Email or mobile number',
-    TextInputType.emailAddress,
-    "Ask another admin to set a new password for you. If you're the only admin, contact whoever runs your server.",
-    'Admin accounts are created at setup or by another admin.',
-  ),
-  'client': _RoleCopy(
-    'Super Admin',
-    'Super Admin sign-in',
-    'See your consumer reports and manage your products, recipes and rounds.',
-    'Work email',
-    TextInputType.emailAddress,
-    "Contact the research team. They'll give you a one-time password; you choose your own the first time you sign in.",
-    "Your Super Admin login is created by the research team.",
-  ),
-};
+/// Sign-in wording (web: LoginPage.jsx SIGN_IN_COPY). There is no "Signing in as"
+/// choice: the account's role on the server decides the screens (nextScreen()).
+const _signInTitle = 'Sign in';
+const _signInSub = 'Enter your mobile number or email and your password. You go straight to the screens of your account.';
+const _signInLabel = 'Mobile number or email';
+const _signInFoot = 'Accounts are created by your admin or the research team. The website uses the same login.';
 
 class _AuthScreenState extends State<AuthScreen> {
   late bool _signup = widget.signup;
-  String _role = AppProfile.loginRole;
   final _name = TextEditingController();
   final _id = TextEditingController();
   final _password = TextEditingController();
@@ -421,9 +376,9 @@ class _AuthScreenState extends State<AuthScreen> {
       } else {
         await Session.login(_id.text, _password.text);
       }
-      // Next time the screen opens on this account's real role.
+      // Remembered for older screens that still read it; it never decides access.
       final signedInRole = Session.user.value?.role;
-      if (signedInRole != null && _roleCopy.containsKey(signedInRole)) {
+      if (signedInRole != null && const {'executive', 'admin', 'client'}.contains(signedInRole)) {
         AppProfile.loginRole = signedInRole;
         await AppProfile.save();
       }
@@ -439,41 +394,41 @@ class _AuthScreenState extends State<AuthScreen> {
     }
   }
 
-  void _chooseRole(String role) {
-    setState(() {
-      _role = role;
-      _error = null;
-    });
-    AppProfile.loginRole = role;
-    AppProfile.save();
-  }
-
   Future<void> _forgot() async {
-    // Admins and Super Admins reset it themselves; survey persons ask their admin.
-    if (_role == 'admin' || _role == 'client') {
-      final done = await Navigator.of(context).push<String>(MaterialPageRoute(
-        builder: (_) => ResetPasswordScreen(roleName: _roleCopy[_role]!.tab, initialIdentifier: _id.text.trim()),
-      ));
-      if (done != null && mounted) {
-        setState(() {
-          _id.text = done;
-          _password.clear();
-          _error = null;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Password changed. Sign in with your new password.')),
-        );
-      }
-      return;
-    }
-    showDialog<void>(
+    // Same help as the web: Admins and Super Admins reset by email; survey persons ask their admin.
+    final byEmail = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Forgot your password?'),
-        content: Text(_roleCopy[_role]!.forgot),
-        actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Admin or Super Admin', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+          const SizedBox(height: 2),
+          const Text('Get a reset code by email.'),
+          const SizedBox(height: 14),
+          Text('Survey person', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+          const SizedBox(height: 2),
+          const Text('Ask your admin to reset it on the Team page, then sign in with the new password.'),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Close')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Reset by email')),
+        ],
       ),
     );
+    if (byEmail != true || !mounted) return;
+    final done = await Navigator.of(context).push<String>(MaterialPageRoute(
+      builder: (_) => ResetPasswordScreen(roleName: 'Admin or Super Admin', initialIdentifier: _id.text.trim()),
+    ));
+    if (done != null && mounted) {
+      setState(() {
+        _id.text = done;
+        _password.clear();
+        _error = null;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Password changed. Sign in with your new password.')),
+      );
+    }
   }
 
   Widget _field(TextEditingController c, String label,
@@ -507,14 +462,13 @@ class _AuthScreenState extends State<AuthScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final copy = _roleCopy[_role] ?? _roleCopy['executive']!;
     return _SheetScaffold(
-      title: _signup ? 'Create account' : copy.title,
-      subtitle: _signup ? 'Your name is added to every survey you do.' : copy.sub,
+      title: _signup ? 'Create account' : _signInTitle,
+      subtitle: _signup ? 'Your name is added to every survey you do.' : _signInSub,
       onBack: () => Navigator.of(context).maybePop(),
       // Accounts are created by the admin (web Team page) or the research team; self sign-up is off.
       footer: Text(
-        _signup ? 'No account yet? Ask your admin to add you.' : copy.foot,
+        _signup ? 'No account yet? Ask your admin to add you.' : _signInFoot,
         textAlign: TextAlign.center,
         style: TextStyle(fontSize: 13.5, color: AppColors.muted),
       ),
@@ -522,29 +476,9 @@ class _AuthScreenState extends State<AuthScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (!_signup) ...[
-              Text('Signing in as',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.muted)),
-              const SizedBox(height: 6),
-              SegmentedButton<String>(
-                showSelectedIcon: false,
-                style: const ButtonStyle(visualDensity: VisualDensity.compact),
-                segments: [
-                  for (final e in _roleCopy.entries)
-                    ButtonSegment<String>(
-                      value: e.key,
-                      label: Text(e.value.tab, textAlign: TextAlign.center, maxLines: 2, style: const TextStyle(fontSize: 12.5)),
-                    ),
-                ],
-                selected: {_role},
-                onSelectionChanged: (s) => _chooseRole(s.first),
-              ),
-              const SizedBox(height: 16),
-            ],
             if (_signup) _field(_name, 'Full name', keyboard: TextInputType.name, autofill: const [AutofillHints.name]),
-            _field(_id, _signup ? 'Mobile number or email' : copy.label,
-                keyboard: _signup ? TextInputType.emailAddress : copy.keyboard,
+            _field(_id, _signup ? 'Mobile number or email' : _signInLabel,
+                keyboard: TextInputType.emailAddress,
                 autofill: const [AutofillHints.telephoneNumber, AutofillHints.email]),
             _field(_password, _signup ? 'Password (8+ letters and numbers)' : 'Password',
                 password: true,

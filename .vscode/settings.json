@@ -1,0 +1,14 @@
+{
+  // Backend virtual environment: fastapi, sqlalchemy, pydantic, pytest, ...
+  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python",
+  "python.analysis.extraPaths": [
+    // "from app..." (backend) and "from services..." (AI service) imports
+    "${workspaceFolder}/backend",
+    "${workspaceFolder}/ai_service",
+    // AI service packages (faster-whisper, cryptography, ...) live in their own venv
+    "${workspaceFolder}/ai_service/.venv/lib/python3.14/site-packages"
+  ],
+  "python.testing.pytestEnabled": true,
+  "python.testing.cwd": "${workspaceFolder}/backend",
+  "python.testing.pytestArgs": ["tests"]
+}

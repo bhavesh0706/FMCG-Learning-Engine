@@ -180,7 +180,7 @@ def claim_next(db, worker_id: str):
             text(
                 "UPDATE analysis_jobs SET status = 'processing', worker_id = :w, started_at = :now, "
                 "heartbeat_at = :now, attempts = COALESCE(attempts, 0) + 1 "
-                "WHERE id = :id AND status = 'queued'"
+                "WHERE record_no = :id AND status = 'queued'"
             ),
             {"w": worker_id, "now": now, "id": candidate.id},
         ).rowcount
@@ -219,6 +219,23 @@ def _beat(job_id, stop: threading.Event):
             db.close()
 
 
+def _decrypted_for_analysis(job_id, path: str, filename: str):
+    """The plaintext of an encrypted queued recording, in a private (0600) temp file that
+    run_job deletes afterwards; None for a plaintext upload."""
+    from app.database.models import AnalysisJob
+    from app.services.recording_crypto import decrypt_to_temp, unwrap_key
+
+    db = SessionLocal()
+    try:
+        job = db.get(AnalysisJob, job_id)
+        if job is None or not job.enc_wrapped_key:
+            return None
+        data_key = unwrap_key(db, job.enc_key_id, job.enc_wrapped_key)
+        return decrypt_to_temp(Path(path), data_key, suffix=Path(filename).suffix)
+    finally:
+        db.close()
+
+
 async def _call_upload(path: str, filename: str, response_id):
     """Run the existing /video/upload function on a saved file (unchanged)."""
     from fastapi import UploadFile
@@ -246,7 +263,8 @@ async def _call_upload(path: str, filename: str, response_id):
 
 
 # Columns that identify a record and must survive a re-analysis.
-KEEP_ON_REANALYSIS = {"id", "original_filename", "video_path", "uploaded_at", "response_id"}
+KEEP_ON_REANALYSIS = {"id", "created_by", "original_filename", "video_path", "uploaded_at", "response_id",
+                      "media_encrypted", "media_key_id", "media_wrapped_key"}  # the record keeps its own (encrypted) recording
 
 
 def apply_reanalysis(new_id: int, target_id: int) -> int:
@@ -331,6 +349,15 @@ def run_job(job_id, path, filename, response_id, kind="analyze", target_feedback
     if found is None:
         print(f"Analysis worker: job {job_id}: the uploaded file {path!r} isn't in the queue folder.", flush=True)
     path = str(found) if found else path
+    queued_file = path
+    try:
+        plain = _decrypted_for_analysis(job_id, path, filename)  # an encrypted upload: a private temp copy
+    except Exception as e:  # damaged file or unknown key: the job fails, nothing is left decrypted
+        _finish(job_id, status="failed", error=f"The encrypted recording could not be opened: {e}")
+        print(f"Analysis worker: job {job_id} failed: encrypted recording could not be opened.", flush=True)
+        return
+    if plain is not None:
+        path = str(plain)
     started = time.time()
     print(f"Analysis worker: job {job_id} started ({filename}).", flush=True)
     stop = threading.Event()
@@ -361,7 +388,7 @@ def run_job(job_id, path, filename, response_id, kind="analyze", target_feedback
             _rebuild_report(product_id)
         print(f"Analysis worker: job {job_id} done in {time.time() - started:.0f}s.", flush=True)
         try:
-            Path(path).unlink(missing_ok=True)  # the upload function keeps its own copy
+            Path(queued_file).unlink(missing_ok=True)  # the upload function keeps its own (encrypted) copy
         except Exception:
             pass
     except KeyboardInterrupt:
@@ -387,6 +414,8 @@ def run_job(job_id, path, filename, response_id, kind="analyze", target_feedback
         print(f"Analysis worker: job {job_id} failed: {detail}", flush=True)
     finally:
         stop.set()
+        if plain is not None:
+            plain.unlink(missing_ok=True)  # the decrypted copy never outlives the analysis
 
 
 def _translate_when_idle():
@@ -424,7 +453,7 @@ def _refresh_one_report() -> bool:
                 for r in db.execute(
                     text(
                         "SELECT DISTINCT s.product_id FROM analysis_jobs j "
-                        "JOIN survey_responses s ON s.id = j.response_id "
+                        "JOIN survey_responses s ON s.record_no = j.response_id "
                         "WHERE j.status IN ('queued', 'processing')"
                     )
                 ).fetchall()

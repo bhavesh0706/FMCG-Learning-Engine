@@ -1,17 +1,22 @@
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../main.dart';
+import '../services/org_api.dart' show Json, intOf;
 import '../services/session.dart';
+import '../services/connectivity_service.dart';
+import '../services/gps_service.dart';
+import '../services/lov.dart';
+import '../services/offline_catalog.dart';
 import '../services/survey_api.dart';
+import '../services/recording_vault.dart';
 import '../services/survey_queue.dart';
-import '../widgets/media_player.dart';
-import 'next_update_screens.dart' show NextApi;
 import 'capture_screens.dart';
+import '../widgets/search_dropdown.dart';
 
 /*
   Field survey on the phone, one step per screen:
@@ -19,12 +24,32 @@ import 'capture_screens.dart';
   Submit saves the survey on the phone; it uploads and is analyzed in the background.
 */
 
+// "How long have you been consuming / using <product>?" (the stored codes are unchanged)
 const _usagePeriods = [
-  ('last_week', 'In the last week'),
-  ('last_month', 'In the last month'),
-  ('last_3_months', 'In the last 3 months'),
-  ('more_than_3_months', 'More than 3 months ago'),
+  ('last_week', 'Less than 7 days'),
+  ('last_month', 'For the past 1 month'),
+  ('last_3_months', 'For the last 3 months'),
+  ('more_than_3_months', 'For more than 3 months'),
 ];
+
+// "consuming" for food and drink, "using" for everything else (shampoo, soap, detergent ...).
+// The project (category) name decides first, then the product name; unclear = "using".
+// Same rule as the web (SurveyWorkflow.jsx usageVerb).
+final _edible = RegExp(
+    r'\b(food|beverage|drink|dairy|milk|cereal|snack|confection|chocolate|juice|tea|coffee|water|biscuit|bakery|bread|jelly|jam|'
+    r'sauce|spice|masala|ghee|butter|cheese|curd|yogh?urt|lassi|noodle|pasta|granola|flakes|oats|candy|nutrition|edible|ice ?cream|'
+    r'frozen|rice|atta|flour|dal|honey|pickle|sweets?)',
+    caseSensitive: false);
+final _nonEdible = RegExp(
+    r'\b(soap|shampoo|detergent|lotion|cosmetic|personal care|home care|cleaner|cleaning|toothpaste|deodorant|perfume|fragrance|'
+    r'hair|skin|laundry|dishwash|tissue|diaper|sanitary|repellent|polish|insecticide|household|beauty|make ?up)',
+    caseSensitive: false);
+
+String usageVerb(String? productName, String? categoryName) {
+  if (_edible.hasMatch(categoryName ?? '')) return 'consuming';
+  if (_nonEdible.hasMatch('${productName ?? ''} ${categoryName ?? ''}')) return 'using';
+  return _edible.hasMatch(productName ?? '') ? 'consuming' : 'using';
+}
 
 const _genders = ['Male', 'Female', 'Other', 'Prefer not to say'];
 const _fileTypes = ['mp4', 'mov', 'mkv', 'webm', '3gp', 'mp3', 'wav', 'm4a', 'ogg', 'aac', 'amr', 'opus'];
@@ -73,7 +98,15 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   final _name = TextEditingController();
   final _mobile = TextEditingController();
   final _age = TextEditingController();
+  // The customer's place (web: CustomerPlace): Country -> State -> City from the LOV
+  // lists, then the current area. [_city] holds the area ("location" on the server).
   final _city = TextEditingController();
+  final _state = TextEditingController();
+  final _cityName = TextEditingController();
+  bool _otherCity = false; // a city that isn't in the state's list, typed by hand
+  Lov _lov = Lov.empty;
+  String _placeGps = 'idle'; // idle | locating | resolving | warn | error
+  String? _placeMsg;
   final _address = TextEditingController();
   final _executive = TextEditingController();
   final _surveyLocation = TextEditingController();
@@ -98,10 +131,9 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   bool _silentConfirmed = false; // "use it anyway" for a recording that seems silent
 
   // GPS for this survey: locating | ok | off (service off) | denied | failed
-  String _gps = 'locating'; // locating | resolving | ok | off | denied | deniedForever | failed
-  double? _lat;
-  double? _lng;
-  double? _accuracy;
+  String _gps = 'locating'; // locating | resolving | ok | error
+  GpsFix? _fix; // lat/lng, accuracy, capture time and platform (services/gps_service.dart)
+  GpsException? _gpsError;
   String? _place; // readable address from GPS (GET /geo/reverse)
   String? _placeError;
   // Survey location text that came from GPS or the previous survey: a new GPS
@@ -124,12 +156,38 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       _name.text.trim().isNotEmpty || _answers.values.any((v) => v.trim().isNotEmpty) || _media != null;
 
   @override
+  // Action plans: the cities this person may survey, per product (empty = anywhere)
+  List<Json> _myPlans = [];
+
+  Json? get _myPlan {
+    for (final x in _myPlans) {
+      if (intOf(x['product_id']) == _product?.id) return x;
+    }
+    return null;
+  }
+
+  List<String> get _myCities => [for (final c in (_myPlan?['cities'] as List? ?? const [])) '$c'];
+
+  Future<void> _loadMyPlans() async {
+    try {
+      final plans = await OfflineCatalog.myActionPlans(); // works offline (downloaded copy)
+      if (mounted) setState(() => _myPlans = plans);
+    } catch (_) {
+      // offline or an older server: no city limit is shown here (the server still checks)
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
+    _loadMyPlans();
+    OfflineCatalog.lov().then((l) {
+      if (mounted) setState(() => _lov = l);
+    }).catchError((_) {}); // not loaded: the place is typed instead
     // Signed in: the survey is done by this account's executive.
     _executive.text = Session.user.value?.name ?? AppProfile.executiveName.value;
     _surveyLocation.text = AppProfile.lastSurveyLocation.value;
-    NextApi.masters().then((m) {
+    OfflineCatalog.masters().then((m) {
       if (!mounted) return;
       setState(() => _masters = {
             for (final k in const ['respondent_type', 'occupation', 'sec_class'])
@@ -140,51 +198,63 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     _usage = widget.keepUsage;
     _loadCatalog();
     _captureLocation();
+    ConnectivityService.online.addListener(_onConnectivity);
   }
 
-  /// Location of this survey (optional): never blocks the survey.
+  /// GPS fix of this survey (optional, never blocks it). Works offline on Android
+  /// (GNSS) and iOS (Core Location); the fix is saved with the survey and sent with it,
+  /// keeping its capture time. The address lookup needs the server and runs again
+  /// when the connection comes back.
   Future<void> _captureLocation({bool ask = false}) async {
-    if (mounted && _gps != 'locating') setState(() => _gps = 'locating');
+    if (mounted) {
+      setState(() {
+        _gps = 'locating';
+        _gpsError = null;
+      });
+    }
     try {
-      if (!await Geolocator.isLocationServiceEnabled()) {
-        if (mounted) setState(() => _gps = 'off');
-        return;
-      }
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied && ask) {
-        permission = await Geolocator.requestPermission();
-      }
-      if (permission == LocationPermission.deniedForever) {
-        if (mounted) setState(() => _gps = 'deniedForever');
-        return;
-      }
-      if (permission == LocationPermission.denied) {
-        if (mounted) setState(() => _gps = 'denied');
-        return;
-      }
-      final pos = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 20)),
-      );
+      final fix = await GpsService.capture(ask: ask);
       if (!mounted) return;
       setState(() {
-        _lat = double.parse(pos.latitude.toStringAsFixed(6));
-        _lng = double.parse(pos.longitude.toStringAsFixed(6));
-        _accuracy = pos.accuracy;
-        _gps = 'resolving';
+        _fix = fix;
+        _gps = 'ok';
+        _place = null;
         _placeError = null;
       });
-    } catch (_) {
-      if (mounted) setState(() => _gps = 'failed');
+    } on GpsException catch (e) {
+      if (mounted) {
+        setState(() {
+          _gps = 'error';
+          _gpsError = e;
+        });
+      }
       return;
     }
-    // Coordinates -> readable address, filled into Survey location.
+    await _resolvePlace();
+  }
+
+  /// Coordinates -> readable address, filled into Survey location (needs the server).
+  Future<void> _resolvePlace() async {
+    final fix = _fix;
+    if (fix == null || !mounted) return;
+    if (!ConnectivityService.online.value || !Session.hasServerSession) {
+      setState(() {
+        _place = null;
+        _fillSurveyLocationOffline(fix);
+        _placeError = 'Offline: saved with the survey and used as the survey location. '
+            'It becomes the address when you are back online or when the survey uploads.';
+      });
+      return;
+    }
+    setState(() => _gps = 'resolving');
     try {
-      final place = await _api.reverseGeocode(_lat!, _lng!);
+      final place = await _api.reverseGeocode(fix.latitude, fix.longitude);
       final label = '${place['label'] ?? ''}'.trim();
-      if (!mounted) return;
+      if (!mounted || _fix != fix) return;
       setState(() {
         _gps = 'ok';
         _place = label.isEmpty ? null : label;
+        _placeError = null;
         final current = _surveyLocation.text.trim();
         if (label.isNotEmpty && (current.isEmpty || current == (_autoLocationText ?? '').trim())) {
           _surveyLocation.text = label;
@@ -202,9 +272,34 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     }
   }
 
+  /// Offline: the survey location becomes the GPS position, unless the survey person typed one.
+  void _fillSurveyLocationOffline(GpsFix fix) {
+    final current = _surveyLocation.text.trim();
+    if (current.isEmpty || current == (_autoLocationText ?? '').trim() || GpsFix.isPlaceholder(current)) {
+      _surveyLocation.text = fix.placeholder;
+      _autoLocationText = fix.placeholder;
+    }
+  }
+
+  /// Back online with an offline fix and no address yet: look it up now.
+  void _onConnectivity() {
+    if (!ConnectivityService.online.value || !Session.hasServerSession) return;
+    final customerFix = _customerFixToResolve;
+    if (customerFix != null && _placeGps != 'resolving') {
+      _fillCustomerPlace(customerFix, onlyEmpty: true); // also fills the survey's address
+    } else if (_fix != null && _place == null && _gps == 'ok') {
+      _resolvePlace();
+    }
+  }
+
   @override
   void dispose() {
-    for (final c in [_name, _mobile, _age, _city, _address, _country, _executive, _surveyLocation, ..._textControllers.values]) {
+    ConnectivityService.online.removeListener(_onConnectivity);
+    if (!_saved) {
+      _discard(_media); // the survey was abandoned: its (encrypted) recording goes too
+      _discard(_unsealed);
+    }
+    for (final c in [_name, _mobile, _age, _city, _state, _cityName, _address, _country, _executive, _surveyLocation, ..._textControllers.values]) {
       c.dispose();
     }
     super.dispose();
@@ -220,7 +315,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       });
     }
     try {
-      final results = await Future.wait([_api.categories(), _api.products()]);
+      final results = await Future.wait([OfflineCatalog.categories(), OfflineCatalog.products()]);
       _categories = results[0] as List<CatalogCategory>;
       _products = results[1] as List<CatalogProduct>;
       final start = widget.startProduct;
@@ -256,7 +351,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       _error = null;
     });
     try {
-      final qs = await _api.questions(p.id);
+      final qs = await OfflineCatalog.questions(p.id);
       if (!mounted) return;
       setState(() {
         _questions = qs;
@@ -319,10 +414,21 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       final a = int.tryParse(_age.text.trim());
       if (a == null || a < 1 || a > 120) return 'Enter an age between 1 and 120.';
     }
-    if (_city.text.trim().isEmpty) return 'Enter the city or locality.';
+    if (_country.text.trim().isEmpty) return "Choose the customer's country.";
+    if (_state.text.trim().isEmpty) return "Choose the customer's state.";
+    final city = _cityName.text.trim();
+    if (city.isEmpty) {
+      return _myCities.isEmpty
+          ? "Choose the customer's city."
+          : "Choose the customer's city: you survey in ${_myCities.join(', ')} only.";
+    }
+    if (_myCities.isNotEmpty && !_myCities.any((c) => c.toLowerCase() == city.toLowerCase())) {
+      return 'You survey customers in ${_myCities.join(', ')} only (action plan “${_myPlan?['plan_name'] ?? ''}”).';
+    }
+    if (_city.text.trim().isEmpty) return "Enter the customer's current location (area or locality), or use the location button.";
     if (_executive.text.trim().isEmpty) return 'Enter your name as the survey executive.';
     if (_surveyLocation.text.trim().isEmpty) return 'Enter where this survey is taking place.';
-    if (_usage == null) return 'Choose when the customer used the product.';
+    if (_usage == null) return 'Choose how long the customer has been ${_usageVerb()} the product.';
     if (!_consent) return "The respondent's consent is needed to continue.";
     return null;
   }
@@ -352,7 +458,9 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       }
     } else if (_step == _recordingStep) {
       if (_media == null) {
-        setState(() => _error = "Record or choose the customer's feedback first.");
+        setState(() => _error = _unsealed != null
+            ? 'The recording must be secured first: connect to the internet once, then tap "Secure recording".'
+            : "Record or choose the customer's feedback first.");
         return;
       }
       if (_media!.durationSeconds > 0 && _media!.durationSeconds < _minSeconds) {
@@ -396,6 +504,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       setState(() => _silentConfirmed = true);
       _next();
     } else {
+      _discard(_media); // "record again": the silent recording is deleted
       setState(() => _media = null);
     }
   }
@@ -406,12 +515,63 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         builder: (_) => video ? const RecordVideoScreen(returnResult: true) : const RecordAudioScreen(returnResult: true),
       ),
     );
-    if (result != null && mounted) {
+    if (result != null && mounted) await _useMedia(result, ownFile: true);
+  }
+
+  /// A recording (or chosen file) is sealed at once: encrypted into private storage with its
+  /// own key, wrapped for the server; the plaintext is deleted (services/recording_vault.dart).
+  /// The survey person can't play it back from here on.
+  RecordedMedia? _unsealed; // waiting for the security key (never signed in online on this phone)
+  bool _sealing = false;
+  bool _saved = false; // handed to the upload queue
+
+  Future<void> _useMedia(RecordedMedia media, {required bool ownFile}) async {
+    final previous = _media;
+    setState(() {
+      _sealing = true;
+      _error = null;
+    });
+    try {
+      final sealed = await RecordingVault.seal(media.path, deleteSource: ownFile);
+      _discard(previous);
+      _discard(_unsealed);
+      if (!mounted) return;
       setState(() {
-        _media = result;
+        _media = media.sealedAs(path: sealed.path, keyId: sealed.keyId, wrappedKey: sealed.wrappedKey, bytes: sealed.bytes);
+        _unsealed = null;
         _silentConfirmed = false;
-        _error = null;
       });
+    } on RecordingKeyMissing catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _unsealed = media;
+        _error = '$e';
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = "The recording couldn't be secured on this phone: $e");
+    } finally {
+      if (mounted) setState(() => _sealing = false);
+    }
+  }
+
+  /// Deletes a recording the app made (sealed file or our own plaintext copy).
+  void _discard(RecordedMedia? m) {
+    if (m == null) return;
+    if (m.isSealed || m.source == 'recorded') {
+      try {
+        File(m.path).deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  /// A chosen file is copied by the file picker into the app's temporary folder: that copy is
+  /// the app's own (deleted after sealing); the person's original file is never touched.
+  Future<bool> _isTempCopy(String path) async {
+    try {
+      final tmp = (await getTemporaryDirectory()).path;
+      return File(path).absolute.path.startsWith(tmp) || path.contains('/file_picker/');
+    } catch (_) {
+      return false;
     }
   }
 
@@ -484,18 +644,17 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       setState(() => _error = 'This recording is ${formatDuration(seconds)}. The feedback can be at most 35 minutes long.');
       return;
     }
-    setState(() {
-      _media = RecordedMedia(
+    await _useMedia(
+      RecordedMedia(
         path: f.path!,
         name: f.name,
         kind: _audioTypes.contains(ext) ? 'audio' : 'video',
         durationSeconds: seconds ?? 0, // 0 = couldn't be read here; the server checks it
         source: 'file',
         sizeBytes: size,
-      );
-      _silentConfirmed = false;
-      _error = null;
-    });
+      ),
+      ownFile: await _isTempCopy(f.path!),
+    );
   }
 
   /// "Change": record again (audio or video) or choose another file.
@@ -510,7 +669,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Replace the recording', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              Text('Replace the recording', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
               const SizedBox(height: 12),
               _SheetOption(icon: Icons.mic_rounded, color: AppColors.record, title: 'Record audio', onTap: () => Navigator.pop(ctx, 'audio')),
               _SheetOption(icon: Icons.videocam_rounded, color: AppColors.video, title: 'Record video with audio', onTap: () => Navigator.pop(ctx, 'video')),
@@ -537,7 +696,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     setState(() => _submitting = true);
     try {
       AppProfile.executiveName.value = _executive.text.trim();
-      AppProfile.lastSurveyLocation.value = _surveyLocation.text.trim();
+      // A GPS position (offline) isn't remembered as "the last survey location".
+      if (!GpsFix.isPlaceholder(_surveyLocation.text)) AppProfile.lastSurveyLocation.value = _surveyLocation.text.trim();
       final recent = RecentProduct(id: p.id, name: p.name, categoryId: p.categoryId, categoryName: _categoryName(p));
       await AppProfile.rememberProduct(recent);
 
@@ -553,6 +713,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           'age': int.tryParse(_age.text.trim()),
           'location': _city.text.trim(),
           'country': _country.text.trim().isEmpty ? null : _country.text.trim(),
+          'state': _state.text.trim().isEmpty ? null : _state.text.trim(),
+          'city': _cityName.text.trim().isEmpty ? null : _cityName.text.trim(), // checked against the action plan
           'respondent_type': _respondentType,
           'occupation': _occupation,
           'sec_class': _secClass,
@@ -566,15 +728,18 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           'usage_period': _usage,
           'audience': _audience,
           'location': _surveyLocation.text.trim(),
-          'latitude': _lat,
-          'longitude': _lng,
+          // GPS fix with its accuracy, original capture time and platform (kept in the offline queue).
+          ...?_fix?.toJson(),
         },
         answers: [for (final q in _questions) {'question_id': q.id, 'value': (_answers[q.id] ?? '').trim()}],
         mediaSourcePath: media.path,
         mediaName: media.name,
         mediaKind: media.kind,
         durationSeconds: media.durationSeconds,
+        encKeyId: media.keyId,
+        encWrappedKey: media.wrappedKey,
       );
+      _saved = true;
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => SurveySubmittedScreen(product: recent, usage: _usage)),
@@ -647,6 +812,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     );
   }
 
+  String _usageVerb() => usageVerb(_product?.name, _product == null ? null : _categoryName(_product!));
+
   String _categoryName(CatalogProduct p) {
     if (p.categoryName.isNotEmpty) return p.categoryName;
     return _categories.where((c) => c.id == p.categoryId).firstOrNull?.name ?? '';
@@ -682,7 +849,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             tooltip: _step == 0 ? 'Close' : 'Back',
             onPressed: _back,
           ),
-          title: Text(_title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          title: Text(_title, style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700)),
           bottom: PreferredSize(
             preferredSize: const Size.fromHeight(4),
             child: LinearProgressIndicator(
@@ -840,34 +1007,53 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         _banner(),
         const _SectionLabel('Customer'),
         _field(_name, 'Full name *', capitalization: TextCapitalization.words, autofill: const [AutofillHints.name]),
-        _field(_mobile, 'Mobile (optional)', keyboard: TextInputType.phone),
+        _field(_mobile, 'Mobile (optional)', keyboard: TextInputType.phone, hint: '98765 43210'),
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(child: _field(_age, 'Age', keyboard: TextInputType.number)),
-            const SizedBox(width: 12),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: DropdownButtonFormField<String>(
-                  value: _gender,
+                child: SearchDropdownField<String>(
+                  initialValue: _gender,
+                  isExpanded: true,
                   decoration: _inputDecoration('Gender'),
                   items: [for (final g in _genders) DropdownMenuItem(value: g, child: Text(g))],
                   onChanged: (v) => setState(() => _gender = v),
                 ),
               ),
             ),
+            const SizedBox(width: 12),
+            Expanded(child: _field(_age, 'Age', keyboard: TextInputType.number)),
           ],
         ),
-        _field(_city, 'City or locality *', capitalization: TextCapitalization.words),
+        if (_myCities.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            decoration: BoxDecoration(
+              color: AppColors.brandSoft,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Text.rich(
+              TextSpan(children: [
+                const TextSpan(text: 'You survey in '),
+                TextSpan(text: _myCities.join(', '), style: const TextStyle(fontWeight: FontWeight.w800)),
+                TextSpan(text: ' only · action plan “${_myPlan?['plan_name'] ?? ''}”'),
+              ]),
+              style: TextStyle(fontSize: 13.5, color: AppColors.ink, height: 1.35),
+            ),
+          ),
+        ..._customerPlace(),
         _field(_address, 'Address (optional)', capitalization: TextCapitalization.sentences),
-        _field(_country, 'Country', capitalization: TextCapitalization.words),
         for (final (key, label) in const [('respondent_type', 'Respondent type'), ('occupation', 'Occupation'), ('sec_class', 'Class (SEC)')])
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: DropdownButtonFormField<String>(
+            child: SearchDropdownField<String>(
               initialValue: key == 'respondent_type' ? _respondentType : key == 'occupation' ? _occupation : _secClass,
               isExpanded: true,
-              decoration: InputDecoration(labelText: label),
+              decoration: _inputDecoration(label),
               items: [for (final v in _masters[key] ?? const <String>[]) DropdownMenuItem(value: v, child: Text(v))],
               onChanged: (v) => setState(() {
                 if (key == 'respondent_type') {
@@ -914,7 +1100,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             action: TextInputAction.done),
         _locationRow(),
         const SizedBox(height: 12),
-        Text('When did they use ${_product?.name ?? 'the product'}? *',
+        Text('How long have you been ${_usageVerb()} ${_product?.name ?? 'the product'}? *',
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
         const SizedBox(height: 8),
         Wrap(
@@ -964,6 +1150,237 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     );
   }
 
+  /* The customer's place: Country -> State -> City (lists), then the area. */
+
+  List<LovValue> get _countries => _lov.values('COUNTRY');
+  LovValue? get _countryValue => Lov.match(_countries, _country.text);
+  List<LovValue> get _states => _lov.children('STATE', _countryValue?.id);
+  LovValue? get _stateValue => Lov.match(_states, _state.text);
+  List<LovValue> get _cities => _lov.children('CITY', _stateValue?.id);
+  LovValue? get _cityValue => Lov.match(_cities, _cityName.text);
+  bool get _typingCity => _cities.isNotEmpty && (_otherCity || (_cityName.text.trim().isNotEmpty && _cityValue == null));
+
+  static const _otherCityId = '__other__';
+
+  Widget _pick(String label, List<LovValue> options, LovValue? value, ValueChanged<LovValue> onPick,
+      {bool withOther = false, String? hint}) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: SearchDropdownField<String>(
+        // A new key when the value changes from outside (GPS), so the field shows it.
+        key: ValueKey('$label:${value?.id}:${options.length}'),
+        initialValue: value == null ? null : '${value.id}',
+        isExpanded: true,
+        menuMaxHeight: 420,
+        decoration: _inputDecoration(label).copyWith(hintText: hint),
+        items: [
+          for (final o in options) DropdownMenuItem(value: '${o.id}', child: Text(o.label, overflow: TextOverflow.ellipsis)),
+          if (withOther) const DropdownMenuItem(value: _otherCityId, child: Text('Other city (type it)')),
+        ],
+        onChanged: (id) {
+          if (id == _otherCityId) {
+            setState(() {
+              _otherCity = true;
+              _cityName.clear();
+              _error = null;
+            });
+            return;
+          }
+          final picked = options.where((o) => '${o.id}' == id).firstOrNull;
+          if (picked != null) onPick(picked);
+        },
+      ),
+    );
+  }
+
+  List<Widget> _customerPlace() {
+    final busy = _placeGps == 'locating' || _placeGps == 'resolving';
+    return [
+      if (_countries.isNotEmpty)
+        _pick('Country *', _countries, _countryValue, (v) => setState(() {
+              _country.text = v.label;
+              _state.clear();
+              _cityName.clear();
+              _otherCity = false;
+              _error = null;
+            }))
+      else
+        _field(_country, 'Country *', capitalization: TextCapitalization.words, hint: 'e.g. India'),
+      if (_states.isNotEmpty)
+        _pick('State *', _states, _stateValue, (v) => setState(() {
+              _state.text = v.label;
+              _cityName.clear();
+              _otherCity = false;
+              _error = null;
+            }))
+      else
+        _field(_state, 'State *', capitalization: TextCapitalization.words,
+            hint: _country.text.trim().isEmpty ? 'Choose the country first' : 'Type the state'),
+      if (_cities.isEmpty)
+        _field(_cityName, 'City *', capitalization: TextCapitalization.words,
+            hint: _state.text.trim().isNotEmpty || _states.isEmpty ? 'Type the city' : 'Choose the state first')
+      else if (_typingCity) ...[
+        _field(_cityName, 'City *', capitalization: TextCapitalization.words, hint: 'Type the city'),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Row(children: [
+            Expanded(
+              child: Text('Not in the city list. An admin can add it in Catalog > Master lists.',
+                  style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+            ),
+            TextButton(
+              onPressed: () => setState(() {
+                _otherCity = false;
+                _cityName.clear();
+              }),
+              child: const Text('Choose from list'),
+            ),
+          ]),
+        ),
+      ] else
+        _pick('City *', _cities, _cityValue, (v) => setState(() {
+              _cityName.text = v.label;
+              _otherCity = false;
+              _error = null;
+            }), withOther: true),
+      _field(_city, 'Current location (area or locality) *', capitalization: TextCapitalization.words,
+          hint: 'e.g. Andheri West, or use the button'),
+      Padding(
+        padding: const EdgeInsets.only(bottom: 14),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          OutlinedButton.icon(
+            onPressed: busy ? null : _locateCustomer,
+            icon: busy
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.my_location_rounded, size: 18),
+            label: Text(_placeGps == 'locating'
+                ? 'Finding location…'
+                : _placeGps == 'resolving'
+                    ? 'Finding the address…'
+                    : 'Use current location'),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            _placeMsg ?? "Fills in the country, state, city and area from this phone's location.",
+            style: TextStyle(
+              fontSize: 12.5,
+              height: 1.35,
+              color: _placeGps == 'error' ? AppColors.neg : _placeGps == 'warn' ? AppColors.warn : AppColors.muted,
+            ),
+          ),
+        ]),
+      ),
+    ];
+  }
+
+  /// "Use current location" for the customer: the GPS works without internet; the
+  /// address lookup (country, state, city, area) needs the server. Offline, the fix is
+  /// saved with the survey and the place is filled in from it once back online
+  /// (only the fields still empty, so nothing typed meanwhile is replaced).
+  GpsFix? _customerFixToResolve;
+
+  Future<void> _locateCustomer() async {
+    _hideKeyboard();
+    setState(() {
+      _placeGps = 'locating';
+      _placeMsg = null;
+    });
+    final GpsFix fix;
+    try {
+      fix = await GpsService.capture(ask: true);
+    } on GpsException catch (e) {
+      if (mounted) {
+        setState(() {
+          _placeGps = 'error';
+          _placeMsg = e.message.replaceFirst('type the location', 'choose the place by hand');
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      // The survey usually happens where the customer is: this is also the survey's GPS
+      // (kept with the survey, offline too) unless one was taken already.
+      if (_fix == null || _gps == 'error') {
+        _fix = fix;
+        _gps = 'ok';
+        _gpsError = null;
+        _place = null;
+      }
+    });
+    if (!ConnectivityService.online.value || !Session.hasServerSession) {
+      setState(() {
+        _customerFixToResolve = fix;
+        // No address offline: the position goes into the place fields, and is replaced by
+        // the area's name when back online (here) or when the survey uploads (server).
+        if (_city.text.trim().isEmpty || GpsFix.isPlaceholder(_city.text)) _city.text = fix.placeholder;
+        _fillSurveyLocationOffline(fix);
+        _placeGps = 'warn';
+        _placeMsg = 'Offline: the GPS position is used as the location. It is replaced by the area name when '
+            'you are back online or when the survey uploads. Choose the state and city if they are empty.';
+        _error = null;
+      });
+      return;
+    }
+    await _fillCustomerPlace(fix);
+  }
+
+  /// Address of [fix] -> country, state, city and area (web: CustomerPlace.locate).
+  Future<void> _fillCustomerPlace(GpsFix fix, {bool onlyEmpty = false}) async {
+    setState(() => _placeGps = 'resolving');
+    try {
+      final place = await _api.reverseGeocode(fix.latitude, fix.longitude);
+      if (!mounted) return;
+      String s(String k) => '${place[k] ?? ''}'.trim();
+      final label = s('label');
+      final c = Lov.match(_countries, s('country'));
+      final stateList = _lov.children('STATE', c?.id);
+      final st = Lov.match(stateList, s('state'));
+      // The lookup gives several names (city, town, district ...): the first one in the state's city list.
+      final cityList = _lov.children('CITY', st?.id);
+      final names = [s('city'), for (final n in (place['places'] as List? ?? const [])) '$n'];
+      final ci = names.map((n) => Lov.match(cityList, n)).whereType<LovValue>().firstOrNull;
+      final missing = st != null && ci == null && s('city').isNotEmpty
+          ? ' "${s('city')}" isn\'t in the city list of ${st.label}, so it\'s filled in as typed. Pick a listed city if one fits, or ask an admin to add it.'
+          : c != null && st == null && s('state').isNotEmpty
+              ? ' Choose the state.'
+              : '';
+      final fromDistrict = ci != null && const {'state_district', 'county'}.contains(s('city_from'))
+          ? ' The city was taken from the district (${s('city')}): check it with the customer.'
+          : '';
+      // Typed while offline: kept. A place chosen by hand is never replaced.
+      final placeChosen = onlyEmpty && _state.text.trim().isNotEmpty && _cityName.text.trim().isNotEmpty;
+      setState(() {
+        _customerFixToResolve = null;
+        if (!placeChosen) {
+          _country.text = c?.label ?? s('country');
+          _state.text = st?.label ?? (stateList.isNotEmpty ? '' : s('state'));
+          _cityName.text = ci?.label ?? s('city');
+          _otherCity = false;
+        }
+        if (!onlyEmpty || _city.text.trim().isEmpty || GpsFix.isPlaceholder(_city.text)) {
+          _city.text = s('locality').isNotEmpty ? s('locality') : label;
+        }
+        _placeGps = missing.isNotEmpty ? 'warn' : 'idle';
+        _placeMsg = 'Found: ${label.isEmpty ? 'your location' : label}.$missing$fromDistrict';
+        _error = null;
+        if (_fix == fix) _place = label.isEmpty ? null : label;
+        final current = _surveyLocation.text.trim();
+        if (label.isNotEmpty && (current.isEmpty || current == (_autoLocationText ?? '').trim())) {
+          _surveyLocation.text = label;
+          _autoLocationText = label;
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _placeGps = 'warn'; // the GPS position itself is saved with the survey
+          _placeMsg = "Couldn't find the address right now (the GPS position is saved). Choose the place and type the area.";
+        });
+      }
+    }
+  }
+
   Widget _field(
     TextEditingController c,
     String label, {
@@ -990,39 +1407,80 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     );
   }
 
+  String _ago(DateTime t) {
+    final d = DateTime.now().toUtc().difference(t.toUtc());
+    if (d.inSeconds < 60) return 'just now';
+    if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+    final local = t.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// GPS of this survey: coordinates, accuracy and capture time, or what to do.
   Widget _locationRow() {
-    final (IconData icon, Color color, String text, bool retry) = switch (_gps) {
-      'ok' when _place != null => (Icons.location_on_rounded, AppColors.pos, '$_place (±${(_accuracy ?? 0).round()} m)', false),
-      'ok' => (Icons.location_on_rounded, AppColors.warn,
-          'Location added (±${(_accuracy ?? 0).round()} m). ${_placeError ?? 'Address not found: type the survey location.'}', false),
-      'locating' => (Icons.my_location_rounded, AppColors.muted, 'Finding location…', false),
-      'resolving' => (Icons.my_location_rounded, AppColors.muted, 'Finding the address…', false),
-      'off' => (Icons.location_off_rounded, AppColors.warn, 'Location is off on this phone. Turn it on, or type the location.', true),
-      'denied' => (Icons.location_disabled_rounded, AppColors.warn, 'Location not allowed. Allow it, or type the location.', true),
-      'deniedForever' => (Icons.location_disabled_rounded, AppColors.warn, 'Location is blocked for this app. Allow it in Settings, or type the location.', true),
-      _ => (Icons.location_searching_rounded, AppColors.warn, "Couldn't get the location. Try again, or type it.", true),
-    };
+    final fix = _fix;
+    final busy = _gps == 'locating' || _gps == 'resolving';
+    final IconData icon;
+    final Color color;
+    final List<String> lines;
+    if (_gps == 'locating') {
+      (icon, color, lines) = (Icons.my_location_rounded, AppColors.muted, ['Finding your GPS position…']);
+    } else if (_gps == 'error' || fix == null) {
+      final e = _gpsError ?? const GpsException(GpsProblem.unavailable);
+      (icon, color, lines) = (
+        e.problem == GpsProblem.serviceOff ? Icons.location_off_rounded : Icons.location_disabled_rounded,
+        AppColors.warn,
+        [e.message],
+      );
+    } else {
+      final notes = <String>[
+        if (fix.reducedAccuracy) 'Precise location is off for this app: turn it on in Settings for an exact position.',
+        if (fix.lastKnown) "No fresh GPS signal: the phone's last position (${_ago(fix.capturedAt)}) is used.",
+        if (fix.isPoor && !fix.reducedAccuracy) 'Low accuracy. Move to an open area and tap Update for a better fix.',
+        if (_gps == 'resolving') 'Finding the address…' else if (_place != null) _place! else if (_placeError != null) _placeError!,
+      ];
+      (icon, color, lines) = (
+        Icons.location_on_rounded,
+        fix.isPoor || fix.reducedAccuracy || fix.lastKnown ? AppColors.warn : AppColors.pos,
+        ['${fix.coordinates}  ·  ±${fix.accuracy.round()} m  ·  ${_ago(fix.capturedAt)}', ...notes],
+      );
+    }
+    final e = _gpsError;
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
       decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.line)),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(icon, size: 20, color: color),
           const SizedBox(width: 8),
-          Expanded(child: Text(text, style: TextStyle(fontSize: 14, color: AppColors.ink2))),
-          if (_gps == 'locating' || _gps == 'resolving')
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              for (var i = 0; i < lines.length; i++)
+                Padding(
+                  padding: EdgeInsets.only(top: i == 0 ? 0 : 3),
+                  child: Text(
+                    lines[i],
+                    style: i == 0 && fix != null && _gps != 'error'
+                        ? TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.ink, fontFeatures: const [FontFeature.tabularFigures()])
+                        : TextStyle(fontSize: 13, height: 1.35, color: AppColors.ink2),
+                  ),
+                ),
+            ]),
+          ),
+          if (busy)
             const Padding(
               padding: EdgeInsets.all(10),
               child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
             )
-          else if (_gps == 'off')
-            TextButton(onPressed: () async { await Geolocator.openLocationSettings(); }, child: const Text('Turn on'))
-          else if (_gps == 'deniedForever')
-            TextButton(onPressed: () async { await Geolocator.openAppSettings(); }, child: const Text('Settings'))
-          else if (retry)
+          else if (_gps == 'error' && e != null && e.needsSettings)
+            TextButton(
+              onPressed: () => GpsService.openSettingsFor(e),
+              child: Text(e.problem == GpsProblem.serviceOff ? 'Turn on' : 'Settings'),
+            )
+          else if (_gps == 'error')
             TextButton(onPressed: () => _captureLocation(ask: true), child: const Text('Try again'))
           else
-            TextButton(onPressed: () => _captureLocation(), child: const Text('Update')),
+            TextButton(onPressed: () => _captureLocation(ask: true), child: const Text('Update')),
         ],
       ),
     );
@@ -1185,7 +1643,39 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         const SizedBox(height: 6),
         Text('30 seconds to 35 minutes.', style: TextStyle(fontSize: 13.5, color: AppColors.muted)),
         const SizedBox(height: 18),
-        if (m == null && _checkingFile) ...[
+        if (_sealing) ...[
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.line)),
+            child: Row(
+              children: [
+                const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 3)),
+                const SizedBox(width: 14),
+                Expanded(child: Text('Securing the recording…', style: TextStyle(fontSize: 15.5, color: AppColors.ink))),
+              ],
+            ),
+          ),
+        ] else if (m == null && _unsealed != null) ...[
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: AppColors.warnSoft, borderRadius: BorderRadius.circular(16), border: Border.all(color: AppColors.warnLine)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('The recording is waiting to be secured', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.warnDeep)),
+              const SizedBox(height: 4),
+              Text('This phone needs the security key once. Connect to the internet, then tap Secure recording.',
+                  style: TextStyle(fontSize: 13.5, height: 1.4, color: AppColors.warnDeep)),
+              const SizedBox(height: 10),
+              FilledButton.icon(
+                onPressed: () async {
+                  await RecordingVault.refresh((p) => SurveyApi().rawGet(p));
+                  if (_unsealed != null) await _useMedia(_unsealed!, ownFile: _unsealed!.source == 'recorded');
+                },
+                icon: const Icon(Icons.lock_rounded),
+                label: const Text('Secure recording'),
+              ),
+            ]),
+          ),
+        ] else if (m == null && _checkingFile) ...[
           Container(
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(18), border: Border.all(color: AppColors.line)),
@@ -1229,12 +1719,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           Text('Any option: 30 seconds to 35 minutes${' · files up to ${_fileSize(_maxUploadBytes)}'}.',
               textAlign: TextAlign.center, style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
         ] else ...[
-          MediaPlayerCard(
-            key: ValueKey(m.path),
-            filePath: m.path,
-            isVideo: m.isVideo,
-            durationHint: m.durationSeconds,
-          ),
+          _SealedRecordingCard(media: m),
           if (m.seemsSilent)
             Container(
               margin: const EdgeInsets.only(top: 12),
@@ -1332,7 +1817,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
               if (_gender != null) _gender!,
               if (_age.text.trim().isNotEmpty) '${_age.text.trim()} yrs',
             ].join(' · ')),
-            row('City', _city.text.trim()),
+            row('City', [_cityName.text.trim(), _state.text.trim()].where((s) => s.isNotEmpty).join(', ')),
+            row('Area', _city.text.trim()),
             row('Used', usage),
             row('Location', _surveyLocation.text.trim()),
           ],
@@ -1413,7 +1899,7 @@ class SurveySubmittedScreen extends StatelessWidget {
                 child: Icon(Icons.check_rounded, size: 46, color: AppColors.pos),
               ),
               const SizedBox(height: 20),
-              const Text('Survey saved', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+              const Text('Survey saved', style: TextStyle(fontFamily: kDisplayFont, fontSize: 26, fontWeight: FontWeight.w800)),
               const SizedBox(height: 10),
               Text(
                 'It\'s uploading and will be analyzed in the background. Follow its progress in History.',
@@ -1757,7 +2243,7 @@ class _BigAction extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        Flexible(child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))),
+                        Flexible(child: Text(title, style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700))),
                         if (badge != null) ...[
                           const SizedBox(width: 8),
                           Container(
@@ -1835,6 +2321,50 @@ class _Message extends StatelessWidget {
           const SizedBox(height: 6),
           Text(text, textAlign: TextAlign.center, style: TextStyle(fontSize: 14, height: 1.45, color: AppColors.muted)),
           if (action != null) ...[const SizedBox(height: 16), action!],
+        ],
+      ),
+    );
+  }
+}
+
+/// The finished recording, encrypted on this phone: no player (survey persons can't listen to
+/// or watch it); only an authorised Admin plays it, with the product passkey.
+class _SealedRecordingCard extends StatelessWidget {
+  const _SealedRecordingCard({required this.media});
+
+  final RecordedMedia media;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.posSoft,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.pos.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(12)),
+            child: Icon(Icons.lock_rounded, color: AppColors.pos),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Recording saved and encrypted',
+                  style: TextStyle(fontFamily: kDisplayFont, fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              const SizedBox(height: 4),
+              Text(
+                'It is locked on this phone and uploads with the survey. To protect the customer\'s privacy it can\'t be '
+                'played here; only an authorised admin can listen to it.',
+                style: TextStyle(fontSize: 13.5, height: 1.4, color: AppColors.ink2),
+              ),
+            ]),
+          ),
         ],
       ),
     );

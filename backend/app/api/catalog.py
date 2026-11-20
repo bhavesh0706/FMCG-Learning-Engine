@@ -43,19 +43,29 @@ def _clean(value: Optional[str]) -> Optional[str]:
     return value or None
 
 
+# Project ID of a category: letters, numbers, - _ / . (no spaces), e.g. PRJ-0001
+PROJECT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_\-/.]*$"
+
+
 class CategoryIn(BaseModel):
     name: str = Field(min_length=2, max_length=150)
     description: Optional[str] = Field(default=None, max_length=2000)
+    # Empty: the next PRJ-#### is generated (models.next_project_id).
+    project_id: Optional[str] = Field(default=None, max_length=50, pattern=PROJECT_ID_PATTERN)
 
-    _clean_name = field_validator("name", "description", mode="before")(_clean)
+    # Default recipe plan of the project's products (services/action_plans.clean_plan)
+    default_plan: Optional[dict] = None
+
+    _clean_name = field_validator("name", "description", "project_id", mode="before")(_clean)
 
 
 class CategoryUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=150)
     description: Optional[str] = Field(default=None, max_length=2000)
+    project_id: Optional[str] = Field(default=None, min_length=1, max_length=50, pattern=PROJECT_ID_PATTERN)
     is_active: Optional[bool] = None
 
-    _clean_name = field_validator("name", "description", mode="before")(_clean)
+    _clean_name = field_validator("name", "description", "project_id", mode="before")(_clean)
 
 
 class ProductIn(BaseModel):
@@ -65,9 +75,17 @@ class ProductIn(BaseModel):
     description: Optional[str] = Field(default=None, max_length=2000)
     launch_date: Optional[date] = None
     min_responses: int = Field(default=10, ge=1, le=1000)
+    # The first recipe version number (default 1; higher when versions existed before the app)
+    # Recipe plan: targets, survey persons, dates, cities ... (services/action_plans.clean_plan);
+    # empty = the project's default plan
+    recipe_plan: Optional[dict] = None
+    start_version: int = Field(default=1, ge=1, le=999)
     # Optional starting survey questions (copied; the product owns them afterwards):
     question_template_id: Optional[int] = None          # from a question template
     copy_questions_from_product_id: Optional[int] = None  # from another product
+    # The organization's recording passkey, when none is set yet (one for all products; only its
+    # scrypt hash is stored, services/recording_access.py). Ignored once the passkey exists.
+    recording_passkey: Optional[str] = Field(default=None, max_length=64)
 
     _clean_text = field_validator("name", "sku", "description", mode="before")(_clean)
 
@@ -79,7 +97,7 @@ class ProductIn(BaseModel):
 
 
 # Fields of ProductIn that are not Product columns.
-STARTING_QUESTION_FIELDS = {"question_template_id", "copy_questions_from_product_id"}
+STARTING_QUESTION_FIELDS = {"question_template_id", "copy_questions_from_product_id", "recipe_plan", "recording_passkey"}
 
 
 class ProductUpdate(BaseModel):
@@ -164,6 +182,8 @@ class QuestionOrder(BaseModel):
 def _category_out(c: Category, product_count: int = 0) -> dict:
     return {
         "id": c.id,
+        "project_id": c.project_id,
+        "default_plan": c.default_plan,  # recipe plan new products of this project start from
         "name": c.name,
         "description": c.description,
         "is_active": bool(c.is_active),
@@ -323,6 +343,18 @@ def _get_or_404(db: Session, model, obj_id: int, label: str):
     if not obj:
         raise HTTPException(status_code=404, detail=f"{label} not found.")
     return obj
+def _project_id_free(db: Session, project_id: Optional[str], category_id: Optional[int] = None) -> None:
+    """409 when another category already has this project ID (compared without case)."""
+    if not project_id:
+        return
+    q = db.query(Category).filter(func.lower(Category.project_id) == project_id.lower())
+    if category_id is not None:
+        q = q.filter(Category.id != category_id)
+    other = q.first()
+    if other is not None:
+        raise HTTPException(status_code=409, detail=f'Category code "{project_id}" is already used by the category "{other.name}".')
+
+
 
 
 def _commit(db: Session, conflict_message: str):
@@ -371,14 +403,19 @@ def _diff(label: str, old, new) -> str:
     return f"{label}: {_shown(old)} → {_shown(new)}" if _shown(old) != _shown(new) else ""
 
 
-def _tell_admins(db: Session, request: Request, entity: str, action: str, name: str, **extra) -> None:
-    """The organization changed the catalog: notify every active admin (never blocks the change)."""
+def _tell_admins(db: Session, request: Request, entity: str, action: str, name: str, started: Optional[bool] = None,
+                 **extra) -> None:
+    """The organization changed the catalog: notify every active admin (never blocks the change).
+    started: whether the product had started a round, when already known (a permanent delete
+    removes the product's rounds before this runs)."""
     if not is_client(request):
         return
     from app.services.notifications import notify_admins_of_catalog_change
     from app.services.product_access import started_product_ids
 
-    if extra.get("product_id") and extra["product_id"] not in started_product_ids(db):
+    if started is None and extra.get("product_id"):
+        started = extra["product_id"] in started_product_ids(db)
+    if extra.get("product_id") and not started:
         return  # admins don't see the product before its first round (they're told when it starts)
 
     who = (account(request) or {}).get("name") or "The Super Admin"
@@ -390,7 +427,15 @@ def _tell_admins(db: Session, request: Request, entity: str, action: str, name: 
 
 @router.post("/categories", status_code=201)
 def create_category(body: CategoryIn, request: Request, db: Session = Depends(get_db)):
-    category = Category(name=body.name, description=body.description)
+    _project_id_free(db, body.project_id)
+    category = Category(name=body.name, description=body.description, project_id=body.project_id)
+    if body.default_plan:  # the default recipe plan of this project's products
+        from app.services.action_plans import PlanError, clean_plan
+
+        try:
+            category.default_plan = clean_plan(body.default_plan)
+        except PlanError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     db.add(category)
     _commit(db, f'A category named "{body.name}" already exists.')
     db.refresh(category)
@@ -418,7 +463,11 @@ def get_category(category_id: int, db: Session = Depends(get_db)):
 def update_category(category_id: int, body: CategoryUpdate, request: Request, db: Session = Depends(get_db)):
     category = _get_or_404(db, Category, category_id, "Category")
     data = body.model_dump(exclude_unset=True)
-    before = {"name": category.name, "description": category.description, "is_active": bool(category.is_active)}
+    before = {"name": category.name, "description": category.description, "project_id": category.project_id,
+              "is_active": bool(category.is_active)}
+    if data.get("project_id"):
+        _project_id_free(db, data["project_id"], category.id)
+        category.project_id = data["project_id"]
     if "name" in data and data["name"]:
         category.name = data["name"]
     if "description" in data:
@@ -427,7 +476,8 @@ def update_category(category_id: int, body: CategoryUpdate, request: Request, db
         category.is_active = 1 if data["is_active"] else 0
     _commit(db, f'A category named "{data.get("name")}" already exists.')
     db.refresh(category)
-    changes = [_diff("Name", before["name"], category.name), _diff("Description", before["description"], category.description)]
+    changes = [_diff("Name", before["name"], category.name), _diff("Description", before["description"], category.description),
+               _diff("Category code", before["project_id"], category.project_id)]
     changes = [c for c in changes if c]
     if before["is_active"] != bool(category.is_active):
         action = "updated" if changes else ("reactivated" if category.is_active else "deactivated")
@@ -575,6 +625,13 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
 
     # One transaction: the product and its starting questions are saved together, or not at all.
     product = Product(**body.model_dump(exclude=STARTING_QUESTION_FIELDS))
+    # The recipe plan (targets, team size, dates, cities ...): given, else the project's default
+    from app.services.action_plans import PlanError, clean_plan
+
+    try:
+        product.recipe_plan = clean_plan(body.recipe_plan) if body.recipe_plan else (category.default_plan or None)
+    except PlanError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     db.add(product)
     conflict = f'"{body.name}" already exists in {category.name}, or the SKU is already used.'
     try:
@@ -584,6 +641,18 @@ def create_product(body: ProductIn, request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=409, detail=conflict)
     for position, q in enumerate(starting, start=1):
         db.add(SurveyQuestion(product_id=product.id, position=position, **q))
+    from app.services.recording_access import AccessError, org_passkey, set_passkey
+
+    if body.recording_passkey and org_passkey(db) is None:
+        # The first product can set the organization's recording passkey (one for all products);
+        # once it exists it is changed only in Recording access, never by adding a product.
+        from app.api.ownership import account
+
+        try:
+            set_passkey(db, body.recording_passkey, account(request))
+        except AccessError as e:
+            db.rollback()
+            raise HTTPException(status_code=e.status, detail=str(e))
     _commit(db, conflict)
     db.refresh(product)
     audit.note(request, target_id=product.id, summary=f"Added product #{product.id} ({product.name}) in {category.name}")
@@ -622,6 +691,11 @@ def update_product(product_id: int, body: ProductUpdate, request: Request, db: S
             setattr(product, field, data[field])
     if data.get("is_active") is not None:
         product.is_active = 1 if data["is_active"] else 0
+    # Its project (one per product) follows the product into its new category
+    from app.database.models import Project
+
+    db.query(Project).filter(Project.product_id == product.id, Project.category_id != product.category_id).update(
+        {Project.category_id: product.category_id}, synchronize_session=False)
     _commit(db, "Another product in this category has that name, or the SKU is already used.")
     db.refresh(product)
     changes = [_diff(label, before[f], getattr(product, f)) for f, label in labels.items()]
@@ -658,15 +732,30 @@ def _all_surveys(db: Session, product_id: int) -> int:
 @router.delete("/products/{product_id}/permanent")
 def delete_product_permanently(product_id: int, request: Request, db: Session = Depends(get_db)):
     """
-    Permanently delete a product created by mistake, with its questions, recipe,
-    executive assignments and any (empty) report, in one transaction.
+    Permanently delete a product created by mistake, in one transaction, with everything
+    that belongs only to it: survey questions, executive assignments, (empty) reports,
+    survey rounds, recipe versions, its own recipe standards, recipe attachments, and
+    action plans with their members. Nothing of it is left pointing to a deleted product.
 
     Safety rules:
       - it must be deactivated first (two deliberate steps);
       - it must have NO surveys: collected answers, recordings and reports are never
         destroyed. A product with surveys stays deactivated instead.
+    Standards that apply to a whole category or to all products are kept (they are not
+    this product's own).
     """
-    from app.database.models import ConsolidatedReport, ProductAssignment
+    from app.database.models import (
+        ActionPlan,
+        ActionPlanMember,
+        ConsolidatedReport,
+        Project,
+        ProductAssignment,
+        ProductCheck,
+        RecipeAttachment,
+        RecipeStandard,
+        RecipeVersion,
+        SurveyRound,
+    )
 
     product = _get_or_404(db, Product, product_id, "Product")
     if product.is_active:
@@ -681,17 +770,59 @@ def delete_product_permanently(product_id: int, request: Request, db: Session = 
             ),
         )
     name = product.name
+    # Admins are told about the delete if they could see the product (it had started a round);
+    # checked now, because its rounds are deleted below.
+    from app.services.product_access import started_product_ids
+
+    was_started = product.id in started_product_ids(db)
+    # Attachment files are removed from disk only after the database delete succeeds.
+    attachment_files = [a.stored_path for a in db.query(RecipeAttachment).filter(RecipeAttachment.product_id == product.id)]
+
+    def _gone(model, *conditions) -> int:
+        return db.query(model).filter(*conditions).delete(synchronize_session=False)
+
     try:
-        questions = db.query(SurveyQuestion).filter(SurveyQuestion.product_id == product.id).delete(synchronize_session=False)
-        db.query(ProductAssignment).filter(ProductAssignment.product_id == product.id).delete(synchronize_session=False)
-        db.query(ConsolidatedReport).filter(ConsolidatedReport.product_id == product.id).delete(synchronize_session=False)
-        db.delete(product)  # the recipe is stored on the product row
+        plan_ids = [pid for (pid,) in db.query(ActionPlan.id).filter(ActionPlan.product_id == product.id)]
+        removed = {
+            "questions": _gone(SurveyQuestion, SurveyQuestion.product_id == product.id),
+            "action_plan_members": _gone(ActionPlanMember, ActionPlanMember.action_plan_id.in_(plan_ids)) if plan_ids else 0,
+            "action_plans": _gone(ActionPlan, ActionPlan.product_id == product.id),
+            "assignments": _gone(ProductAssignment, ProductAssignment.product_id == product.id),
+            "reports": _gone(ConsolidatedReport, ConsolidatedReport.product_id == product.id),
+            "rounds": _gone(SurveyRound, SurveyRound.product_id == product.id),
+            "recipe_versions": _gone(RecipeVersion, RecipeVersion.product_id == product.id),
+            "recipe_standards": _gone(RecipeStandard, RecipeStandard.product_id == product.id),
+            "recipe_attachments": _gone(RecipeAttachment, RecipeAttachment.product_id == product.id),
+            "projects": _gone(Project, Project.product_id == product.id),
+            # Product verification of this product's (already deleted) surveys
+            "product_checks": _gone(ProductCheck, ProductCheck.selected_product_id == product.id),
+        }
+        # Checks of other surveys that named this product: they no longer point to it.
+        db.query(ProductCheck).filter(ProductCheck.detected_product_id == product.id).update(
+            {ProductCheck.detected_product_id: None}, synchronize_session=False)
+        db.query(ProductCheck).filter(ProductCheck.corrected_product_id == product.id).update(
+            {ProductCheck.corrected_product_id: None}, synchronize_session=False)
+        db.delete(product)  # the recipe itself is stored on the product row
         db.commit()
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
+        # Something outside the app still points to this product (e.g. a foreign key made in MySQL Workbench)
+        import logging
+
+        logging.getLogger(__name__).warning("Product %s not deleted, still referenced: %s", product_id, e.orig)
         raise HTTPException(status_code=409, detail=f"{name} is still referenced by other records, so it was not deleted.")
-    _tell_admins(db, request, "product", "deleted", name, product_id=product_id)
-    return {"id": product_id, "deleted": True, "questions_deleted": questions, "message": f"{name} was permanently deleted."}
+    for key in attachment_files:  # best effort: the database rows are already gone
+        try:
+            from app.services.storage import get_storage
+
+            path = get_storage().resolve(key)
+            if path is not None and path.exists():
+                path.unlink()
+        except Exception:  # noqa: BLE001 (a leftover file never undoes the delete)
+            pass
+    _tell_admins(db, request, "product", "deleted", name, started=was_started, product_id=product_id)
+    return {"id": product_id, "deleted": True, "questions_deleted": removed["questions"], "removed": removed,
+            "message": f"{name} was permanently deleted."}
 
 
 # ============================================================

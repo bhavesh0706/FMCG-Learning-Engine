@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.api.ownership import account
 from app.api.auth import (
     _parse_identifier,
     _user_out,
@@ -138,6 +139,7 @@ def save_user_products(user_id: int, body: ProductIds, request: Request, db: Ses
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown product id(s): {sorted(unknown)}")
     before = set(assignments_for_user(db, user_id))
+    _not_planned(db, set(body.product_ids) ^ before)
     try:
         saved = set_user_products(db, user_id, body.product_ids)  # live rounds only
     except AssignmentError as e:
@@ -149,6 +151,20 @@ def save_user_products(user_id: int, body: ProductIds, request: Request, db: Ses
     if added:
         notify_product_assigned(db, {user_id: added}, _admin_name(request))
     return {"user_id": user_id, "product_ids": saved}
+
+
+PROJECT_TEAM = ("The team of a survey with survey plans is allocated in its project: Projects → the project → "
+                "Survey plan → Team. (It can't also be changed here.)")
+
+
+def _not_planned(db: Session, product_ids) -> None:
+    """A survey that has survey plans is staffed only through its project's plans (one place)."""
+    from app.database.models import ActionPlan
+
+    for pid in product_ids or []:
+        r = current_round_of(db, pid)
+        if r is not None and db.query(ActionPlan.id).filter(ActionPlan.round_id == r.id).first():
+            raise HTTPException(status_code=409, detail={"code": "allocate_in_project", "message": PROJECT_TEAM})
 
 
 def _started_product_or_404(db: Session, product_id: int) -> Product:
@@ -183,6 +199,7 @@ def save_product_executives(product_id: int, body: UserIds, request: Request, db
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown user id(s): {sorted(unknown)}")
     before = set(assignees_for_product(db, product_id))
+    _not_planned(db, [product_id])
     try:
         saved = set_product_users(db, product_id, body.user_ids)  # the live round's people
     except AssignmentError as e:
@@ -291,6 +308,16 @@ class UserUpdate(BaseModel):
 @router.put("/users/{user_id}")
 def update_user(user_id: int, body: UserUpdate, request: Request, db: Session = Depends(get_db)):
     user = _member_or_404(db, user_id)
+    # Never lock the team out: an admin can't disable or demote themselves, and the last
+    # active admin can't be disabled or demoted by anyone.
+    disabling = body.is_active is False and user.is_active
+    demoting = body.role is not None and body.role != user.role and user.role == "admin"
+    if user.role == "admin" and (disabling or demoting):
+        if user.id == account(request).get("id"):
+            raise HTTPException(status_code=400, detail="You can't disable or change the role of your own account. Ask another admin.")
+        others = db.query(User).filter(User.role == "admin", User.is_active == 1, User.id != user.id).count()
+        if others == 0:
+            raise HTTPException(status_code=400, detail="This is the last active admin: add or reactivate another admin first.")
     tracked = ("name", "role", "is_active", "can_view_history", "age", "gender")
     before = {k: getattr(user, k) for k in tracked}
     if body.role is not None and body.role != user.role:

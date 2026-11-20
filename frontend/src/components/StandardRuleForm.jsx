@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { addStandard, changeStandard, errorText } from "../services/nextApi";
 import { getCategories } from "../services/feedbackApi";
+import Select from "./Select";
 
 /*
   One recipe standard rule: add or edit (services/recipe_tools.py checks it).
@@ -72,9 +73,9 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
     <div className="std-form">
       <input className="input" placeholder="Rule name, e.g. Cardamom at most ₹2,500/kg" value={f.name} aria-label="Rule name"
         onChange={(e) => setF({ ...f, name: e.target.value })} />
-      <select className="input" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} aria-label="Rule type">
+      <Select className="input" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} aria-label="Rule type">
         {Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-      </select>
+      </Select>
       {NEEDS_INGREDIENT.includes(f.kind) && (
         <input className="input" placeholder="Ingredient, e.g. cardamom powder" value={f.ingredient} aria-label="Ingredient"
           onChange={(e) => setF({ ...f, ingredient: e.target.value })} />
@@ -88,11 +89,11 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
           aria-label={isCost ? "Max ₹ per kg" : "Max %"} onChange={(e) => setF({ ...f, max_value: e.target.value })} />
       )}
       {!productId && (
-        <select className="input" value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} aria-label="Applies to">
+        <Select className="input" value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} aria-label="Applies to">
           <option value="">Applies to…</option>
           <option value="all">All products</option>
           {categories.map((c) => <option key={c.id} value={c.id}>Only {c.name}</option>)}
-        </select>
+        </Select>
       )}
       <button type="button" className="btn btn-primary btn-sm" disabled={busy || f.name.trim().length < 3} onClick={save}>
         {busy ? "Saving…" : rule ? "Save rule" : productId ? "Add product rule" : "Add rule"}

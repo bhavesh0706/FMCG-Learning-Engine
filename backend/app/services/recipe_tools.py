@@ -29,6 +29,55 @@ def _number(value) -> Optional[float]:
     return float(m.group()) if m else None
 
 
+# ---------------------------------------------------------------- batch weight
+# The weighed ingredients must add up to exactly the batch size (to the gram): a 100 kg
+# batch is 100 kg of ingredients, not 99.5 kg and not 100.1 kg.
+_BATCH_UNITS = {"kg": 1.0, "kgs": 1.0, "kilo": 1.0, "kilos": 1.0, "kilogram": 1.0, "kilograms": 1.0,
+                "g": 0.001, "gm": 0.001, "gms": 0.001, "gram": 0.001, "grams": 0.001,
+                "t": 1000.0, "ton": 1000.0, "tons": 1000.0, "tonne": 1000.0, "tonnes": 1000.0,
+                "quintal": 100.0, "quintals": 100.0, "l": 1.0, "ltr": 1.0, "litre": 1.0, "liter": 1.0}
+
+
+def batch_weight_kg(batch_size) -> Optional[float]:
+    """The batch weight from its text: the first number with a weight unit
+    ("100 kg batch = 500 bottles" -> 100; "1.5 tonnes" -> 1500). None if there is none."""
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([a-z]+)", str(batch_size or "").lower().replace(",", "")):
+        if m.group(2) in _BATCH_UNITS:
+            value = float(m.group(1)) * _BATCH_UNITS[m.group(2)]
+            return value if value > 0 else None
+    return None
+
+
+def batch_check(recipe: Optional[dict]) -> dict:
+    """Do the weighed ingredients add up to exactly the batch size (to the gram)?"""
+    recipe = recipe or {}
+    batch = batch_weight_kg(recipe.get("batch_size"))
+    grams = 0
+    weighed = False
+    for ing in recipe.get("ingredients") or []:
+        if not str(ing.get("name") or "").strip():
+            continue
+        qty, unit = _number(ing.get("quantity")), str(ing.get("unit") or "").strip().lower()
+        if qty is not None and unit in TO_KG:
+            grams += round(qty * TO_KG[unit] * 1000, 3)
+            weighed = True
+    total = round(grams) / 1000  # whole grams: no floating-point dust (0.1 + 0.2)
+    if batch is None or not weighed:
+        return {"checked": False, "batch_kg": batch, "total_kg": total if weighed else None, "ok": True, "message": ""}
+    diff = round(total - batch, 3)
+    ok = diff == 0
+    if ok:
+        message = f"Ingredients total {total:g} kg: exactly the {batch:g} kg batch."
+    elif diff < 0:
+        message = (f"Ingredients total {total:g} kg, {-diff:g} kg less than the {batch:g} kg batch. "
+                   f"The ingredients must add up to exactly {batch:g} kg: add {-diff:g} kg, or change the batch size.")
+    else:
+        message = (f"Ingredients total {total:g} kg, {diff:g} kg more than the {batch:g} kg batch. "
+                   f"The ingredients must add up to exactly {batch:g} kg: remove {diff:g} kg, or change the batch size.")
+    return {"checked": True, "batch_kg": batch, "total_kg": total, "difference_kg": diff,
+            "short_kg": max(0.0, -diff), "over_kg": max(0.0, diff), "ok": ok, "message": message}
+
+
 def costing(recipe: Optional[dict]) -> dict:
     """Per-ingredient Usage % and Cost in Use, and the recipe's cost per kg."""
     ingredients = (recipe or {}).get("ingredients") or []
@@ -59,6 +108,7 @@ def costing(recipe: Optional[dict]) -> dict:
         "ingredients": rows,
         "cost_per_kg": round(sum(known), 2) if known else None,
         "batch_kg": round(total_kg, 3) if total_kg else None,
+        "batch_check": batch_check(recipe),
         # Only when some weighed ingredient has a cost (no misleading "₹0" batch)
         "batch_cost": (round(sum(r["cost_per_kg"] * kg[i] for i, r in enumerate(rows) if i in kg and r["cost_per_kg"] is not None), 2)
                        if any(i in kg and r["cost_per_kg"] is not None for i, r in enumerate(rows)) else None),

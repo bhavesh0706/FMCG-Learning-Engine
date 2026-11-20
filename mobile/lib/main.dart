@@ -8,7 +8,12 @@ import 'screens/home_screens.dart';
 import 'screens/notifications_screen.dart';
 import 'screens/next_update_screens.dart' show ReportStatusCard;
 import 'screens/onboarding_screens.dart';
+import 'screens/sync_screen.dart';
+import 'widgets/design.dart';
+import 'widgets/protected_recording.dart';
 import 'services/api_service.dart';
+import 'services/connectivity_service.dart';
+import 'services/offline_catalog.dart';
 import 'services/notification_service.dart';
 import 'services/recording_store.dart';
 import 'services/session.dart';
@@ -19,6 +24,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppProfile.load();
   await Session.load();
+  // Offline mode (survey persons): network changes start uploads and refresh the offline copy.
+  await ConnectivityService.start();
+  ConnectivityService.onReconnect = () async {
+    if (Session.offlineMode.value) await Session.restoreOnline();
+    await SurveyQueue.process(includeFailed: false);
+    await OfflineCatalog.refreshInBackground();
+  };
   SurveyQueue.load(); // also resumes any uploads left from last time
   // Surveys from the server (web, other phones); the organization has no survey history.
   if (Session.signedIn && !Session.isClient && !Session.mustChangePassword) ServerHistory.refresh();
@@ -28,6 +40,11 @@ Future<void> main() async {
 /* ============================================================
    Colours (same palette as the web app)
    ============================================================ */
+
+/// Fonts of the web app (assets/fonts): Figtree for text, Bricolage Grotesque for
+/// headings and big numbers.
+const kBodyFont = 'Figtree';
+const kDisplayFont = 'Bricolage Grotesque';
 
 class AppColors {
   AppColors._();
@@ -109,15 +126,26 @@ ThemeData buildAppTheme(bool dark) {
     onSurface: AppColors.ink,
     error: AppColors.neg,
   );
-  final base = ThemeData(useMaterial3: true, colorScheme: scheme, scaffoldBackgroundColor: AppColors.bg);
+  final base = ThemeData(useMaterial3: true, colorScheme: scheme, scaffoldBackgroundColor: AppColors.bg, fontFamily: kBodyFont);
+  final text = base.textTheme.apply(bodyColor: AppColors.ink, displayColor: AppColors.ink);
+  TextStyle? display(TextStyle? t) => t?.copyWith(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, letterSpacing: -0.3);
   final theme = base.copyWith(
-    textTheme: base.textTheme.apply(bodyColor: AppColors.ink, displayColor: AppColors.ink),
+    textTheme: text.copyWith(
+      displayLarge: display(text.displayLarge),
+      displayMedium: display(text.displayMedium),
+      displaySmall: display(text.displaySmall),
+      headlineLarge: display(text.headlineLarge),
+      headlineMedium: display(text.headlineMedium),
+      headlineSmall: display(text.headlineSmall),
+      titleLarge: display(text.titleLarge),
+    ),
     dividerColor: AppColors.line,
     appBarTheme: AppBarTheme(
       backgroundColor: AppColors.bg,
       foregroundColor: AppColors.ink,
       surfaceTintColor: Colors.transparent,
       elevation: 0,
+      titleTextStyle: TextStyle(fontFamily: kDisplayFont, fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.ink),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
@@ -126,7 +154,7 @@ ThemeData buildAppTheme(bool dark) {
         minimumSize: const Size(0, 40),
         textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -136,7 +164,7 @@ ThemeData buildAppTheme(bool dark) {
         side: BorderSide(color: AppColors.line),
         textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
         padding: const EdgeInsets.symmetric(horizontal: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     ),
     // Size standard: medium buttons are 40 high (small 32 via styleFrom); Flutter still
@@ -149,9 +177,9 @@ ThemeData buildAppTheme(bool dark) {
       fillColor: AppColors.surface,
       labelStyle: TextStyle(color: AppColors.muted),
       hintStyle: TextStyle(color: AppColors.muted),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: AppColors.line)),
-      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: AppColors.line)),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: AppColors.brand, width: 2)),
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: AppColors.line)),
+      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: AppColors.line)),
+      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: AppColors.brand, width: 2)),
     ),
     chipTheme: ChipThemeData(
       backgroundColor: AppColors.surface,
@@ -312,12 +340,15 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   }
 
   Future<void> _refreshAccount() async {
+    OfflineCatalog.loadMeta();
+    if (Session.offlineMode.value) await Session.restoreOnline(); // signed in offline: try the server
     await Session.refreshMe();
     await Session.refreshStats();
     if (Session.canViewHistory) ServerHistory.refresh();
     SurveyQueue.reconcileWithServer(); // drop surveys deleted on the server
     AppProfile.refreshRecentProducts(); // drop products the admin gave to someone else
     SurveyQueue.process(); // resume uploads and running analyses
+    OfflineCatalog.refreshInBackground(); // keep the offline copy of assignments fresh
   }
 
   void _onUserChanged() {
@@ -360,34 +391,32 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
         titleSpacing: 16,
         title: Row(
           children: [
-            Container(
-              width: 32,
-              height: 32,
-              decoration: BoxDecoration(
-                color: AppColors.accent,
-                borderRadius: BorderRadius.circular(9),
-              ),
-              child: Icon(Icons.play_arrow_rounded, color: AppColors.brandDark, size: 20),
-            ),
+            // The application logo (assets/logo.png)
+            Image.asset('assets/logo.png', width: 32, height: 32),
             const SizedBox(width: 12),
             const Flexible(
               child: Text(
                 'FMCG Field Survey',
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: -0.2),
+                style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, letterSpacing: -0.2, color: Colors.white),
               ),
             ),
           ],
         ),
         actions: const [
+          SyncStatusButton(), // offline surveys and sync dashboard
           NotificationBellButton(),
           SizedBox(width: 6),
         ],
       ),
       // IndexedStack keeps each tab's scroll position when switching.
-      body: IndexedStack(
-        index: allowed ? _tab : 0,
+      body: Column(
         children: [
+          const OfflineBanner(),
+          Expanded(
+            child: IndexedStack(
+              index: allowed ? _tab : 0,
+              children: [
           MobileHomePage(
             onOpenHistory: () {
               ServerHistory.refresh();
@@ -399,6 +428,9 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           ),
           // History only for executives an admin has allowed.
           if (allowed) const MobileHistoryPage() else const SizedBox.shrink(),
+              ],
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: ValueListenableBuilder<List<QueuedSurvey>>(
@@ -1012,7 +1044,7 @@ class _SectionHeader extends StatelessWidget {
       children: [
         Text(
           title,
-          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700),
         ),
         if (count != null) ...[
           const SizedBox(width: 8),
@@ -1574,57 +1606,21 @@ class _HistoryStats extends StatelessWidget {
     final avg = rated.isEmpty ? null : rated.reduce((a, b) => a + b) / rated.length;
     final totalMinutes = records.fold<double>(0, (sum, r) => sum + r.durationSeconds) / 60;
 
-    Widget stat(String label, String value, {Widget? trailing}) {
-      return Expanded(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  Flexible(
-                    child: Text(
-                      value,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                    ),
-                  ),
-                  if (trailing != null) ...[const SizedBox(width: 4), trailing],
-                ],
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.line),
+    return KpiGrid(cards: [
+      KpiCard(label: 'Reviews', icon: Icons.rate_review_outlined, value: '${records.length}'),
+      KpiCard(
+        label: 'Avg rating',
+        icon: Icons.star_outline_rounded,
+        tone: KpiTone.act,
+        value: avg == null ? '—' : avg.toStringAsFixed(1),
       ),
-      child: IntrinsicHeight(
-        child: Row(
-          children: [
-            stat('Reviews', '${records.length}'),
-            VerticalDivider(width: 1, color: AppColors.line),
-            stat(
-              'Avg rating',
-              avg == null ? '—' : avg.toStringAsFixed(1),
-              trailing: avg == null
-                  ? null
-                  : const Icon(Icons.star_rounded, size: 20, color: AppColors.gold),
-            ),
-            VerticalDivider(width: 1, color: AppColors.line),
-            stat('Minutes', totalMinutes < 1 ? '<1' : totalMinutes.round().toString()),
-          ],
-        ),
+      KpiCard(
+        label: 'Minutes recorded',
+        icon: Icons.timer_outlined,
+        tone: KpiTone.teal,
+        value: totalMinutes < 1 ? '<1' : totalMinutes.round().toString(),
       ),
-    );
+    ]);
   }
 }
 
@@ -1910,7 +1906,7 @@ class _HistoryEmpty extends StatelessWidget {
             child: Icon(Icons.history_rounded, size: 24, color: AppColors.brand),
           ),
           const SizedBox(height: 16),
-          const Text('No feedback yet', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const Text('No feedback yet', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 6),
           Text(
             'Analyze your first customer review and it will show up here.',
@@ -2039,9 +2035,10 @@ class _DetailBody extends StatelessWidget {
         Align(alignment: Alignment.centerLeft, child: TonePill(tone: record.tone)),
         if (record.id > 0) ...[
           const SizedBox(height: 16),
-          MediaPlayerCard(
+          // Encrypted: plays only for an authorised admin, after the product passkey.
+          ProtectedRecording(
             key: ValueKey('media-${record.id}'),
-            url: ApiService().mediaUrl(record.id),
+            feedbackId: record.id,
             isVideo: !record.isAudio,
             durationHint: record.durationSeconds,
           ),
@@ -2461,7 +2458,7 @@ class _DetailHeading extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(top: 28, bottom: 10),
-      child: Text(text, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+      child: Text(text, style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700)),
     );
   }
 }

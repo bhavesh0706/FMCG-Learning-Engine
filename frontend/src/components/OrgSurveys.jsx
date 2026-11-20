@@ -91,10 +91,13 @@ function Detail({ id, onChanged, onFeedback, compact = false }) {
   );
 }
 
+const PAGE = 20; // surveys shown at a time
+
 export default function OrgSurveys() {
   const [filter, setFilter] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(null); // survey opened as a full page
+  const [shown, setShown] = useState(PAGE); // the list grows by PAGE with "Show more"
   const [state, setState] = useState({ loading: true, error: "", surveys: [], counts: {} });
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true }));
@@ -106,6 +109,7 @@ export default function OrgSurveys() {
     }
   }, [filter]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setShown(PAGE); }, [filter, q]);
   if (page) return <SurveyPage id={page} onBack={() => setPage(null)} onChanged={load} />;
   const needle = q.trim().toLowerCase();
   const rows = state.surveys.filter((s) => !needle || [s.product_name, s.executive_name, s.customer, s.city, s.country].join(" ").toLowerCase().includes(needle));
@@ -130,8 +134,12 @@ export default function OrgSurveys() {
       {state.loading ? <p className="muted">Loading…</p> : rows.length === 0 ? (
         <div className="panel pc-empty"><strong>No surveys</strong></div>
       ) : (
+        <>
+        <p className="muted small pc-count">
+          Showing {Math.min(shown, rows.length)} of {rows.length} {rows.length === 1 ? "survey" : "surveys"}, newest first
+        </p>
         <div className="pc-list">
-          {rows.map((s) => (
+          {rows.slice(0, shown).map((s) => (
             <article key={s.response_id} className="panel pc-card">
               <header className="pc-head">
                 <div>
@@ -147,6 +155,14 @@ export default function OrgSurveys() {
             </article>
           ))}
         </div>
+        {rows.length > shown && (
+          <div className="pc-more">
+            <button type="button" className="btn btn-secondary" onClick={() => setShown((n) => n + PAGE)}>
+              Show {Math.min(PAGE, rows.length - shown)} more
+            </button>
+          </div>
+        )}
+        </>
       )}
     </section>
   );

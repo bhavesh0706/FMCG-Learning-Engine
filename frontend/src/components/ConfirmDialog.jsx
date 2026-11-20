@@ -12,6 +12,8 @@ import { useEffect, useId, useRef, useState } from "react";
         danger: true,
       });
 
+  An alert with a single button: pass cancelLabel: null (it resolves true on OK).
+
   <ConfirmHost /> must be rendered once (App.jsx does this).
 */
 
@@ -59,7 +61,7 @@ function ConfirmDialogView({
   const confirmRef = useRef(null);
 
   // Destructive actions start on "Cancel", so pressing Enter can't delete by accident.
-  const panelRef = useFocusTrap({ initialFocus: danger ? cancelRef : confirmRef });
+  const panelRef = useFocusTrap({ initialFocus: danger && cancelLabel !== null ? cancelRef : confirmRef });
 
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose(false);
@@ -96,9 +98,11 @@ function ConfirmDialogView({
           </p>
         )}
         <div className="dialog-actions">
-          <button ref={cancelRef} type="button" className="btn btn-secondary" onClick={() => onClose(false)}>
-            {cancelLabel}
-          </button>
+          {cancelLabel !== null && (
+            <button ref={cancelRef} type="button" className="btn btn-secondary" onClick={() => onClose(false)}>
+              {cancelLabel}
+            </button>
+          )}
           <button
             ref={confirmRef}
             type="button"

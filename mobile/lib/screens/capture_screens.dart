@@ -67,7 +67,29 @@ class RecordedMedia {
     this.peakDb,
     this.source = 'recorded',
     this.sizeBytes,
+    this.keyId,
+    this.wrappedKey,
   });
+
+  /// After sealing (services/recording_vault.dart): [path] is the encrypted file in private
+  /// storage and these hold its data key, wrapped with the server's public key.
+  final int? keyId;
+  final String? wrappedKey;
+
+  bool get isSealed => keyId != null && wrappedKey != null;
+
+  RecordedMedia sealedAs({required String path, required int keyId, required String wrappedKey, required int bytes}) =>
+      RecordedMedia(
+        path: path,
+        name: name,
+        kind: kind,
+        durationSeconds: durationSeconds,
+        peakDb: peakDb,
+        source: source,
+        sizeBytes: bytes,
+        keyId: keyId,
+        wrappedKey: wrappedKey,
+      );
 
   final String path;
   final String name;
@@ -848,7 +870,7 @@ class _ReviewRecordingScreenState extends State<ReviewRecordingScreen> {
                         children: [
                           Text(
                             _isVideo ? 'Video recording' : 'Voice recording',
-                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                            style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -1110,7 +1132,7 @@ class _AnalyzeScreenState extends State<AnalyzeScreen> {
                 Text(
                   _stage == _Stage.uploading ? 'Uploading… $pct%' : 'Transcribing and analyzing',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+                  style: const TextStyle(fontFamily: kDisplayFont, fontSize: 21, fontWeight: FontWeight.w800),
                 ),
                 const SizedBox(height: 8),
                 Text(

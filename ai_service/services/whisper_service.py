@@ -114,6 +114,26 @@ BRAND_HINTS = [
 HOTWORDS = ", ".join(BRAND_HINTS)
 
 
+# A short sentence in the language's own script, given to Whisper as the start of the
+# conversation. Without it the "small" model often drifts into English half-way through
+# Indian-language speech, or writes only punctuation ("। । ।") for the last sentences,
+# so whole parts of the feedback were lost before translation.
+SCRIPT_PROMPTS = {
+    "hi": "यह ग्राहक की प्रतिक्रिया हिंदी में है।",
+    "mr": "हा ग्राहकाचा अभिप्राय मराठीत आहे.",
+    "gu": "આ ગ્રાહકનો પ્રતિસાદ ગુજરાતીમાં છે.",
+    "ta": "இது தமிழில் வாடிக்கையாளர் கருத்து.",
+    "te": "ఇది తెలుగులో కస్టమర్ అభిప్రాయం.",
+    "bn": "এটি বাংলায় গ্রাহকের মতামত।",
+    "kn": "ಇದು ಕನ್ನಡದಲ್ಲಿ ಗ್ರಾಹಕರ ಅಭಿಪ್ರಾಯ.",
+    "ml": "ഇത് മലയാളത്തിലുള്ള ഉപഭോക്താവിന്റെ അഭിപ്രായമാണ്.",
+    "pa": "ਇਹ ਪੰਜਾਬੀ ਵਿੱਚ ਗਾਹਕ ਦੀ ਰਾਏ ਹੈ।",
+    "ur": "یہ اردو میں گاہک کی رائے ہے۔",
+    "or": "ଏହା ଓଡ଼ିଆରେ ଗ୍ରାହକଙ୍କ ମତାମତ।",
+    "ne": "यो नेपालीमा ग्राहकको प्रतिक्रिया हो।",
+}
+
+
 # ---------------------------------------------------------------------------
 # Language detection
 # ---------------------------------------------------------------------------
@@ -405,7 +425,14 @@ def retry_transcription(audio, task: str) -> list[dict]:
 
 
 def _run(audio, language: str, task: str, use_hints: bool = True) -> list[dict]:
+    # The brand hints are English words. For speech in another language they pull Whisper
+    # into English after a few seconds (and end in "। । ।"), so there the native-script
+    # starting hint (SCRIPT_PROMPTS) is used instead.
+    if task == "transcribe" and SCRIPT_PROMPTS.get(language):
+        use_hints = False
     segments = _transcribe_once(audio, language, task, HOTWORDS if use_hints else None)
+    if task == "transcribe" and language:
+        segments = _repair_segments(audio, segments, language)
     if use_hints and HOTWORDS and looks_like_hint_echo(segments):
         print("Transcript repeated the brand hints instead of real speech; redoing without hints.")
         segments = _transcribe_once(audio, language, task, None)
@@ -417,20 +444,22 @@ def _run(audio, language: str, task: str, use_hints: bool = True) -> list[dict]:
     return kept
 
 
-def _transcribe_once(audio, language: str, task: str, hotwords) -> list[dict]:
+def _transcribe_once(audio, language: str, task: str, hotwords, vad: bool = True) -> list[dict]:
     global _last_language
     segments, info = model.transcribe(
         audio,
         language=language,          # fixed, so Whisper doesn't re-guess per window
         task=task,                  # "transcribe" (same language) or "translate" (to English)
         beam_size=5,
-        vad_filter=True,
+        vad_filter=vad,
         condition_on_previous_text=False,  # stops repeated / invented lines
         hotwords=hotwords or None,  # brand names to listen for
+        # Keeps Whisper writing the speaker's own language and script (see SCRIPT_PROMPTS).
+        initial_prompt=SCRIPT_PROMPTS.get(language) if task == "transcribe" else None,
     )
     results = []
     for s in segments:
-        text = s.text.strip()
+        text = s.text.replace("\ufffd", "").strip()  # "�": a broken character, never speech
         if not text:
             continue
         results.append({
@@ -445,6 +474,85 @@ def _transcribe_once(audio, language: str, task: str, hotwords) -> list[dict]:
     if task == "transcribe":
         _last_language = language or getattr(info, "language", None)
     return results
+
+
+def _has_letters(text: str) -> bool:
+    return any(ch.isalpha() for ch in text or "")
+
+
+def _in_script_share(text: str, lang: str) -> float:
+    """Share of the letters written in the language's own script (1.0 when it has none)."""
+    script = LANGUAGE_SCRIPT.get(lang)
+    letters = [ch for ch in text or "" if ch.isalpha()]
+    if not script or not letters:
+        return 1.0
+    return sum(1 for ch in letters if _script_of(ch) == script) / len(letters)
+
+
+def _segment_broken(seg: dict, lang: str) -> str:
+    """Why a transcribed line can't be trusted ("" when it is fine)."""
+    text = str(seg.get("text", ""))
+    if not _has_letters(text):
+        return "no words"  # e.g. "। । । ।" or "....": speech that wasn't recognised
+    if LANGUAGE_SCRIPT.get(lang) and _in_script_share(text, lang) < 0.3:
+        return "drifted out of the language"  # e.g. Whisper switched to English
+    return ""
+
+
+def _trustworthy_redo(seg: dict, lang: str) -> bool:
+    """A re-transcribed line is used only if it is real, confident speech, not an echo of
+    the starting hint (on a few seconds of audio Whisper sometimes just repeats it)."""
+    from difflib import SequenceMatcher
+
+    if _segment_broken(seg, lang):
+        return False
+    if seg.get("avg_logprob", 0) < -1.0 or seg.get("no_speech_prob", 0) > 0.6:
+        return False
+    text = str(seg.get("text", ""))
+    return SequenceMatcher(None, text, SCRIPT_PROMPTS.get(lang, "")).ratio() < 0.45
+
+
+def _repair_segments(audio, segments: list[dict], lang: str) -> list[dict]:
+    """
+    Lines that came out as punctuation only, or that drifted into another language,
+    are transcribed again on their own (with the language hint, a little audio either
+    side). Fixed lines replace them; lines with no words that can't be fixed are left
+    out, so nothing like "......" reaches the translation.
+    """
+    if not segments or not SCRIPT_PROMPTS.get(lang):
+        return segments
+    total = len(audio) / SAMPLE_RATE
+    out: list[dict] = []
+    repaired = dropped = 0
+    for seg in segments:
+        problem = _segment_broken(seg, lang)
+        if not problem:
+            out.append(seg)
+            continue
+        start = max(0.0, float(seg["start"]) - 0.3)
+        end = min(total, float(seg["end"]) + 0.3)
+        redo = []
+        if end - start >= 0.5:
+            piece = audio[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)]
+            try:
+                redo = _transcribe_once(piece, lang, "transcribe", None, vad=False)
+            except Exception as e:  # a repair attempt must never break the transcript
+                print(f"Re-transcribing {seg['start']}-{seg['end']}s failed: {e}")
+        redo = [r for r in redo if _trustworthy_redo(r, lang)]
+        if redo:
+            for r in redo:
+                r["start"] = round(start + r["start"], 2)
+                r["end"] = round(min(end, start + r["end"]), 2)
+            out.extend(redo)
+            repaired += 1
+        elif problem == "no words":
+            dropped += 1
+        else:
+            out.append(seg)  # e.g. a sentence really spoken in English: keep it
+    if repaired or dropped:
+        print(f"Transcript check ({LANGUAGE_NAMES.get(lang, lang)}): re-transcribed {repaired} line(s), "
+              f"left out {dropped} line(s) with no recognisable words.")
+    return out
 
 
 # Unicode ranges of the script each language is written in.
@@ -536,8 +644,13 @@ Language: {language}. The text may be written in {language} script or in English
 (romanized), and may mix in English words and brand names.
 
 Rules:
-- Translate the MEANING faithfully. Keep praise as praise and complaints as complaints.
-  Never add, remove or reverse a negation.
+- Translate the MEANING faithfully and completely: every detail the customer says
+  (numbers, durations, quantities, suggestions) must be in the English. Do not summarise.
+- The text comes from automatic speech recognition, so words can be misspelled by sound
+  (e.g. Hindi "साथ दिन" written for "सात दिन" = "seven days", "सुदार" for "सुधार" = "improvement").
+  Use the context to translate what the speaker meant.
+- Lines already in English: keep them as they are (fix only obvious recognition errors).
+- Keep praise as praise and complaints as complaints. Never add, remove or reverse a negation.
 - Keep brand and product names exactly as written.
 - Translate every line on its own; return exactly {count} translations, in order.
 - If a line is unclear, translate it as literally as you can. Never leave a line out.
@@ -558,7 +671,7 @@ def _llm_translate_batch(texts: list[str], lang: str) -> Optional[list[str]]:
         lines="\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts)),
     )
     try:
-        raw = ollama_service._call_ollama(
+        raw = ollama_service.call_llm(
             prompt=prompt,
             num_predict=min(4000, 80 * len(texts) + 120),
             temperature=0.1,

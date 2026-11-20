@@ -38,6 +38,7 @@ from app.api.product_feedback import _iso, round_report, round_report_is_stale, 
 from app.database.database import get_db
 from app.database.models import Category, Product, RecipeVersion, SurveyResponse, SurveyRound, User
 from app.services import rounds as R
+from app.services.recipe_versions import first_version
 from app.services.recipe_versions import changes_between, version_out
 
 router = APIRouter(prefix="/org", tags=["Super Admin portal"])
@@ -122,6 +123,7 @@ def _product_rows(db: Session, products: list[Product], viewer: str) -> list[dic
             "responses": sum(done.get(r.id, 0) for r in rs),
             "current_round": R.round_out(current, done.get(current.id, 0), viewer, reports.get(current.id)) if current else None,
             "previous_rating": reports[previous.id].overall_rating if previous and previous.id in reports else None,
+            "created_at": _iso(p.created_at),
         })
     return rows
 
@@ -173,7 +175,7 @@ def _updates(db: Session, viewer_user: Optional[User], viewer: str, limit: int =
                 "kind": "round_started",
                 "own": own,
                 "at": r.started_at,
-                "title": f"You started Round {r.number} of {name}" if own else f"{R.RESEARCH_TEAM} started Round {r.number} of {name}",
+                "title": f"You started Survey {r.number} of {name}" if own else f"{R.RESEARCH_TEAM} started Survey {r.number} of {name}",
                 "text": f"Recipe v{r.recipe_version} · {r.target} consumers"
                 + (f" · wanted by {r.due_date.strftime('%d %b %Y')}" if r.due_date else ""),
                 "product_id": r.product_id,
@@ -184,9 +186,9 @@ def _updates(db: Session, viewer_user: Optional[User], viewer: str, limit: int =
             report = reports.get(r.id)
             n = done.get(r.id, 0)
             if r.closed_reason == "ended":
-                title, text = f"{name}: Round {r.number} was ended", f"{n} of {r.target} consumers surveyed"
+                title, text = f"{name}: Survey {r.number} was ended", f"{n} of {r.target} consumers surveyed"
             else:
-                title = f"{name}: Round {r.number} report is ready" if report else f"{name}: Round {r.number} is complete"
+                title = f"{name}: Survey {r.number} report is ready" if report else f"{name}: Survey {r.number} is complete"
                 text = f"{n} consumers"
             if report and report.overall_rating:
                 text += f" · rating {report.overall_rating:.1f}★"
@@ -254,7 +256,8 @@ def overview(request: Request, db: Session = Depends(get_db)):
             "avg_rating": round(sum(ratings) / len(ratings), 1) if ratings else None,
             "open_rounds": sum(1 for r in rows if r["current_round"] and r["current_round"]["status"] == R.LIVE),
         },
-        "products": rows,
+        # The front page lists the 10 most recently added products (numbers above count all).
+        "products": sorted(rows, key=lambda r: (r["created_at"] or "", r["id"]), reverse=True)[:10],
         "updates": items[:4],
         "unread": sum(1 for e in items if e["unread"]),
     }
@@ -298,7 +301,7 @@ def product_detail(product_id: int, request: Request, db: Session = Depends(get_
             "category_name": _categories(db).get(product.category_id),
         },
         "recipe": product.recipe,
-        "latest_version": versions[0]["version"] if versions else (1 if product.recipe else None),
+        "latest_version": versions[0]["version"] if versions else (first_version(product) if product.recipe else None),
         "versions": versions,
         "rounds": rounds,
         "live_round": live,
@@ -324,7 +327,7 @@ def product_report(
         return {"product_id": product.id, "rounds": [], "round": None, "report": None, "updating": False, "pending": 0}
     selected = rounds[-1] if round_number is None else next((r for r in rounds if r["number"] == round_number), None)
     if selected is None:
-        raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
+        raise HTTPException(status_code=404, detail=f"Survey {round_number} not found.")
     report = round_report(db, selected["id"])
     pending = (
         db.query(SurveyResponse.id)
@@ -402,7 +405,7 @@ def compare_rounds(
     ra = next((r for r in rounds if r["number"] == a), None)
     rb = next((r for r in rounds if r["number"] == b), None)
     if ra is None or rb is None:
-        raise HTTPException(status_code=404, detail="Round not found.")
+        raise HTTPException(status_code=404, detail="Survey not found.")
     rep_a, rep_b = round_report(db, ra["id"]), round_report(db, rb["id"])
     na, nb = _numbers(rep_a), _numbers(rep_b)
     aa, ab = _aspects(rep_a), _aspects(rep_b)
@@ -453,6 +456,8 @@ class NewRound(BaseModel):
     target: Optional[int] = Field(default=None, ge=R.MIN_TARGET, le=R.MAX_TARGET)
     due_date: Optional[str] = Field(default=None, max_length=10)  # YYYY-MM-DD
     note: Optional[str] = Field(default=None, max_length=1000)
+    # Copy the previous round's action plans (teams, cities, targets); else start from the recipe plan
+    copy_plans: bool = True
 
 
 def start_round_for(db: Session, request: Request, product_id: int, body: NewRound) -> dict:
@@ -460,18 +465,24 @@ def start_round_for(db: Session, request: Request, product_id: int, body: NewRou
 
     product = _product_or_404(db, request, product_id)
     try:
+        previous = R.latest_round(db, product.id)
         r = R.start_round(db, product, account(request), body.recipe_version, body.target, body.due_date, body.note)
+        from app.services.action_plans import start_plans
+
+        if start_plans(db, product, r, previous, copy=body.copy_plans):
+            db.commit()
+            db.refresh(r)
     except R.StandardsNotMet as e:
         # Written directly: the audit middleware skips refused requests
         audit.record_from_request(request, action="round.blocked", status=409, target_type="product", target_id=product.id,
-                                  summary=f"Round not started for product #{product.id} ({product.name}): "
+                                  summary=f"Survey not started for product #{product.id} ({product.name}): "
                                           f"{len(e.failures)} recipe standard(s) not met",
                                   details={"recipe_version": e.version, "failed_standards": [f["name"] for f in e.failures]})
         raise HTTPException(status_code=409, detail={
             "code": "recipe_standards_not_met", "message": str(e), "recipe_version": e.version, "failed_standards": e.failures})
     except R.RoundError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
-    audit.note(request, summary=f"Started Round {r.number} of product #{product.id} ({product.name}) with recipe v{r.recipe_version}",
+    audit.note(request, summary=f"Started Survey {r.number} of product #{product.id} ({product.name}) with recipe v{r.recipe_version}",
                details={"round": r.number, "recipe_version": r.recipe_version, "target": r.target,
                         "due_date": _iso(r.due_date), "note": r.note})
     return {"round": R.round_out(r, 0, _role(request))}
@@ -483,14 +494,29 @@ def end_round_for(db: Session, request: Request, product_id: int, number: int) -
     product = _product_or_404(db, request, product_id)
     r = R.round_by_number(db, product_id, number)
     if r is None:
-        raise HTTPException(status_code=404, detail=f"Round {number} not found.")
+        raise HTTPException(status_code=404, detail=f"Survey {number} not found.")
     try:
         R.end_round(db, r)
     except R.RoundError as e:
         raise HTTPException(status_code=e.status, detail=str(e))
     R.notify_round_ended(db, product, r, account(request))
-    audit.note(request, summary=f"Ended Round {r.number} of product #{product.id} ({product.name})")
+    audit.note(request, summary=f"Ended Survey {r.number} of product #{product.id} ({product.name})")
     return {"round": R.round_out(r, R.done_counts(db, [r.id]).get(r.id, 0), _role(request))}
+
+
+def delete_round_for(db: Session, request: Request, product_id: int, number: int) -> dict:
+    from app.services import audit
+
+    product = _product_or_404(db, request, product_id)
+    r = R.round_by_number(db, product_id, number)
+    if r is None:
+        raise HTTPException(status_code=404, detail=f"Survey {number} not found.")
+    try:
+        R.delete_round(db, r)
+    except R.RoundError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    audit.note(request, summary=f"Deleted Survey {number} of product #{product.id} ({product.name}); it had no responses")
+    return {"deleted": number}
 
 
 @router.post("/products/{product_id}/rounds", status_code=201)
@@ -501,6 +527,12 @@ def start_round(product_id: int, body: NewRound, request: Request, db: Session =
 @router.post("/products/{product_id}/rounds/{number}/end")
 def end_round(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
     return end_round_for(db, request, product_id, number)
+
+
+@router.delete("/products/{product_id}/rounds/{number}")
+def delete_round(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
+    """A survey (round) started by mistake: the latest one, while it has no responses."""
+    return delete_round_for(db, request, product_id, number)
 
 
 # ============================================================

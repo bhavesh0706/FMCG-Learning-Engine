@@ -126,11 +126,50 @@ class ApiService {
     return FeedbackRecord.fromJson(Map<String, dynamic>.from(data));
   }
 
-  /// URL of the original video or audio, for a player or a download.
-  /// Players can't send headers, so the sign-in token goes in the address (recordings only).
-  String mediaUrl(int id) {
-    final token = Session.token;
-    return '${ApiConfig.baseUrl}/feedback/$id/video${token == null ? '' : '?token=${Uri.encodeQueryComponent(token)}'}';
+  /// Recordings are encrypted: an Admin given access to the product (or the Super Admin) enters
+  /// the product's recording passkey; the server checks it and returns a 10-minute playback link
+  /// for this recording only (backend api/recordings.py). Throws ApiException with the reason.
+  Future<({String url, bool isVideo})> authoriseRecording(int feedbackId, String passkey) async {
+    try {
+      final r = await _dio.post('/recordings/$feedbackId/authorise', data: {'passkey': passkey});
+      final d = r.data is Map ? Map<String, dynamic>.from(r.data as Map) : <String, dynamic>{};
+      return (url: '${ApiConfig.baseUrl}${d['stream_url']}', isVideo: d['kind'] == 'video');
+    } on DioException catch (e) {
+      final detail = e.response?.data is Map ? (e.response!.data as Map)['detail'] : null;
+      throw ApiException(detail is String ? detail : 'The recording could not be opened. Check your connection.');
+    }
+  }
+
+  /// Admin: whether the Super Admin sent me the recording passkey (one for all products).
+  Future<bool> recordingPasskeyWaiting() async {
+    try {
+      final d = await _getJson('/admin/recording-access');
+      return d is Map && d['passkey_waiting'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Super Admin: whether the organization's recording passkey (one for all products) is set.
+  /// null when it can't be checked (offline).
+  Future<bool?> orgPasskeySet() async {
+    try {
+      final d = await _getJson('/org/recording-passkey');
+      return d is Map ? d['has_passkey'] == true : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Admin: the recording passkey the Super Admin sent me, shown once (deleted on the server).
+  Future<String> revealPasskey() async {
+    try {
+      final r = await _dio.post('/admin/recording-access/reveal');
+      return '${(r.data as Map)['passkey']}';
+    } on DioException catch (e) {
+      final detail = e.response?.data is Map ? (e.response!.data as Map)['detail'] : null;
+      throw ApiException(detail is String ? detail : 'The passkey could not be shown.');
+    }
   }
 
   /// POST /video/upload

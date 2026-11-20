@@ -8,10 +8,15 @@ const api = axios.create({ baseURL: API_BASE_URL });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // POST /analysis/jobs -> { job_id, status, position }
-export async function startAnalysis(file, responseId, onProgress) {
+// `sealed` ({ keyId, wrappedKey }): the file is encrypted in the browser (services/recordingCrypto.js).
+export async function startAnalysis(file, responseId, onProgress, sealed = null) {
   const form = new FormData();
   form.append("file", file);
   if (responseId != null) form.append("response_id", String(responseId));
+  if (sealed?.wrappedKey) {
+    form.append("key_id", String(sealed.keyId));
+    form.append("wrapped_key", sealed.wrappedKey);
+  }
   const res = await api.post("/analysis/jobs", form, {
     onUploadProgress: (e) => {
       if (e.total && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));

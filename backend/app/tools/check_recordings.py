@@ -48,8 +48,8 @@ def main() -> None:
         if found:
             print(f"  e.g. #{found[0].id}: {Path(found[0].video_path.replace(chr(92), '/')).name}")
         if missing:
-            print("\nMissing recordings (first 15):")
-            for rec in missing[:15]:
+            print("\nMissing recordings (newest 15):")
+            for rec in sorted(missing, key=lambda r: r.id, reverse=True)[:15]:
                 name = Path(rec.video_path.replace("\\", "/")).name
                 print(f"  #{rec.id:<5} {rec.original_filename or name}   expected file name: {name}")
             print("\nCopy the 'uploads' folder (with its 'videos' and 'audio' folders) from the computer that "

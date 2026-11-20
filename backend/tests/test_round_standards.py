@@ -71,7 +71,7 @@ def test_three_failed_standards_block_the_round_and_nothing_is_created(client, d
     assert failed["Recipe at most 80/kg"]["actual"] == "₹84.14/kg" and failed["Recipe at most 80/kg"]["ingredient"] is None
     assert (failed["Sugar at most 5%"]["ingredient"], failed["Sugar at most 5%"]["expected"], failed["Sugar at most 5%"]["actual"]) == ("sugar", "at most 5%", "8.5%")
     assert _counts(db, lassi) == before, "no round, no notification, product unchanged"
-    assert db.query(AuditLog).filter(AuditLog.summary.like(f"Round not started for product #{lassi.id}%")).count() == 1
+    assert db.query(AuditLog).filter(AuditLog.summary.like(f"Survey not started for product #{lassi.id}%")).count() == 1
     shown = client.get(f"/org/products/{lassi.id}", headers=auth(org)).json()
     assert shown["can_start_round"] is False and len(shown["standards_failed"]) == 3
 
@@ -79,7 +79,9 @@ def test_three_failed_standards_block_the_round_and_nothing_is_created(client, d
 def test_the_round_starts_once_every_standard_is_met(client, db, org, lassi):
     _three_failing_rules(client, org, lassi)
     assert _start(client, org, lassi).status_code == 409
-    fixed = [(n, 3 if n == "Sugar (refined)" else q, 2400 if n == "Cardamom powder" else 40 if n == "Mango pulp, Alphonso" else c) for n, q, c in LASSI]
+    # Less sugar (8.5 -> 3 kg), made up with water so the recipe still weighs exactly the 100 kg batch.
+    fixed = [(n, 3 if n == "Sugar (refined)" else round(q + 5.5, 2) if n == "Potable water" else q,
+              2400 if n == "Cardamom powder" else 40 if n == "Mango pulp, Alphonso" else c) for n, q, c in LASSI]
     assert client.put(f"/products/{lassi.id}/recipe", headers=auth(org), json=_recipe(fixed)).status_code == 200
     assert client.get(f"/org/products/{lassi.id}", headers=auth(org)).json()["can_start_round"] is True
     r = _start(client, org, lassi)

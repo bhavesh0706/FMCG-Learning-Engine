@@ -1,17 +1,19 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../widgets/design.dart';
 import '../services/api_service.dart' show ApiException;
 import '../services/org_api.dart';
 import 'org_screens.dart';
 import 'report_screens.dart' show ToneBar;
-import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads;
+import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads, ActionPlansView;
+import '../widgets/search_dropdown.dart';
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
    ============================================================ */
 
-const _tabs = ['report', 'recipe', 'standards', 'questions', 'rounds', 'compare'];
+const _tabs = ['report', 'standards', 'recipe', 'questions', 'plans', 'rounds', 'compare'];
 
 class OrgProductPage extends StatefulWidget {
   const OrgProductPage({super.key, required this.productId, required this.name, this.initialTab = 'report'});
@@ -69,7 +71,7 @@ class _OrgProductPageState extends State<OrgProductPage> {
           bottom: const TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: [Tab(text: 'Report'), Tab(text: 'Recipe'), Tab(text: 'Standards'), Tab(text: 'Questions'), Tab(text: 'Rounds'), Tab(text: 'Compare')],
+            tabs: [Tab(text: 'Report'), Tab(text: 'Standards'), Tab(text: 'Recipe'), Tab(text: 'Questions'), Tab(text: 'Plans'), Tab(text: 'Surveys'), Tab(text: 'Compare')],
           ),
         ),
         body: _error != null && _detail == null
@@ -78,7 +80,6 @@ class _OrgProductPageState extends State<OrgProductPage> {
                 ? const Center(child: CircularProgressIndicator())
                 : TabBarView(children: [
                     _ReportTab(productId: widget.productId),
-                    _RecipeTab(productId: widget.productId, onSaved: _load),
                     // This product's recipe standards (results, add / edit / remove)
                     RefreshIndicator(
                       onRefresh: _load,
@@ -87,7 +88,9 @@ class _OrgProductPageState extends State<OrgProductPage> {
                         children: [RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true)],
                       ),
                     ),
+                    _RecipeTab(productId: widget.productId, onSaved: _load),
                     _QuestionsTab(productId: widget.productId),
+                    ActionPlansView(productId: widget.productId),
                     _RoundsTab(productId: widget.productId, detail: _detail!, onChanged: _load),
                     RoundCompareView(productId: widget.productId),
                   ]),
@@ -177,44 +180,43 @@ class _ReportTabState extends State<_ReportTab> {
           children: [
             if (n > 0) Padding(padding: const EdgeInsets.only(bottom: 10), child: ReportDownloads(productId: widget.productId, round: selected)),
             if (numbers.isNotEmpty)
-              DropdownButtonFormField<int>(
+              SearchDropdownField<int>(
                 isExpanded: true,
                 value: numbers.contains(selected) ? selected : numbers.first,
-                decoration: const InputDecoration(labelText: 'Round'),
+                decoration: const InputDecoration(labelText: 'Survey'),
                 items: [
                   for (final k in numbers)
                     DropdownMenuItem(
                       value: k,
-                      child: Text('Round $k · ${str(rounds[k]!['status']) == 'live' ? 'collecting' : 'completed'} · recipe v${intOf(rounds[k]!['recipe_version'])}'),
+                      child: Text('Survey $k · ${str(rounds[k]!['status']) == 'live' ? 'collecting' : 'completed'} · recipe v${intOf(rounds[k]!['recipe_version'])}'),
                     ),
                 ],
                 onChanged: (v) => setState(() => _round = v),
               ),
             if (data['updating'] == true) ...[
               const SizedBox(height: 10),
-              const Align(alignment: Alignment.centerLeft, child: Pill('Updating with the latest surveys…')),
+              const Align(alignment: Alignment.centerLeft, child: Pill('Updating with the latest responses…')),
             ],
             if (report.isEmpty)
               const EmptyNote(
                 icon: Icons.assessment_outlined,
-                title: 'No analyzed surveys yet',
-                text: 'The report appears after the first analyzed survey of this round.',
+                title: 'No analyzed responses yet',
+                text: 'The report appears after the first analyzed response of this survey.',
               )
             else ...[
               const SizedBox(height: 12),
-              Row(children: [
-                Expanded(child: StatBox(value: '$n', label: 'Consumers')),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: StatBox(
-                    value: '',
-                    label: 'Average rating',
-                    child: Row(children: [
-                      Text(ratingText(stats['overall_rating']), style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.ink)),
-                      const SizedBox(width: 6),
-                      RatingStars(rating: (numOrNull(stats['overall_rating']) ?? 0).toDouble(), size: 13),
-                    ]),
-                  ),
+              KpiGrid(cards: [
+                KpiCard(label: 'Consumers', icon: Icons.groups_outlined, tone: KpiTone.teal, value: '$n'),
+                KpiCard(
+                  label: 'Average rating',
+                  icon: Icons.star_outline_rounded,
+                  tone: KpiTone.act,
+                  valueWidget: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(ratingText(stats['overall_rating']),
+                        style: TextStyle(fontFamily: kDisplayFont, fontSize: 26, fontWeight: FontWeight.w800, height: 1.05, color: AppColors.ink)),
+                    const SizedBox(height: 4),
+                    RatingStars(rating: (numOrNull(stats['overall_rating']) ?? 0).toDouble(), size: 13),
+                  ]),
                 ),
               ]),
               const SizedBox(height: 8),
@@ -410,6 +412,54 @@ class _RecipeTab extends StatelessWidget {
 }
 
 /// Full-screen recipe editor; saving creates a new recipe version on the server.
+// ---------------------------------------------------------------- batch weight
+// The weighed ingredients must add up to exactly the batch size, to the gram
+// (the server checks the same: services/recipe_tools.batch_check).
+const _weightToKg = {'kg': 1.0, 'kgs': 1.0, 'g': 0.001, 'gm': 0.001, 'gms': 0.001, 'gram': 0.001, 'grams': 0.001, 'mg': 0.000001,
+  'l': 1.0, 'ltr': 1.0, 'litre': 1.0, 'liter': 1.0, 'ml': 0.001};
+const _batchUnits = {..._weightToKg, 'kilo': 1.0, 'kilos': 1.0, 'kilogram': 1.0, 'kilograms': 1.0, 't': 1000.0, 'ton': 1000.0,
+  'tons': 1000.0, 'tonne': 1000.0, 'tonnes': 1000.0, 'quintal': 100.0, 'quintals': 100.0};
+
+/// 102 -> "102", 304.8 -> "304.8" (at most 3 decimals).
+String _kg(double v) => (v * 1000).round() % 1000 == 0 ? '${v.round()}' : '${(v * 1000).round() / 1000}';
+
+/// (checked, ok, message) for a batch size text and (name, quantity, unit) rows.
+({bool checked, bool ok, String message}) batchCheck(String batchText, Iterable<(String, String, String)> rows) {
+  double? batch;
+  for (final m in RegExp(r'(\d+(?:\.\d+)?)\s*([a-z]+)').allMatches(batchText.toLowerCase().replaceAll(',', ''))) {
+    final f = _batchUnits[m.group(2)];
+    if (f != null) {
+      batch = double.parse(m.group(1)!) * f;
+      break;
+    }
+  }
+  var total = 0.0;
+  var weighed = false;
+  for (final (name, qty, unit) in rows) {
+    final q = double.tryParse(RegExp(r'-?\d+(?:\.\d+)?').firstMatch(qty.replaceAll(',', ''))?.group(0) ?? '');
+    final f = _weightToKg[unit.trim().toLowerCase()];
+    if (name.trim().isNotEmpty && q != null && f != null) {
+      total += q * f;
+      weighed = true;
+    }
+  }
+  final size = batch;
+  if (size == null || size <= 0 || !weighed) return (checked: false, ok: true, message: '');
+  final grams = (total * 1000).round(); // whole grams: no floating-point dust (0.1 + 0.2)
+  final diff = (grams - (size * 1000).round()) / 1000;
+  final kg = grams / 1000;
+  if (diff == 0) return (checked: true, ok: true, message: 'Ingredients total ${_kg(kg)} kg: exactly the ${_kg(size)} kg batch.');
+  return (
+    checked: true,
+    ok: false,
+    message: diff < 0
+        ? 'Ingredients total ${_kg(kg)} kg, ${_kg(-diff)} kg less than the ${_kg(size)} kg batch. The ingredients must add up to '
+            'exactly ${_kg(size)} kg: add ${_kg(-diff)} kg, or change the batch size.'
+        : 'Ingredients total ${_kg(kg)} kg, ${_kg(diff)} kg more than the ${_kg(size)} kg batch. The ingredients must add up to '
+            'exactly ${_kg(size)} kg: remove ${_kg(diff)} kg, or change the batch size.',
+  );
+}
+
 class RecipeEditorPage extends StatefulWidget {
   const RecipeEditorPage({super.key, required this.productId, required this.recipe});
 
@@ -449,8 +499,16 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
   void _addIngredient() => setState(() => _ingredients.add(List.generate(5, (_) => TextEditingController())));
 
+  ({bool checked, bool ok, String message}) _check() =>
+      batchCheck(_batch.text, [for (final r in _ingredients) (r[0].text, r[1].text, r[2].text)]);
+
   Future<void> _save() async {
     FocusManager.instance.primaryFocus?.unfocus(); // Save works with the keyboard open
+    final check = _check();
+    if (!check.ok) {
+      setState(() => _error = check.message);
+      return;
+    }
     String? t(TextEditingController c) => c.text.trim().isEmpty ? null : c.text.trim();
     final body = <String, dynamic>{
       'batch_size': t(_batch),
@@ -542,6 +600,26 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
         ],
       ),
         ),
+        // Ingredients total against the batch size, updated while typing
+        AnimatedBuilder(
+          animation: Listenable.merge([_batch, for (final r in _ingredients) ...r.take(3)]),
+          builder: (context, _) {
+            final check = _check();
+            if (!check.checked) return const SizedBox.shrink();
+            return Container(
+              width: double.infinity,
+              margin: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: check.ok ? AppColors.posSoft : AppColors.negSoft,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(check.message,
+                  style: TextStyle(fontSize: 13, height: 1.35, color: check.ok ? AppColors.pos : AppColors.neg,
+                      fontWeight: check.ok ? FontWeight.w500 : FontWeight.w700)),
+            );
+          },
+        ),
         SafeArea(
           top: false,
           bottom: MediaQuery.viewInsetsOf(context).bottom == 0, // keyboard open: sit right on it
@@ -623,7 +701,7 @@ class _QuestionsTab extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
             Text(
-              'Survey persons ask these questions, in this order. Keep them the same between rounds you want to compare.',
+              'Survey persons ask these questions, in this order. Keep them the same between surveys you want to compare.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
             ),
             const SizedBox(height: 10),
@@ -759,11 +837,11 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
       child: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
           Text(widget.question == null ? 'Add a question' : 'Edit question',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+              style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
           const SizedBox(height: 14),
           TextField(controller: _text, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Question')),
           const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          SearchDropdownField<String>(
             isExpanded: true,
             value: _type,
             decoration: const InputDecoration(labelText: 'Answer type'),
@@ -827,7 +905,7 @@ class _RoundsTab extends StatelessWidget {
       );
       if (started == true) {
         await onChanged();
-        if (context.mounted) showMessage(context, 'Round started. Survey persons can now survey it.');
+        if (context.mounted) showMessage(context, 'Survey started. Survey persons can now collect responses.');
       }
     }
 
@@ -835,16 +913,38 @@ class _RoundsTab extends StatelessWidget {
       final n = intOf(live['number']);
       final ok = await confirmAction(
         context,
-        title: 'End Round $n?',
-        message: 'No new surveys will join it. Its report keeps the ${intOf(live['done'])} surveys collected so far.',
-        confirmLabel: 'End round',
+        title: 'End Survey $n?',
+        message: 'No new responses will join it. Its report keeps the ${intOf(live['done'])} responses collected so far.',
+        confirmLabel: 'End survey',
         cancelLabel: 'Keep collecting',
       );
       if (!ok) return;
       try {
         await OrgApi.endRound(productId, n);
         await onChanged();
-        if (context.mounted) showMessage(context, 'Round $n ended.');
+        if (context.mounted) showMessage(context, 'Survey $n ended.');
+      } catch (e) {
+        if (context.mounted) showMessage(context, '$e', error: true);
+      }
+    }
+
+    // A survey started by mistake: the latest one, while nobody has answered it.
+    final latestNumber = rounds.isEmpty ? null : intOf(rounds.first['number']);
+    Future<void> remove(Json r) async {
+      final n = intOf(r['number']);
+      final ok = await confirmAction(
+        context,
+        title: 'Delete Survey $n?',
+        message: 'Survey $n has no responses yet. It is removed with its action plans and team assignments; '
+            'the recipe and its versions stay.',
+        confirmLabel: 'Delete',
+        cancelLabel: 'Keep it',
+      );
+      if (!ok) return;
+      try {
+        await OrgApi.deleteRound(productId, n);
+        await onChanged();
+        if (context.mounted) showMessage(context, 'Survey $n was deleted.');
       } catch (e) {
         if (context.mounted) showMessage(context, '$e', error: true);
       }
@@ -855,7 +955,7 @@ class _RoundsTab extends StatelessWidget {
       return Panel(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            Expanded(child: Text('Round ${intOf(r['number'])}', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink))),
+            Expanded(child: Text('Survey ${intOf(r['number'])}', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink))),
             Pill(isLive ? 'Collecting' : (str(r['closed_reason']) == 'ended' ? 'Ended' : 'Complete'), tone: isLive ? 'ok' : 'muted'),
           ]),
           const SizedBox(height: 4),
@@ -878,9 +978,17 @@ class _RoundsTab extends StatelessWidget {
               color: AppColors.brand,
             ),
           ),
-          if (isLive) ...[
+          if (isLive || (intOf(r['number']) == latestNumber && done == 0)) ...[
             const SizedBox(height: 10),
-            OutlinedButton(onPressed: end, child: const Text('End round')),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              if (isLive) OutlinedButton(onPressed: end, child: const Text('End survey')),
+              if (intOf(r['number']) == latestNumber && done == 0)
+                OutlinedButton(
+                  onPressed: () => remove(r),
+                  style: OutlinedButton.styleFrom(foregroundColor: AppColors.neg),
+                  child: const Text('Delete'),
+                ),
+            ]),
           ],
         ]),
       );
@@ -892,23 +1000,23 @@ class _RoundsTab extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
         children: [
           Text(
-            'A round is one batch of consumer surveys for one recipe version. Start a new round after changing the recipe, then compare.',
+            'A survey is one batch of consumer responses for one recipe version. Start a new survey after changing the recipe, then compare.',
             style: TextStyle(color: AppColors.muted, height: 1.4),
           ),
           const SizedBox(height: 12),
           if (live.isNotEmpty) ...[card(live, isLive: true), const SizedBox(height: 8)],
           for (final r in past) ...[card(r), const SizedBox(height: 8)],
-          if (rounds.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No rounds yet', text: 'Start the first round to collect consumer feedback.'),
+          if (rounds.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No surveys yet', text: 'Start the first survey to collect consumer feedback.'),
           const SizedBox(height: 6),
           if (live.isEmpty && asJsonList(detail['standards_failed']).isNotEmpty) ...[
             StandardsBlocked(failures: asJsonList(detail['standards_failed']), version: intOf(detail['latest_version'])),
             const SizedBox(height: 8),
           ],
-          FilledButton.icon(onPressed: canStart ? start : null, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start new round')),
+          FilledButton.icon(onPressed: canStart ? start : null, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start new survey')),
           if (!canStart && live.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text('Round ${intOf(live['number'])} is collecting. End it to start a new one.',
+              child: Text('Survey ${intOf(live['number'])} is collecting. End it to start a new one.',
                   textAlign: TextAlign.center, style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
             ),
         ],
@@ -980,9 +1088,9 @@ class _StartRoundSheetState extends State<_StartRoundSheet> {
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + MediaQuery.of(context).viewInsets.bottom),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        Text('Start Round ${widget.number}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+        Text('Start Survey ${widget.number}', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const SizedBox(height: 4),
-        Text(widget.recipeVersion > 0 ? 'Consumers taste recipe v${widget.recipeVersion}.' : 'Add a recipe first to compare rounds by recipe.',
+        Text(widget.recipeVersion > 0 ? 'Consumers taste recipe v${widget.recipeVersion}.' : 'Add a recipe first to compare surveys by recipe.',
             style: TextStyle(color: AppColors.muted)),
         const SizedBox(height: 14),
         TextField(
@@ -995,7 +1103,7 @@ class _StartRoundSheetState extends State<_StartRoundSheet> {
         if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
         if (_failures.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: StandardsBlocked(failures: _failures, version: widget.recipeVersion)),
         const SizedBox(height: 14),
-        FilledButton(onPressed: _saving ? null : _start, child: Text(_saving ? 'Starting…' : 'Start Round ${widget.number}')),
+        FilledButton(onPressed: _saving ? null : _start, child: Text(_saving ? 'Starting…' : 'Start Survey ${widget.number}')),
         TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
       ]),
     );
@@ -1029,8 +1137,8 @@ class _RoundCompareViewState extends State<RoundCompareView> {
           return ListView(children: const [
             EmptyNote(
               icon: Icons.compare_arrows,
-              title: 'Compare needs two rounds',
-              text: 'Start a second round (for example after changing the recipe) to compare them side by side.',
+              title: 'Compare needs two surveys',
+              text: 'Start a second survey (for example after changing the recipe) to compare them side by side.',
             ),
           ]);
         }
@@ -1040,13 +1148,13 @@ class _RoundCompareViewState extends State<RoundCompareView> {
         final changes = (data['recipe_changes'] is List ? data['recipe_changes'] as List : const []).map((e) => '$e').toList();
 
         Widget picker(String label, int value, void Function(int) onPick) => Expanded(
-              child: DropdownButtonFormField<int>(
+              child: SearchDropdownField<int>(
                 isExpanded: true,
                 value: value,
                 decoration: InputDecoration(labelText: label),
                 items: [
                   for (final r in rounds)
-                    DropdownMenuItem(value: intOf(r['number']), child: Text('Round ${intOf(r['number'])} · v${intOf(r['recipe_version'])}')),
+                    DropdownMenuItem(value: intOf(r['number']), child: Text('Survey ${intOf(r['number'])} · v${intOf(r['recipe_version'])}')),
                 ],
                 onChanged: (v) {
                   if (v != null) setState(() => onPick(v));
@@ -1092,7 +1200,7 @@ class _RoundCompareViewState extends State<RoundCompareView> {
             const SizedBox(height: 12),
             Panel(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(str(data['headline'], 'Round ${intOf(a['number'])} and Round ${intOf(b['number'])}'),
+                Text(str(data['headline'], 'Survey ${intOf(a['number'])} and Survey ${intOf(b['number'])}'),
                     style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink)),
                 const SizedBox(height: 8),
                 Table(
@@ -1100,8 +1208,8 @@ class _RoundCompareViewState extends State<RoundCompareView> {
                   children: [
                     TableRow(children: [
                       const SizedBox(),
-                      Text('Round ${intOf(a['number'])}', textAlign: TextAlign.right, style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                      Text('Round ${intOf(b['number'])}', textAlign: TextAlign.right, style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                      Text('Survey ${intOf(a['number'])}', textAlign: TextAlign.right, style: TextStyle(fontSize: 12, color: AppColors.muted)),
+                      Text('Survey ${intOf(b['number'])}', textAlign: TextAlign.right, style: TextStyle(fontSize: 12, color: AppColors.muted)),
                     ]),
                     row('Consumers', na['consumers'], nb['consumers']),
                     row('Average rating', na['rating'], nb['rating']),
@@ -1119,7 +1227,7 @@ class _RoundCompareViewState extends State<RoundCompareView> {
                     style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
                 const SizedBox(height: 6),
                 if (data['same_recipe'] == true)
-                  Text('Both rounds used the same recipe.', style: TextStyle(color: AppColors.muted))
+                  Text('Both surveys used the same recipe.', style: TextStyle(color: AppColors.muted))
                 else
                   for (final c in changes) _bullet(c),
               ]),
@@ -1152,7 +1260,7 @@ class StandardsBlocked extends StatelessWidget {
         border: Border.all(color: AppColors.neg),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("A round can't start: $n recipe standard${n == 1 ? ' is' : 's are'} not met${version > 0 ? ' by recipe v$version' : ''}.",
+        Text("A survey can't start: $n recipe standard${n == 1 ? ' is' : 's are'} not met${version > 0 ? ' by recipe v$version' : ''}.",
             style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.neg)),
         const SizedBox(height: 4),
         Text('Change the recipe (or the standard) until every standard is met.', style: TextStyle(color: AppColors.ink, fontSize: 13)),
@@ -1168,4 +1276,3 @@ class StandardsBlocked extends StatelessWidget {
     );
   }
 }
-

@@ -28,6 +28,7 @@ from typing import Iterable, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.services.recipe_versions import first_version
 from app.database.models import Product, RecipeVersion, SurveyResponse, SurveyRound, User
 
 LIVE = "live"
@@ -59,8 +60,8 @@ class StandardsNotMet(RoundError):
 
     def __init__(self, failures: list, version: int):
         n = len(failures)
-        super().__init__(f"Round not started: recipe v{version} doesn't meet {n} recipe standard{'s' if n != 1 else ''}. "
-                         "Change the recipe (or the standard) so every standard is met, then start the round.", 409)
+        super().__init__(f"Survey not started: recipe v{version} doesn't meet {n} recipe standard{'s' if n != 1 else ''}. "
+                         "Change the recipe (or the standard) so every standard is met, then start the survey.", 409)
         self.failures = failures
         self.version = version
 
@@ -68,11 +69,16 @@ class StandardsNotMet(RoundError):
 def standards_failures(db: Session, product: Product, version: int) -> list:
     """Validate the recipe of this version against every active standard that applies to the
     product, read fresh from the database (never a cached result). [] = all met."""
+    row = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first())
+    return recipe_failures(db, product, row.recipe if row is not None else None)
+
+
+def recipe_failures(db: Session, product: Product, recipe) -> list:
+    """Any recipe (also one being saved) against every active standard that applies to the
+    product: this product's, its category's and those for all products. [] = all met."""
     from app.database.models import RecipeStandard
     from app.services.recipe_tools import validate
 
-    row = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first())
-    recipe = row.recipe if row is not None else None
     rules = db.query(RecipeStandard).filter(RecipeStandard.is_active == 1).all()
     by_id = {r.id: r for r in rules}
     result = validate(recipe, rules, product.category_id, product.id)
@@ -187,7 +193,7 @@ def ensure_first_version(db: Session, product: Product) -> Optional[int]:
     """
     latest = latest_version_number(db, product.id)
     if latest is None and product.recipe:
-        db.add(RecipeVersion(product_id=product.id, version=1, recipe=product.recipe, changed_by_name=None,
+        db.add(RecipeVersion(product_id=product.id, version=first_version(product), recipe=product.recipe, changed_by_name=None,
                              changed_by_role=None, changes=["Recipe as it was before version history"],
                              created_at=product.updated_at or datetime.utcnow()))
         db.commit()
@@ -285,7 +291,7 @@ def round_for_new_survey(db: Session, product_id: int, recipe_version: Optional[
     r = round_for_survey(db, user, product_id)
     if r is None:
         raise RoundError(
-            "This product has no survey round assigned to you. The Super Admin starts rounds and your admin assigns them.",
+            "This product has no survey assigned to you. The Super Admin starts surveys and your admin assigns them.",
             status=409,
         )
     if recipe_version is not None and r.recipe_version is not None and int(recipe_version) != int(r.recipe_version):
@@ -306,6 +312,7 @@ def close_if_complete(db: Session, round_id: Optional[int]) -> bool:
     if done_counts(db, [r.id]).get(r.id, 0) < (r.target or 0):
         return False
     r.status, r.closed_at, r.closed_reason = CLOSED, datetime.utcnow(), "target"
+    r.total_at_close = _product_total(db, r)
     db.commit()
     return True
 
@@ -374,10 +381,10 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
                 target: Optional[int] = None, due_date=None, note: Optional[str] = None) -> SurveyRound:
     live = live_round(db, product.id)
     if live is not None:
-        raise RoundError(f"Round {live.number} is still collecting surveys. The next round can start when it is complete.", 409)
+        raise RoundError(f"Survey {live.number} is still collecting responses. The next survey can start when it is complete.", 409)
     latest_v = ensure_first_version(db, product)
     if latest_v is None:
-        raise RoundError("Add a recipe first, so the round knows which recipe consumers taste.")
+        raise RoundError("Add a recipe first, so the survey knows which recipe consumers taste.")
     version = int(recipe_version or latest_v)
     if not db.query(RecipeVersion.id).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first():
         raise RoundError(f"Recipe version {version} doesn't exist for this product.")
@@ -387,6 +394,19 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
     due = _parse_due(due_date)
     if due is not None and due < date.today():
         raise RoundError("The 'wanted by' date is in the past.")
+    # A survey of this recipe version ended with a total set on the product: the next one starts
+    # only after the Super Admin raises the total, and covers just the increase.
+    ended = (db.query(SurveyRound).filter(SurveyRound.product_id == product.id, SurveyRound.recipe_version == version)
+             .order_by(SurveyRound.number.desc()).first())
+    if ended is not None and ended.total_at_close is not None:
+        now_total = _product_total(db, ended) or 0
+        room = now_total - ended.total_at_close
+        if room <= 0:
+            raise RoundError(f"Survey {ended.number} is completed. To survey again, raise the project's response target above "
+                             f"{ended.total_at_close} first.", 409)
+        if target > room:
+            raise RoundError(f"The project's response target leaves {room} consumer responses after Survey {ended.number}: "
+                             f"survey at most {room}, or raise the target.", 409)
     # Recipe Standards: checked here, immediately before the round is created, on every
     # path that starts a round. Nothing is written when one fails (no round, no notice).
     failures = standards_failures(db, product, version)
@@ -407,13 +427,56 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
     return r
 
 
+def delete_round(db: Session, r: SurveyRound) -> None:
+    """
+    Deletes a survey (round) started by mistake: only the product's latest one, and only
+    while it has no responses at all. Its action plans, team assignments and (empty)
+    reports go with it; the recipe versions stay.
+    """
+    from app.database.models import ActionPlan, ActionPlanMember, ConsolidatedReport, ProductAssignment
+
+    responses = db.query(func.count(SurveyResponse.id)).filter(SurveyResponse.round_id == r.id).scalar() or 0
+    if responses:
+        raise RoundError(f"Survey {r.number} already has {responses} response{'s' if responses != 1 else ''}, "
+                         "so it can't be deleted. End it instead.", 409)
+    latest = latest_round(db, r.product_id)
+    if latest is not None and latest.id != r.id:
+        raise RoundError(f"Only the latest survey (Survey {latest.number}) can be deleted.", 409)
+    plan_ids = [pid for (pid,) in db.query(ActionPlan.id).filter(ActionPlan.round_id == r.id)]
+    if plan_ids:
+        db.query(ActionPlanMember).filter(ActionPlanMember.action_plan_id.in_(plan_ids)).delete(synchronize_session=False)
+        db.query(ActionPlan).filter(ActionPlan.id.in_(plan_ids)).delete(synchronize_session=False)
+    db.query(ProductAssignment).filter(ProductAssignment.round_id == r.id).delete(synchronize_session=False)
+    db.query(ConsolidatedReport).filter(ConsolidatedReport.round_id == r.id).delete(synchronize_session=False)
+    db.delete(r)
+    db.commit()
+
+
 def end_round(db: Session, r: SurveyRound) -> SurveyRound:
     if r.status != LIVE:
-        raise RoundError(f"Round {r.number} has already ended.")
+        raise RoundError(f"Survey {r.number} has already ended.")
     r.status, r.closed_at, r.closed_reason = CLOSED, datetime.utcnow(), "ended"
+    r.total_at_close = _product_total(db, r)
     db.commit()
     db.refresh(r)
     return r
+
+
+def _product_total(db: Session, r: SurveyRound) -> Optional[int]:
+    """The response target of the project of this survey's product version, for total_at_close."""
+    from app.services.action_plans import total_for
+
+    return total_for(db, r.product_id, r.recipe_version)
+
+
+def reopen_baseline(r: Optional[SurveyRound], done: int = 0) -> int:
+    """The total the product must go above before a survey after this ended one can be planned:
+    the total when it ended (older surveys: what it covered, its target or responses)."""
+    if r is None:
+        return 0
+    if r.total_at_close is not None:
+        return int(r.total_at_close)
+    return max(int(r.target or 0), int(done or 0))
 
 
 # ============================================================
@@ -448,14 +511,14 @@ def _notify_round_started(db: Session, product: Product, r: SurveyRound) -> None
         who = r.started_by_name or "The Super Admin"
         notify(
             db, _admins(db), ROUND_STARTED_BY_ORG,
-            title=f"{who} started Round {r.number} of {info['product_name']}",
+            title=f"{who} started Survey {r.number} of {info['product_name']}",
             message=f"Recipe v{r.recipe_version}, {r.target} consumers{due}." + (f' Note: "{r.note}"' if r.note else ""),
             data=data, dedupe_key=f"round:{r.id}:started",
         )
     notify(
         db, _survey_people(db, product.id), ROUND_STARTED,
-        title=f"New round: {info['product_name']} (recipe v{r.recipe_version})",
-        message=f"Round {r.number} tests recipe v{r.recipe_version}. Please survey {r.target} consumers{due}.",
+        title=f"New survey: {info['product_name']} (recipe v{r.recipe_version})",
+        message=f"Survey {r.number} tests recipe v{r.recipe_version}. Please survey {r.target} consumers{due}.",
         data=data, dedupe_key=f"round:{r.id}:field",
     )
 
@@ -470,9 +533,33 @@ def notify_round_ended(db: Session, product: Product, r: SurveyRound, account: d
     done = done_counts(db, [r.id]).get(r.id, 0)
     notify(
         db, _admins(db), ROUND_ENDED_BY_ORG,
-        title=f"{who} ended Round {r.number} of {info['product_name']}",
+        title=f"{who} ended Survey {r.number} of {info['product_name']}",
         message=f"Ended early with {done} of {r.target} consumers surveyed.",
         data={**info, "round": r.number, "round_id": r.id, "done": done, "target": r.target},
         dedupe_key=f"round:{r.id}:ended",
     )
 
+# ---------------------------------------------------------------- recipe lock while collecting
+def live_survey_lock(db: Session, product_ids=None, category_id: Optional[int] = None, everything: bool = False) -> Optional[str]:
+    """Why the recipe / recipe standards can't change now: a survey of one of these products is
+    collecting consumer feedback (changing them would make that feedback unreliable). None when
+    nothing is collecting. The lock ends when the survey completes (at its target) or is ended."""
+    q = db.query(SurveyRound, Product).join(Product, Product.id == SurveyRound.product_id).filter(SurveyRound.status == LIVE)
+    if not everything:
+        ids = {int(p) for p in (product_ids or []) if p}
+        conds = []
+        if ids:
+            conds.append(SurveyRound.product_id.in_(ids))
+        if category_id:
+            conds.append(Product.category_id == category_id)
+        if not conds:
+            return None
+        from sqlalchemy import or_
+
+        q = q.filter(or_(*conds))
+    row = q.order_by(SurveyRound.id).first()
+    if row is None:
+        return None
+    r, product = row
+    return (f"Survey {r.number} of {product.name} (recipe v{r.recipe_version}) is collecting consumer feedback, so its recipe "
+            "and recipe standards can't change now. They unlock when the survey completes or is ended.")

@@ -361,7 +361,7 @@ Future<void> showRecordingPlayer(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          Text(title, style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 14),
           MediaPlayerCard(filePath: filePath, isVideo: isVideo, durationHint: durationHint),
         ],

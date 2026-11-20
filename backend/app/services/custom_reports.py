@@ -51,7 +51,7 @@ STANDARD = ["summary", "kpis", "ratings", "likes", "concerns", "recommendations"
             "questions", "breakdowns", "comparison", "surveys"]
 DIMENSIONS = {
     "respondent_type": "Respondent type", "audience": "Internal / External", "city": "City", "country": "Country",
-    "occupation": "Occupation", "sec_class": "Class (SEC)", "gender": "Gender", "age_group": "Age group",
+    "occupation": "Occupation", "sec_class": "Class (SEC)", "gender": "Gender", "age_group": "Age group", "state": "State",
 }
 FILTER_KEYS = ("cities", "countries", "respondent_types", "occupations", "sec_classes", "genders")
 
@@ -96,11 +96,24 @@ def options(db: Session, user) -> dict:
 
 # ---------------------------------------------------------------- planning
 
+# The prompt box starts with this design brief (web and app); it is also always given to the
+# AI planner, and it is removed before the request is read for its content.
+DESIGN_BRIEF = "Act as a senior UI/UX designer and create a clear, visually engaging PowerPoint presentation:"
+_BRIEF_RE = re.compile(r"^\s*act as a senior ui\s*/\s*ux (designer|developer)[^:]*:\s*", re.I)
+
+
+def request_text(prompt: str) -> str:
+    """The person's own request, without the design brief at its start."""
+    return _BRIEF_RE.sub("", prompt or "").strip()
+
+
 def _llm_plan(prompt: str, fmt: str, opts: dict, context_ids: list) -> Optional[dict]:
     from app.services.ai_client import llm_generate
 
     catalogue = [{"id": p["id"], "name": p["name"], "category": p["category"], "rounds": p["rounds"]} for p in opts["products"]]
-    ask = f"""You turn a request for a {'PowerPoint' if fmt == 'pptx' else 'Excel'} consumer-feedback report into a JSON plan.
+    ask = f"""{DESIGN_BRIEF if fmt == 'pptx' else ''}
+Plan the story of the deck: lead with the headline results, then what customers like and dislike, then actions.
+You turn a request for a {'PowerPoint' if fmt == 'pptx' else 'Excel'} consumer-feedback report into a JSON plan.
 Products (only use these ids): {json.dumps(catalogue, ensure_ascii=False)}
 Products of the page the request comes from: {context_ids or "none (pick from the request)"}
 Known filter values: cities={opts['cities'][:80]} countries={opts['countries'][:40]} respondent_types={opts['respondent_types']}
@@ -112,7 +125,8 @@ Answer ONLY with JSON: {{"title": "...", "product_ids": [..], "rounds": "latest"
 "filters": {{"cities": [], "countries": [], "respondent_types": [], "audience": null, "occupations": [], "sec_classes": [], "genders": []}},
 "sections": [..], "breakdowns": [..], "focus": null, "max_slides": null}}
 Rules: never invent products or filter values; use the page's products unless the request names others or says all;
-"compare rounds" -> compare_rounds true and rounds "all"; audience is "internal", "external" or null; focus is "positive", "negative" or null."""
+"compare rounds" or "compare surveys" -> compare_rounds true and rounds "all" (people call rounds "Survey 1",
+"Survey 2": "survey 2" means round 2); audience is "internal", "external" or null; focus is "positive", "negative" or null."""
     raw = llm_generate(ask, num_predict=700, json_mode=True, timeout=90)
     m = re.search(r"\{.*\}", raw or "", re.S)
     return json.loads(m.group()) if m else None
@@ -127,11 +141,12 @@ def _keyword_plan(prompt: str, opts: dict, context_ids: list) -> dict:
     cats = [p["id"] for p in opts["products"] if p["category"] and p["category"].lower() in text]
     every = bool(re.search(r"\b(all|every|each)\s+(the\s+)?products?\b|\bacross products\b", text))
     ids = [p["id"] for p in opts["products"]] if every else (named or cats or context_ids)
-    rounds_found = [int(n) for n in re.findall(r"round\s*(\d+)", text)]
+    # Rounds are called "Survey 1, Survey 2" on screen: both words name them.
+    rounds_found = [int(n) for n in re.findall(r"\b(?:round|survey)\s*(\d+)\b", text)]
     compare = bool(re.search(r"\bcompar|\bvs\b|\bversus\b", text)) and not named[1:] and not every
     plan = {
         "title": "", "product_ids": ids,
-        "rounds": rounds_found or ("all" if compare or "all rounds" in text else "latest"),
+        "rounds": rounds_found or ("all" if compare or re.search(r"\ball (the )?(rounds|surveys)\b", text) else "latest"),
         "compare_rounds": compare or len(rounds_found) > 1,
         # "retailers" matches "Retailer": plural forms count
         "filters": {k: [v for v in opts[k] if re.search(r"\b" + re.escape(v.lower()) + r"(s|es)?\b", text)] for k in FILTER_KEYS},
@@ -164,7 +179,7 @@ def _keyword_plan(prompt: str, opts: dict, context_ids: list) -> dict:
 def make_plan(db: Session, user, prompt: str, fmt: str, context_ids: list, context_round: Optional[int] = None) -> tuple:
     """(checked plan, warnings, planned_by)."""
     opts = options(db, user)
-    prompt = (prompt or "").strip()
+    prompt = request_text(prompt)  # the design brief alone = the standard report
     planned_by = "standard"
     raw = {"product_ids": context_ids, "rounds": [context_round] if context_round else "latest"}
     if prompt:
@@ -243,9 +258,9 @@ def describe(plan: dict, opts_products: dict) -> str:
     names = [opts_products.get(i, f"#{i}") for i in plan["product_ids"]]
     parts.append(", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else ""))
     r = plan["rounds"]
-    parts.append("latest round" if r == "latest" else "all rounds" if r == "all" else "round " + ", ".join(map(str, r)))
+    parts.append("latest survey" if r == "latest" else "all surveys" if r == "all" else "survey " + ", ".join(map(str, r)))
     if plan["compare_rounds"]:
-        parts.append("rounds compared")
+        parts.append("surveys compared")
     f = plan["filters"]
     for key in FILTER_KEYS:
         if f.get(key):
@@ -310,8 +325,8 @@ def build_dataset(db: Session, plan: dict) -> list:
                 rep = (db.query(ConsolidatedReport).filter(ConsolidatedReport.round_id == group[0].id)
                        .order_by(ConsolidatedReport.id.desc()).first())
                 narrative = rep.narrative if rep else None
-            label = product.name + (f" · Round {group[0].number}" if len(group) == 1 else
-                                    f" · Rounds {', '.join(str(r.number) for r in group)}" if group else "")
+            label = product.name + (f" · Survey {group[0].number}" if len(group) == 1 else
+                                    f" · Surveys {', '.join(str(r.number) for r in group)}" if group else "")
             blocks.append({"product": product, "rounds": group, "label": label, "items": items, "stats": stats,
                            "narrative": narrative, "pairs": subset, "people": people})
     return blocks
@@ -383,7 +398,7 @@ def build_xlsx(db: Session, plan: dict, blocks: list) -> bytes:
             top_like = (_likes(b, 1) or [("", "", "")])[0][0]
             top_concern = (_concerns(b, 1) or [("", "", "")])[0][0]
             rows.append([b["label"], n, rating, pos, mix, neg, top_like, top_concern])
-        table(wb.create_sheet("Results"), ["Product / round", "Surveys", "Average rating", "Positive", "Mixed", "Negative", "Top like", "Top concern"], rows)
+        table(wb.create_sheet("Results"), ["Product / survey", "Responses", "Average rating", "Positive", "Mixed", "Negative", "Top like", "Top concern"], rows)
     if sec & {"likes", "concerns", "recommendations", "recipe_recommendations"}:
         rows = []
         for b in blocks:
@@ -397,13 +412,13 @@ def build_xlsx(db: Session, plan: dict, blocks: list) -> bytes:
             if "recipe_recommendations" in sec:
                 rows += [[b["label"], "Recipe recommendation", f"{x.get('change')} (why: {x.get('reason')})", x.get("customers"), n, ""]
                          for x in (b["narrative"] or {}).get("recipe_recommendations") or []]
-        table(wb.create_sheet("Findings"), ["Product / round", "Kind", "Finding", "Customers", "Of surveys", "Customer's words"], rows, wide=("Finding", "Customer's words"))
+        table(wb.create_sheet("Findings"), ["Product / survey", "Kind", "Finding", "Customers", "Of responses", "Customer's words"], rows, wide=("Finding", "Customer's words"))
     if "ratings" in sec:
         rows = []
         for b in blocks:
             for star, count in sorted(((b["stats"] or {}).get("rating_distribution") or {}).items()):
                 rows.append([b["label"], f"{star}★", count])
-        table(wb.create_sheet("Ratings"), ["Product / round", "Rating", "Surveys"], rows)
+        table(wb.create_sheet("Ratings"), ["Product / survey", "Rating", "Responses"], rows)
     if "questions" in sec:
         rows = []
         for b in blocks:
@@ -412,14 +427,14 @@ def build_xlsx(db: Session, plan: dict, blocks: list) -> bytes:
                     rows += [[b["label"], q.get("question"), opt, cnt, q.get("answered")] for opt, cnt in q["distribution"].items()]
                 elif q.get("average") is not None:
                     rows.append([b["label"], q.get("question"), "Average", q.get("average"), q.get("answered")])
-        table(wb.create_sheet("Questions"), ["Product / round", "Question", "Answer", "Count", "Answered"], rows, wide=("Question",))
+        table(wb.create_sheet("Questions"), ["Product / survey", "Question", "Answer", "Count", "Answered"], rows, wide=("Question",))
     if "breakdowns" in sec:
         rows = []
         for b in blocks:
             for dim in plan["breakdowns"]:
                 for g in ((b["stats"] or {}).get("breakdowns") or {}).get(dim) or []:
                     rows.append([b["label"], DIMENSIONS[dim], g.get("group"), g.get("responses"), g.get("avg_rating"), g.get("positive"), g.get("mixed"), g.get("negative")])
-        table(wb.create_sheet("Breakdowns"), ["Product / round", "Dimension", "Group", "Surveys", "Average rating", "Positive", "Mixed", "Negative"], rows)
+        table(wb.create_sheet("Breakdowns"), ["Product / survey", "Dimension", "Group", "Responses", "Average rating", "Positive", "Mixed", "Negative"], rows)
     if "surveys" in sec:
         rows = []
         for b in blocks:
@@ -430,7 +445,7 @@ def build_xlsx(db: Session, plan: dict, blocks: list) -> bytes:
                 rows.append([b["label"], resp.id, resp.created_at.strftime("%d %b %Y") if resp.created_at else "", resp.executive_name or "",
                              getattr(p, "location", "") or "", getattr(p, "country", "") or "", getattr(p, "respondent_type", "") or "",
                              (resp.audience or "").title(), rec.overall_rating, rec.overall_sentiment or "", (rec.overall_summary or "")[:800]])
-        table(wb.create_sheet("Surveys"), ["Product / round", "Survey #", "Date", "Survey person", "City", "Country", "Respondent type",
+        table(wb.create_sheet("Surveys"), ["Product / survey", "Response #", "Date", "Survey person", "City", "Country", "Respondent type",
                                            "Internal / External", "Rating", "Sentiment", "Summary"], rows, wide=("Summary",))
     buf = io.BytesIO()
     wb.save(buf)
@@ -440,121 +455,153 @@ def build_xlsx(db: Session, plan: dict, blocks: list) -> bytes:
 # ---------------------------------------------------------------- PowerPoint
 
 def build_pptx(db: Session, plan: dict, blocks: list) -> bytes:
-    from pptx import Presentation
-    from pptx.chart.data import CategoryChartData
-    from pptx.dml.color import RGBColor
-    from pptx.enum.chart import XL_CHART_TYPE
-    from pptx.util import Inches, Pt
-
-    navy, muted, ink = RGBColor(0x0A, 0x41, 0x74), RGBColor(0x56, 0x6A, 0x7E), RGBColor(0x00, 0x1D, 0x39)
-    prs = Presentation()
-    prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)
-    blank = prs.slide_layouts[6]
-    slides = []  # (priority, builder): lower priority number = kept first when max_slides cuts
-
-    def text(slide, x, y, w, h, value, size=18, bold=False, color=None):
-        tf = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h)).text_frame
-        tf.word_wrap = True
-        p = tf.paragraphs[0]
-        p.text, p.font.size, p.font.bold = str(value), Pt(size), bold
-        p.font.color.rgb = color or ink
-        return tf
-
-    def titled(title, sub=""):
-        s = prs.slides.add_slide(blank)
-        text(s, 0.6, 0.4, 12.1, 0.8, title, 30, True, navy)
-        if sub:
-            text(s, 0.6, 1.1, 12.1, 0.5, sub, 14, False, muted)
-        return s
-
-    def bullets(s, lines, y=1.8, size=18):
-        tf = text(s, 0.6, y, 12.1, 5.2, "", size)
-        for i, line in enumerate(lines[:9] or ["Nothing to show for this selection."]):
-            p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-            p.text, p.font.size = "• " + line, Pt(size)
-            p.space_after = Pt(8)
-
-    def grid(s, headers, rows, y=1.8):
-        rows = rows[:12]
-        t = s.shapes.add_table(len(rows) + 1, len(headers), Inches(0.6), Inches(y), Inches(12.1), Inches(0.4 * (len(rows) + 1))).table
-        for c, h in enumerate(headers):
-            t.cell(0, c).text = str(h)
-        for r_i, row in enumerate(rows, 1):
-            for c, v in enumerate(row):
-                t.cell(r_i, c).text = "–" if v is None else str(v)
+    """A designed deck (services/pptx_design.py): cover, comparison, one section per product
+    (key results, likes, concerns, actions, recipe suggestions, breakdowns, questions) and
+    key takeaways. Every number comes from the surveys; max_slides keeps the most important."""
+    from app.services.pptx_design import GOLD, MIX, MUTED, NAVY, NEG, POS, SKY, Deck, pct, stars
 
     opts = {p.id: p.name for p in db.query(Product).filter(Product.id.in_(plan["product_ids"])).all()}
     sec = set(plan["sections"])
     many = len(blocks) > 1
+    deck = Deck(footer=plan["title"])
+    slides = []  # (priority, builder): lower number = kept first when max_slides cuts; order = list order
+
+    total = sum(_kpi(b)[0] for b in blocks)
+    rated = [(b, _kpi(b)) for b in blocks if _kpi(b)[1] is not None]
+    avg = round(sum(k[1] * k[0] for _, k in rated) / max(1, sum(k[0] for _, k in rated)), 1) if rated else None
+    positive = sum(_kpi(b)[2] for b in blocks)
+
+    # Cover line: the products, the rounds and any filters (no technical details)
+    names = list(dict.fromkeys(b["product"].name for b in blocks)) or [opts.get(i, f"#{i}") for i in plan["product_ids"]]
+    scope = [p for p in describe(plan, opts).split(" · ")[1:]
+             if not p.startswith(("sections:", "up to ")) and p != ", ".join(opts.get(i, f"#{i}") for i in plan["product_ids"][:3])]
+    cover_line = " · ".join([", ".join(names[:4]) + (f" +{len(names) - 4} more" if len(names) > 4 else "")] + [p for p in scope if "#" not in p])
 
     def cover():
-        s = prs.slides.add_slide(blank)
-        text(s, 0.8, 2.3, 11.7, 1.4, plan["title"], 40, True, navy)
-        text(s, 0.8, 3.9, 11.7, 1.2, describe(plan, opts), 16, False, muted)
-        text(s, 0.8, 5.4, 11.7, 0.5, datetime.utcnow().strftime("%d %b %Y"), 14, False, muted)
+        deck.cover(plan["title"], cover_line,
+                   [("surveys analysed", str(total)), ("average rating", f"{avg if avg is not None else '–'} / 5"),
+                    ("positive customers", pct(positive, total))])
     slides.append((0, cover))
 
     if many and ("comparison" in sec or "kpis" in sec):
         def compare():
-            s = titled("Comparison", f"{len(blocks)} products / rounds · numbers from the surveys")
-            rows = []
-            for b in blocks:
-                n, rating, pos, mix, neg = _kpi(b)
-                rows.append([b["label"], n, rating, pos, mix, neg])
-            grid(s, ["Product / round", "Surveys", "Avg rating", "Positive", "Mixed", "Negative"], rows)
-            rated = [b for b in blocks if _kpi(b)[1] is not None][:12]
-            if rated and len(rows) <= 6:
-                data = CategoryChartData()
-                data.categories = [b["label"][:28] for b in rated]
-                data.add_series("Average rating", [_kpi(b)[1] for b in rated])
-                ch = s.shapes.add_chart(XL_CHART_TYPE.BAR_CLUSTERED, Inches(0.6), Inches(1.9 + 0.4 * (len(rows) + 1)), Inches(12.1),
-                                        Inches(max(2.0, 5.2 - 0.4 * (len(rows) + 1))), data).chart
-                ch.has_legend = False
+            s = deck.slide("Comparison", "How the products compare", f"{len(blocks)} products / surveys · numbers from the responses")
+            ranked = sorted(blocks, key=lambda b: -(_kpi(b)[1] or 0))
+            deck.bar_chart(s, 0.6, 1.95, 6.3, 4.85, [b["label"] for b in ranked[:8]], [_kpi(b)[1] for b in ranked[:8]],
+                           horizontal=True, max_value=5.4, colors=[GOLD if i == 0 else NAVY for i in range(min(8, len(ranked)))])
+            deck.table(s, 7.2, 2.05, 5.55, ["Product / survey", "Responses", "Rating", "Positive"],
+                       [[b["label"][:36], _kpi(b)[0], _kpi(b)[1], pct(_kpi(b)[2], _kpi(b)[0])] for b in ranked],
+                       col_w=[2.55, 0.95, 0.95, 1.1], max_rows=9)
         slides.append((1, compare))
 
     for b in blocks:
         n, rating, pos, mix, neg = _kpi(b)
-        sub = f"{b['label']} · {n} surveys"
+        name, chip = b["product"].name, f"{n} surveys"
+        nar = b["narrative"] or {}
+        if many:
+            slides.append((9, lambda b=b, n=n: deck.divider("Product", b["product"].name, f"{b['label']} · {n} surveys")))
         if "kpis" in sec or "summary" in sec:
-            def kpis(b=b, sub=sub, n=n, rating=rating, pos=pos, mix=mix, neg=neg):
-                s = titled(f"Key results · {b['product'].name}", sub)
-                for i, (label, value) in enumerate([("Surveys", n), ("Average rating", f"{rating if rating is not None else '–'} / 5"),
-                                                     ("Positive · Mixed · Negative", f"{pos} · {mix} · {neg}")]):
-                    text(s, 0.6 + i * 4.2, 1.9, 4, 0.4, label, 14, False, muted)
-                    text(s, 0.6 + i * 4.2, 2.3, 4, 0.8, value, 30, True, navy)
+            def kpis(b=b, n=n, rating=rating, pos=pos, mix=mix, neg=neg, name=name, chip=chip, nar=nar):
+                s = deck.slide("Key results", f"{name} at a glance", b["label"], chip)
+                deck.kpi(s, 0.6, 1.95, 2.9, 1.35, str(n), "Surveys", NAVY, "customers heard")
+                deck.kpi(s, 3.7, 1.95, 2.9, 1.35, f"{rating if rating is not None else '–'}", "Average rating", GOLD,
+                         f"{stars(rating)}  out of 5" if rating is not None else "")
+                deck.kpi(s, 6.8, 1.95, 2.9, 1.35, pct(pos, n), "Positive", POS, f"{pos} of {n} customers")
+                deck.kpi(s, 9.9, 1.95, 2.85, 1.35, pct(neg, n), "Negative", NEG, f"{neg} of {n} customers")
                 dist = (b["stats"] or {}).get("rating_distribution") or {}
-                if dist and "ratings" in sec:
-                    data = CategoryChartData()
-                    data.categories = [f"{k}★" for k in sorted(dist)]
-                    data.add_series("Surveys", [dist[k] for k in sorted(dist)])
-                    s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(0.6), Inches(3.4), Inches(12.1), Inches(3.6), data).chart.has_legend = False
-                conclusion = (b["narrative"] or {}).get("conclusion")
-                if conclusion:
-                    text(s, 0.6, 7.0, 12.1, 0.4, conclusion[:220], 12, False, muted)
+                if dist:
+                    keys = sorted(dist, key=lambda k: float(k))
+                    deck.text(s, 0.6, 3.5, 6, 0.3, "RATING DISTRIBUTION", 10, True, MUTED)
+                    deck.bar_chart(s, 0.5, 3.75, 6.2, 2.75, [f"{k}★" for k in keys], [dist[k] for k in keys], number_format="0",
+                                   colors=[NEG if float(k) <= 2 else (MIX if float(k) < 4 else POS) for k in keys])
+                if n:
+                    deck.text(s, 7.0, 3.5, 5.6, 0.3, "SENTIMENT", 10, True, MUTED)
+                    deck.donut(s, 6.9, 3.7, 2.9, 2.85, ["Positive", "Mixed", "Negative"], [pos, mix, neg], [POS, MIX, NEG])
+                conclusion = nar.get("conclusion")
+                deck.callout(s, 9.95, 3.75, 2.8, 2.75, "Insight",
+                             (conclusion or f"{pct(pos, n)} of customers were positive about {name}.")[:230])
             slides.append((2, kpis))
         if "likes" in sec and plan.get("focus") != "negative":
-            slides.append((4 if plan.get("focus") != "positive" else 3, lambda b=b, sub=sub, n=n: bullets(
-                titled(f"What customers like · {b['product'].name}", sub), [f"{name}: {c} of {n} customers" + (f" · “{ev[:90]}”" if ev else "") for name, c, ev in _likes(b)])))
+            def likes(b=b, n=n, name=name, chip=chip):
+                s = deck.slide("What customers like", f"Why customers like {name}", b["label"], chip)
+                y = 1.95
+                for label, count, quote in _likes(b, 5) or [("Nothing stood out yet", 0, "")]:
+                    y += deck.meter_card(s, 0.6, y, 12.15, label, count, n, quote, "pos") + 0.12
+                    if y > 6.4:
+                        break
+            slides.append((4 if plan.get("focus") != "positive" else 3, likes))
         if "concerns" in sec and plan.get("focus") != "positive":
-            slides.append((3 if plan.get("focus") == "negative" else 4, lambda b=b, sub=sub, n=n: bullets(
-                titled(f"Concerns · {b['product'].name}", sub), [f"{name}: {c} of {n} customers" + (f" · “{ev[:90]}”" if ev else "") for name, c, ev in _concerns(b)])))
+            def concerns(b=b, n=n, name=name, chip=chip):
+                s = deck.slide("Concerns", f"What to improve in {name}", b["label"], chip)
+                y = 1.95
+                for label, count, quote in _concerns(b, 5) or [("No concerns raised", 0, "")]:
+                    y += deck.meter_card(s, 0.6, y, 12.15, label, count, n, quote, "neg") + 0.12
+                    if y > 6.4:
+                        break
+            slides.append((3 if plan.get("focus") == "negative" else 4, concerns))
         if "recommendations" in sec:
-            slides.append((5, lambda b=b, sub=sub: bullets(titled(f"Recommended actions · {b['product'].name}", sub), _actions(b))))
-        recs = (b["narrative"] or {}).get("recipe_recommendations") or []
+            def actions(b=b, name=name, chip=chip):
+                s = deck.slide("Recommended actions", "What to do next", b["label"], chip)
+                items = _actions(b)[:6] or ["No action needed yet: keep collecting feedback."]
+                for i, a in enumerate(items):
+                    col, row = i % 2, i // 2
+                    deck.numbered(s, 0.6 + col * 6.15, 1.95 + row * 1.05, 6.0, i + 1, a)
+            slides.append((5, actions))
+        recs = nar.get("recipe_recommendations") or []
         if "recipe_recommendations" in sec and recs:
-            slides.append((6, lambda b=b, sub=sub, recs=recs: bullets(titled(f"Recipe recommendations · {b['product'].name}", sub + " · suggestions only"),
-                                                                      [f"{x.get('change')}: {x.get('reason')} ({x.get('customers')} customers)" for x in recs])))
+            def recipe(b=b, recs=recs, name=name, chip=chip):
+                s = deck.slide("Recipe recommendations", f"Recipe changes to test for {name}",
+                               f"{b['label']} · suggestions only: the recipe is never changed automatically", chip)
+                y = 1.95
+                for i, x in enumerate(recs[:5]):
+                    who = f" · {x.get('customers')} customers" if x.get("customers") else ""
+                    y += deck.numbered(s, 0.6, y, 12.15, i + 1, str(x.get("change") or ""), f"Why: {x.get('reason') or ''}{who}") + 0.12
+            slides.append((6, recipe))
         if "breakdowns" in sec:
             for dim in plan["breakdowns"]:
-                groups = ((b["stats"] or {}).get("breakdowns") or {}).get(dim) or []
-                if not groups or all(g.get("group") == "Not given" for g in groups):
+                groups = [g for g in ((b["stats"] or {}).get("breakdowns") or {}).get(dim) or [] if g.get("group") != "Not given"]
+                if not groups:
                     continue
-                slides.append((7, lambda b=b, sub=sub, dim=dim, groups=groups: grid(
-                    titled(f"By {DIMENSIONS[dim].lower()} · {b['product'].name}", sub), [DIMENSIONS[dim], "Surveys", "Avg rating", "Positive", "Mixed", "Negative"],
-                    [[g.get("group"), g.get("responses"), g.get("avg_rating"), g.get("positive"), g.get("mixed"), g.get("negative")] for g in groups])))
+                def breakdown(b=b, dim=dim, groups=groups, name=name, chip=chip):
+                    s = deck.slide("Breakdown", f"{name} by {DIMENSIONS[dim].lower()}", b["label"], chip)
+                    top = sorted(groups, key=lambda g: -(g.get("responses") or 0))[:8]
+                    deck.text(s, 0.6, 1.95, 6, 0.3, "AVERAGE RATING", 10, True, MUTED)
+                    deck.bar_chart(s, 0.5, 2.2, 6.4, 4.55, [g.get("group") for g in top], [g.get("avg_rating") for g in top],
+                                   horizontal=True, max_value=5.4, color=SKY)
+                    deck.table(s, 7.2, 2.05, 5.55, [DIMENSIONS[dim], "Surveys", "Positive", "Negative"],
+                               [[str(g.get("group"))[:24], g.get("responses"), g.get("positive"), g.get("negative")] for g in top],
+                               col_w=[2.35, 1.0, 1.1, 1.1], max_rows=9)
+                slides.append((7, breakdown))
         if "questions" in sec:
             for q in [q for q in (b["stats"] or {}).get("questions") or [] if q.get("distribution")][:4]:
-                slides.append((8, lambda b=b, sub=sub, q=q: grid(titled(q.get("question")[:90], sub), ["Answer", "Customers"], list(q["distribution"].items()))))
+                def question(b=b, q=q, chip=chip):
+                    s = deck.slide("Question", str(q.get("question"))[:80], b["label"], chip)
+                    items = list(q["distribution"].items())[:8]
+                    deck.bar_chart(s, 0.5, 1.95, 8.6, 4.85, [k for k, _ in items], [v for _, v in items], horizontal=True,
+                                   number_format="0", colors=[GOLD if v == max(x for _, x in items) else NAVY for _, v in items])
+                    best = max(items, key=lambda kv: kv[1])
+                    deck.callout(s, 9.4, 2.05, 3.35, 2.2, "Most common answer",
+                                 f"“{best[0]}” · {best[1]} of {q.get('answered') or sum(v for _, v in items)} customers")
+                slides.append((8, question))
+
+    def takeaways():
+        s = deck.slide("Summary", "Key takeaways", plan["title"])
+        best = max(blocks, key=lambda b: _kpi(b)[1] or 0) if blocks else None
+        like = next((x for b in blocks for x in _likes(b, 1)), None)
+        concern = next((x for b in blocks for x in _concerns(b, 1)), None)
+        action = next((a for b in blocks for a in _actions(b)), None)
+        cards = [("Strength", POS, like[0] if like else "Collect more feedback", f"{like[1]} customers mention it" if like else ""),
+                 ("Watch out", NEG, concern[0] if concern else "No concerns raised", f"{concern[1]} customers mention it" if concern else ""),
+                 ("Next step", GOLD, (action or "Keep collecting feedback")[:90], "")]
+        for i, (label, color, head, note) in enumerate(cards):
+            x = 0.6 + i * 4.12
+            deck.kpi(s, x, 2.0, 3.92, 3.6, "", label, color)
+            deck.text(s, x + 0.3, 2.6, 3.4, 2.0, head, 18, True, NAVY)
+            if note:
+                deck.text(s, x + 0.3, 4.9, 3.4, 0.4, note, 11, False, color)
+        if best is not None and _kpi(best)[1] is not None:
+            deck.callout(s, 0.6, 5.85, 12.15, 0.95, "Best rated", f"{best['label']}: {_kpi(best)[1]} / 5 from {_kpi(best)[0]} surveys")
+    slides.append((2, takeaways))
 
     limit = plan.get("max_slides")
     order = sorted(range(len(slides)), key=lambda i: (slides[i][0], i))
@@ -563,7 +610,7 @@ def build_pptx(db: Session, plan: dict, blocks: list) -> bytes:
         if i in keep:
             build()
     buf = io.BytesIO()
-    prs.save(buf)
+    deck.save(buf)
     return buf.getvalue()
 
 
@@ -582,4 +629,3 @@ def content_disposition(name: str) -> str:
 
     ascii_name = name.encode("ascii", "ignore").decode().replace('"', "") or "report"
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"
-

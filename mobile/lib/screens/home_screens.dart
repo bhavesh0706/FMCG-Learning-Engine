@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../widgets/design.dart';
 import '../services/api_service.dart';
 import '../services/session.dart';
 import '../services/survey_queue.dart';
@@ -54,7 +55,7 @@ class StatusChip extends StatelessWidget {
       bg = AppColors.neutralSoft;
     } else if (entry.serverStatus == 'needs_review') {
       // Product check: the feedback seems to be about another product (kept out of reports until reviewed).
-      label = 'Product check';
+      label = 'Product to verify';
       fg = AppColors.warn;
       bg = AppColors.warnSoft;
     } else if (entry.serverStatus == 'invalid') {
@@ -169,7 +170,7 @@ class MobileHomePage extends StatelessWidget {
                           children: [
                             Text(
                               first.isEmpty ? 'Hello' : 'Hi $first',
-                              style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -0.5),
+                              style: const TextStyle(fontFamily: kDisplayFont, fontSize: 26, fontWeight: FontWeight.w800, letterSpacing: -0.5),
                             ),
                             Text(_todayText(), style: TextStyle(fontSize: 14, color: AppColors.muted)),
                           ],
@@ -187,24 +188,26 @@ class MobileHomePage extends StatelessWidget {
               const SizedBox(height: 16),
 
               // Today's numbers
-              Container(
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: AppColors.line),
+              KpiGrid(cards: [
+                KpiCard(
+                  label: 'My surveys',
+                  icon: Icons.assignment_turned_in_outlined,
+                  value: mine == null && notOnServer == 0 ? '…' : '$total',
                 ),
-                child: IntrinsicHeight(
-                  child: Row(
-                    children: [
-                      _Stat(label: 'My surveys', value: mine == null && notOnServer == 0 ? '…' : '$total'),
-                      VerticalDivider(width: 1, color: AppColors.line),
-                      _Stat(label: 'Today', value: mine == null && notOnServer == 0 ? '…' : '$todayCount'),
-                      VerticalDivider(width: 1, color: AppColors.line),
-                      _Stat(label: 'To upload', value: '${waiting.length}', warn: waiting.isNotEmpty),
-                    ],
-                  ),
+                KpiCard(
+                  label: 'Today',
+                  icon: Icons.today_outlined,
+                  tone: KpiTone.teal,
+                  value: mine == null && notOnServer == 0 ? '…' : '$todayCount',
                 ),
-              ),
+                KpiCard(
+                  label: 'To upload',
+                  icon: Icons.cloud_upload_outlined,
+                  tone: waiting.isEmpty ? KpiTone.pos : KpiTone.act,
+                  value: '${waiting.length}',
+                  note: waiting.isEmpty ? 'Everything is uploaded' : 'Uploads when you are online',
+                ),
+              ]),
               const SizedBox(height: 14),
 
               // Main action
@@ -229,7 +232,7 @@ class MobileHomePage extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text('Start a survey',
-                                  style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
+                                  style: TextStyle(color: Colors.white, fontFamily: kDisplayFont, fontSize: 20, fontWeight: FontWeight.w800)),
                               SizedBox(height: 2),
                               Text('Product, customer, questions, recording',
                                   style: TextStyle(color: AppColors.mist, fontSize: 14)),
@@ -349,35 +352,6 @@ class MobileHomePage extends StatelessWidget {
     const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
     const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     return '${days[d.weekday - 1]}, ${d.day} ${months[d.month - 1]}';
-  }
-}
-
-class _Stat extends StatelessWidget {
-  const _Stat({required this.label, required this.value, this.warn = false});
-
-  final String label;
-  final String value;
-  final bool warn;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(value,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w800,
-                  color: warn ? AppColors.warn : AppColors.ink,
-                )),
-            Text(label, style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -590,9 +564,9 @@ class MobileHistoryPage extends StatelessWidget {
               tabs: [
                 Tab(text: 'Surveys'),
                 Tab(text: 'Products'),
-                Tab(text: 'Checks'), // product checks (web: Survey history > Product checks)
+                Tab(text: 'Verification'), // web: Survey history > Product verification
                 Tab(text: 'Analytics'), // reports from a prompt, across products
-                Tab(text: 'Reviews'), // report reviews (web: Survey history > Report reviews)
+                Tab(text: 'Approvals'), // web: Survey history > Report approvals
               ],
             ),
           ),
@@ -680,7 +654,7 @@ class _SurveyHistoryListState extends State<SurveyHistoryList> {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 4),
                   child: Text('My surveys',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.3, color: AppColors.ink)),
+                      style: TextStyle(fontFamily: kDisplayFont, fontSize: 22, fontWeight: FontWeight.w800, letterSpacing: -0.3, color: AppColors.ink)),
                 )
               // Admins manage the team and products and don't take surveys: every
               // survey of the team, no "Mine" switch.
@@ -869,7 +843,7 @@ class _MobileSettingsPageState extends State<MobileSettingsPage> {
                   backgroundColor: AppColors.brandSoft,
                   child: Text(
                     (user?.name.trim().isNotEmpty ?? false) ? user!.name.trim()[0].toUpperCase() : '?',
-                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.brand),
+                    style: TextStyle(fontFamily: kDisplayFont, fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.brand),
                   ),
                 ),
                 const SizedBox(width: 14),

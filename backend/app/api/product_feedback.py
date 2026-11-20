@@ -461,7 +461,7 @@ def delete_survey(response_id: int, db: Session = Depends(get_db)):
     """
     from pathlib import Path
 
-    from app.database.models import AnalysisJob, Respondent, SurveyAnswer
+    from app.database.models import AnalysisJob, ProductCheck, Respondent, SurveyAnswer
 
     survey = db.get(SurveyResponse, response_id)
     if not survey:
@@ -474,6 +474,8 @@ def delete_survey(response_id: int, db: Session = Depends(get_db)):
         db.delete(rec)
     db.query(SurveyAnswer).filter(SurveyAnswer.response_id == response_id).delete(synchronize_session=False)
     db.query(AnalysisJob).filter(AnalysisJob.response_id == response_id).delete(synchronize_session=False)
+    # Its product verification goes too (it would otherwise stay in Product verification).
+    db.query(ProductCheck).filter(ProductCheck.response_id == response_id).delete(synchronize_session=False)
     respondent_id = survey.respondent_id
     db.delete(survey)
     db.flush()
@@ -521,7 +523,7 @@ def product_feedback(
     if round_number is not None:
         selected = round_by_number(db, product_id, round_number)
         if selected is None:
-            raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
+            raise HTTPException(status_code=404, detail=f"Survey {round_number} not found.")
 
     query = db.query(SurveyResponse).filter(SurveyResponse.product_id == product_id)
     if selected is not None:
@@ -565,6 +567,8 @@ def product_feedback(
                 "age": person.age,
                 "gender": person.gender,
                 "location": person.location,
+                "city": person.city,
+                "state": person.state,
             },
             "feedback": None if not rec else {
                 "id": rec.id,
@@ -645,10 +649,10 @@ def consolidate(
     if round_number is not None:
         selected = round_by_number(db, product_id, round_number)
         if selected is None:
-            raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
+            raise HTTPException(status_code=404, detail=f"Survey {round_number} not found.")
         report = build_round_report(db, selected.id)
         if report is None:
-            raise HTTPException(status_code=400, detail=f"Round {round_number} has no analyzed surveys yet.")
+            raise HTTPException(status_code=400, detail=f"Survey {round_number} has no analyzed responses yet.")
         return _report_out(report)
     report = build_product_report(db, product_id)
     if report is None:
@@ -754,6 +758,8 @@ def compose_items(db: Session, product: Product, pairs, translate: bool = True) 
             "usage_period": resp.usage_period,
             # Next update: report dimensions (no personal details)
             "country": person.country if person else None,
+            "state": person.state if person else None,
+            "city": person.city if person else None,
             "occupation": person.occupation if person else None,
             "sec_class": person.sec_class if person else None,
             "respondent_type": person.respondent_type if person else None,

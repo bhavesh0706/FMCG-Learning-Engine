@@ -26,7 +26,7 @@ export default function RecipeMaster({ onOpenProduct }) {
         </div>
       </div>
       {state.error && <p className="form-error" role="alert">{state.error}</p>}
-      <div className="panel">
+      <div className="panel table-panel">
         <div className="table-wrap">
           <table className="data-table">
             <thead>

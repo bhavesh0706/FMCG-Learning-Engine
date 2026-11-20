@@ -32,6 +32,12 @@
 	<string>The camera records the customer's video feedback during a survey.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is saved with each survey, so reports can show feedback by area.</string>
+	<!-- Precise Location turned off: asked once per survey for an exact position (GpsService). -->
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>SurveyLocation</key>
+		<string>An exact position shows where this survey was done.</string>
+	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>The app connects to your organization's survey server on this network.</string>
 	<key>NSAppTransportSecurity</key>

@@ -105,7 +105,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
           children: [
-            Text('Choose your own password', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.ink)),
+            Text('Choose your own password', style: TextStyle(fontFamily: kDisplayFont, fontSize: 26, fontWeight: FontWeight.w800, color: AppColors.ink)),
             const SizedBox(height: 8),
             Text(
               '${name.isEmpty ? 'This account' : name} signed in with a one-time password. '

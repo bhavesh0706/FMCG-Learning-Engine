@@ -171,3 +171,51 @@ def test_aliases_are_built_from_the_catalogue_name():
     assert {"aam (mango) jelly", "aam jelly", "mango jelly"} <= aliases("Aam (Mango) Jelly")
     assert {"kellogg's corn flakes", "kelloggs corn flakes", "corn flakes"} <= aliases("Kellogg's Corn Flakes")
     assert aliases("Dark Chocolate") == {"dark chocolate"}
+
+
+def _analyze_with_file(client, db, person, product, transcript, tmp_path):
+    """Like _analyze, but with its own throwaway recording: deleting the survey deletes the file."""
+    rid = start_survey(client, person, product)["response_id"]
+    recording = tmp_path / f"rec-{rid}.m4a"
+    recording.write_bytes(b"audio")
+    save_feedback_record("interview.m4a", str(recording), 60, 1, 4.0, "The customer shared feedback.", transcript, [], response_id=rid)
+    db.expire_all()
+    return rid
+
+
+def test_deleted_surveys_and_products_leave_product_verification(client, db, catalog, admin, tmp_path):
+    """A deleted survey (or a deleted product) never stays in Product verification."""
+    alice = make_user(db)
+    rid = _analyze_with_file(client, db, alice, catalog["choc"], "It was nice, good taste.", tmp_path)
+    other = _analyze_with_file(client, db, alice, catalog["choc"], "Okay taste, a bit costly.", tmp_path)
+
+    def listed():
+        return {x["response_id"] for x in client.get("/admin/product-checks?status=all", headers=auth(admin)).json()["checks"]}
+
+    assert {rid, other} <= listed()
+
+    # The Delete button: the survey and its check go together.
+    assert client.delete(f"/product-feedback/surveys/{rid}", headers=auth(admin)).status_code == 200
+    assert _check(db, rid) is None and rid not in listed()
+    assert not (tmp_path / f"rec-{rid}.m4a").exists() and (tmp_path / f"rec-{other}.m4a").exists()
+
+    # A check left behind by an older version (its survey or product is gone) isn't listed or counted.
+    db.add(ProductCheck(response_id=999999, selected_product_id=catalog["choc"].id, status="uncertain", review_status="optional"))
+    db.add(ProductCheck(response_id=other + 100000, selected_product_id=987654, status="uncertain", review_status="optional"))
+    db.commit()
+    shown = client.get("/admin/product-checks?status=unverified", headers=auth(admin)).json()
+    assert {999999, other + 100000}.isdisjoint({x["response_id"] for x in shown["checks"]})
+    assert shown["counts"]["unverified"] == len(shown["checks"])
+
+    # Deleting a product (after its surveys) removes its checks; checks that only named it are cleared.
+    jelly_id = catalog["jelly"].id
+    flakes_rid = _analyze_with_file(client, db, alice, catalog["flakes"], "The mango jelly was too sweet, I love mango jelly.", tmp_path)
+    assert _check(db, flakes_rid).detected_product_id == jelly_id
+    db.add(ProductCheck(response_id=flakes_rid + 200000, selected_product_id=jelly_id, status="uncertain", review_status="optional"))
+    db.commit()
+    org = make_user(db, role="client")
+    client.delete(f"/products/{jelly_id}", headers=auth(org))
+    assert client.delete(f"/products/{jelly_id}/permanent", headers=auth(org)).status_code == 200
+    db.expire_all()
+    assert db.query(ProductCheck).filter_by(selected_product_id=jelly_id).count() == 0
+    assert _check(db, flakes_rid).detected_product_id is None

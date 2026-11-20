@@ -7,8 +7,8 @@ import { downloadPlannedReport, errorText, planReport } from "../services/nextAp
   An empty prompt gives the standard report.
 */
 const EXAMPLES = {
-  pptx: ["Executive summary in 5 slides", "Only complaints, with recipe recommendations", "Compare all rounds", "Only retailers, by city"],
-  xlsx: ["Every survey with its answers", "Only concerns and recommended actions", "Compare all rounds", "Breakdown by respondent type and city"],
+  pptx: ["Executive summary in 5 slides", "Only complaints, with recipe recommendations", "Compare all surveys", "Only retailers, by city"],
+  xlsx: ["Every response with its answers", "Only concerns and recommended actions", "Compare all surveys", "Breakdown by respondent type and city"],
 };
 
 async function blobError(err, fallback) {
@@ -18,8 +18,13 @@ async function blobError(err, fallback) {
   return errorText(err, fallback);
 }
 
+// PowerPoint requests start with this design brief (backend: custom_reports.DESIGN_BRIEF);
+// the person adds what they need after it. The brief alone gives the standard deck.
+export const DESIGN_BRIEF = "Act as a senior UI/UX designer and create a clear, visually engaging PowerPoint presentation: ";
+
 export default function ReportPrompt({ format, productIds = [], round = null, onDone, autoFocus = true, disabled = false }) {
-  const [prompt, setPrompt] = useState("");
+  const brief = format === "pptx" ? DESIGN_BRIEF : "";
+  const [prompt, setPrompt] = useState(brief);
   const [plan, setPlan] = useState(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -55,13 +60,15 @@ export default function ReportPrompt({ format, productIds = [], round = null, on
     <form className="report-prompt" onSubmit={prepare}>
       <label className="field">
         <span className="field-label">What should the {kind} contain?</span>
+        {brief && <span className="muted small">Write your request after the design brief; with the brief alone you get the standard deck.</span>}
         <textarea className="input" rows={3} value={prompt} autoFocus={autoFocus} maxLength={2000}
           placeholder={`e.g. ${EXAMPLES[format][0]}. Leave empty for the standard report.`}
+          onFocus={(e) => { const end = e.target.value.length; e.target.setSelectionRange(end, end); }}
           onChange={(e) => { setPrompt(e.target.value); setPlan(null); }} />
       </label>
       <div className="prompt-chips" aria-label="Examples">
         {EXAMPLES[format].map((x) => (
-          <button key={x} type="button" className="master-chip" onClick={() => { setPrompt(x); setPlan(null); }}>{x}</button>
+          <button key={x} type="button" className="master-chip" onClick={() => { setPrompt(brief + x); setPlan(null); }}>{x}</button>
         ))}
       </div>
       {plan && (

@@ -39,6 +39,8 @@ os.environ.update(
         "FMCG_ATTACHMENTS_DIR": str(_TMP / "recipe_files"),
         "CORS_ORIGINS": "http://localhost:5173",
         "LOG_LEVEL": "WARNING",
+        # Recording encryption: a test master key (never the developer's ~/.fmcg/master.key)
+        "FMCG_MASTER_KEY": "Ts0JpWCUgrhmz9P7I3G1y3D8n6QyVnZdEGo5bOuq3Xk=",
     }
 )
 
@@ -195,3 +197,28 @@ def _no_leftover_recipe_standards():
     finally:
         db.close()
 
+
+
+def playback_token(db, user, feedback_id: int) -> str:
+    """A playback token as POST /recordings/{id}/authorise issues after the passkey check
+    (for tests about streaming itself; the passkey rules are in test_recording_security.py)."""
+    import hashlib
+    import secrets
+    from datetime import datetime, timedelta
+
+    from app.database.models import PlaybackToken
+
+    token = secrets.token_urlsafe(32)
+    db.add(PlaybackToken(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, feedback_id=feedback_id,
+                         expires_at=datetime.utcnow() + timedelta(minutes=10)))
+    db.commit()
+    return token
+
+
+def end_live_surveys(db):
+    """Ends every collecting survey left by earlier tests (the test database is shared): a standard
+    for ALL products can't change while any product is being surveyed."""
+    from app.database.models import SurveyRound
+
+    db.query(SurveyRound).filter(SurveyRound.status == "live").update({"status": "closed"}, synchronize_session=False)
+    db.commit()

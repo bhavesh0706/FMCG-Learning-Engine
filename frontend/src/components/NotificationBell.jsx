@@ -31,6 +31,7 @@ const POLL_MS = 30000;
 
 const MISSING_VIDEO = "survey_missing_video";
 const PRODUCT_ASSIGNED = "product_assigned";
+const PROJECT_CREATED = "project_created"; // Admins: a new project to review and staff
 const CLIENT_RECIPE = "client_recipe_updated";
 const CLIENT_CATALOG = "client_catalog_changed";
 const ROUND_STARTED_BY_ORG = "client_round_started";
@@ -69,6 +70,14 @@ function BellIcon() {
 }
 
 function KindIcon({ kind }) {
+  if (kind === PROJECT_CREATED) {
+    return (
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 10h18" />
+      </svg>
+    );
+  }
   if (ROUND_KINDS.includes(kind)) {
     return (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -122,8 +131,26 @@ const dayOnly = (iso) => {
   return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "—";
 };
 
-function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onClose }) {
+function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject, onClose }) {
   const d = item.data || {};
+  if (item.kind === PROJECT_CREATED) {
+    return (
+      <div className="notif-details">
+        <dl>
+          <dt>Project</dt>
+          <dd>{d.project_code || "—"}</dd>
+          <dt>Product</dt>
+          <dd>{d.product_name || "—"}{d.recipe_version ? <span className="notif-sub">Recipe v{d.recipe_version}</span> : null}</dd>
+          {d.target ? (<><dt>Response target</dt><dd>{d.target} consumers</dd></>) : null}
+        </dl>
+        {onOpenProject && d.project_id && (
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => { onClose(); onOpenProject(d.project_id); }}>
+            Open project
+          </button>
+        )}
+      </div>
+    );
+  }
   if (ROUND_KINDS.includes(item.kind)) {
     const ended = item.kind === ROUND_ENDED_BY_ORG;
     return (
@@ -134,8 +161,8 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
             {d.product_name || "—"}
             {d.category_name && <span className="notif-sub">{d.category_name}</span>}
           </dd>
-          <dt>Round</dt>
-          <dd>Round {d.round}</dd>
+          <dt>Survey</dt>
+          <dd>Survey {d.round}</dd>
           {ended ? (
             <>
               <dt>Surveyed</dt>
@@ -161,7 +188,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
         {d.note && <p className="notif-note">“{d.note}”</p>}
         {onOpenRounds && d.product_id && item.kind !== ROUND_STARTED && (
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => { onClose(); onOpenRounds(d.product_id); }}>
-            Open rounds
+            Open surveys
           </button>
         )}
         {onOpenSurvey && item.kind === ROUND_STARTED && (
@@ -295,7 +322,7 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
   return null;
 }
 
-export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct }) {
+export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [items, setItems] = useState([]);
@@ -445,7 +472,7 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
                       </span>
                     </button>
                     {isOpen && (
-                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onOpenRecipe={onOpenRecipe} onOpenRounds={onOpenRounds} onOpenProduct={onOpenProduct} onClose={() => setOpen(false)} />
+                      <Details item={item} onOpenHistory={onOpenHistory} onOpenSurvey={onOpenSurvey} onOpenRecipe={onOpenRecipe} onOpenRounds={onOpenRounds} onOpenProduct={onOpenProduct} onOpenProject={onOpenProject} onClose={() => setOpen(false)} />
                     )}
                   </li>
                 );

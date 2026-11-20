@@ -1,0 +1,127 @@
+"""
+Every table: primary key record_no (Python attribute and API field stay "id"),
+plus created_by / mod_by (users.record_no) and mod_at, filled automatically.
+"""
+
+from conftest import _unique, auth, make_user
+from sqlalchemy import create_engine, inspect, text
+
+from app.database.database import Base, SessionLocal
+from app.database.models import Category, RevokedToken
+
+
+def test_every_table_has_record_no_and_audit_columns():
+    for table in Base.metadata.sorted_tables:
+        names = {c.name for c in table.columns}
+        assert "id" not in names, table.name
+        assert {"record_no", "created_by", "mod_by", "mod_at"} <= names, table.name
+        assert [c.name for c in table.primary_key.columns] == ["record_no"], table.name
+
+
+def test_api_still_returns_id(client, db):
+    org = make_user(db, role="client", name=_unique("Acme "))
+    r = client.post("/categories", headers=auth(org), json={"name": _unique("Cat ")})
+    assert r.status_code in (200, 201), r.text
+    assert isinstance(r.json().get("id"), int)
+
+
+def test_created_by_and_mod_by_come_from_the_signed_in_account(client, db):
+    org = make_user(db, role="client", name=_unique("Acme "))
+    other = make_user(db, role="client", name=_unique("Acme "))
+    cat_id = client.post("/categories", headers=auth(org), json={"name": _unique("Cat ")}).json()["id"]
+    db.expire_all()
+    cat = db.get(Category, cat_id)
+    assert (cat.created_by, cat.mod_by) == (org.id, org.id)
+    first_mod_at = cat.mod_at
+    assert first_mod_at is not None and cat.updated_at == first_mod_at  # old name still works
+
+    r = client.put(f"/categories/{cat_id}", headers=auth(other), json={"name": _unique("Renamed ")})
+    assert r.status_code == 200, r.text
+    db.expire_all()
+    cat = db.get(Category, cat_id)
+    assert cat.created_by == org.id and cat.mod_by == other.id and cat.mod_at >= first_mod_at
+
+
+def test_changes_without_a_signed_in_account_are_left_empty(db):
+    cat = Category(name=_unique("System cat "))
+    db.add(cat)
+    db.commit()
+    assert cat.created_by is None and cat.mod_by is None and cat.mod_at is not None
+
+
+def test_a_session_can_name_its_user():
+    with SessionLocal() as s:
+        s.info["user_id"] = 4242
+        cat = Category(name=_unique("Named cat "))
+        s.add(cat)
+        s.commit()
+        assert cat.created_by == 4242
+
+
+def test_revoked_tokens_are_looked_up_by_hash(db):
+    db.add(RevokedToken(token_hash="a" * 64, user_id=1, expires_at=__import__("datetime").datetime.utcnow()))
+    db.commit()
+    row = db.query(RevokedToken).filter(RevokedToken.token_hash == "a" * 64).one()
+    assert isinstance(row.id, int)
+
+
+def test_migration_renames_an_old_database(tmp_path, monkeypatch):
+    """Old-style tables: id, updated_at, created_by holding a name, an unused table."""
+    from app.database import migrations
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE categories (id INTEGER PRIMARY KEY, name VARCHAR(150), updated_at DATETIME)"))
+        c.execute(text("CREATE TABLE recipe_standards (id INTEGER PRIMARY KEY, name VARCHAR(160), created_by VARCHAR(150))"))
+        c.execute(text("CREATE TABLE leftover_table (id INTEGER PRIMARY KEY, note TEXT)"))
+        c.execute(text("INSERT INTO categories VALUES (7, 'Food', '2026-01-01 00:00:00')"))
+        c.execute(text("INSERT INTO recipe_standards VALUES (3, 'Sugar', 'Asha')"))
+    monkeypatch.setattr(migrations, "engine", eng)
+
+    migrations.record_no_and_audit_columns()
+    migrations.record_no_and_audit_columns()  # runs again without harm
+
+    cols = {t: {c["name"] for c in inspect(eng).get_columns(t)} for t in inspect(eng).get_table_names()}
+    for t in ("categories", "recipe_standards", "leftover_table"):
+        assert "id" not in cols[t] and {"record_no", "created_by", "mod_by", "mod_at"} <= cols[t], t
+    assert "updated_at" not in cols["categories"]
+    with eng.connect() as c:
+        assert c.execute(text("SELECT record_no, mod_at FROM categories")).one() == (7, "2026-01-01 00:00:00")
+        assert c.execute(text("SELECT record_no, created_by_name, created_by FROM recipe_standards")).one() == (3, "Asha", None)
+
+
+def test_migration_repairs_a_half_migrated_table(tmp_path, monkeypatch):
+    """id still the key, an empty record_no added by sync_columns, names in created_by."""
+    from app.database import migrations
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'half.db'}")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE recipe_standards (id INTEGER PRIMARY KEY, name VARCHAR(160), "
+                       "created_by VARCHAR(150), record_no INTEGER, created_by_name VARCHAR(150))"))
+        c.execute(text("INSERT INTO recipe_standards (id, name, created_by) VALUES (12, 'Sugar', 'Acme Foods')"))
+        c.execute(text("INSERT INTO recipe_standards (id, name, created_by, created_by_name) VALUES (13, 'Salt', '5', 'Asha')"))
+    monkeypatch.setattr(migrations, "engine", eng)
+
+    migrations.record_no_and_audit_columns()
+    migrations.record_no_and_audit_columns()
+
+    cols = [c["name"] for c in inspect(eng).get_columns("recipe_standards")]
+    assert "id" not in cols and cols.count("record_no") == 1
+    assert inspect(eng).get_pk_constraint("recipe_standards")["constrained_columns"] == ["record_no"]
+    with eng.connect() as c:
+        rows = c.execute(text("SELECT record_no, created_by, created_by_name FROM recipe_standards ORDER BY record_no")).all()
+    assert [(r, None if b is None else int(b), n) for r, b, n in rows] == [(12, None, "Acme Foods"), (13, 5, "Asha")]
+
+
+def test_migration_refuses_when_both_columns_hold_values(tmp_path, monkeypatch):
+    import pytest
+
+    from app.database import migrations
+
+    eng = create_engine(f"sqlite:///{tmp_path / 'both.db'}")
+    with eng.begin() as c:
+        c.execute(text("CREATE TABLE odd (id INTEGER PRIMARY KEY, record_no INTEGER)"))
+        c.execute(text("INSERT INTO odd VALUES (1, 99)"))
+    monkeypatch.setattr(migrations, "engine", eng)
+    with pytest.raises(RuntimeError, match="record_no holds 1 values"):
+        migrations.record_no_and_audit_columns()

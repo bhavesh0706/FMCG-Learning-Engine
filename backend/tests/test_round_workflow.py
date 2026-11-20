@@ -16,8 +16,8 @@ from conftest import _unique, answers_payload, auth, make_user
 
 from app.database.models import ProductAssignment, SurveyRound, SurveyResponse
 
-RECIPE = {"batch_size": "10 L", "ingredients": [{"name": "Lemon juice", "quantity": "1", "unit": "L"}]}
-RECIPE_V2 = {**RECIPE, "ingredients": [{"name": "Lemon juice", "quantity": "0.8", "unit": "L"}]}
+RECIPE = {"batch_size": "10 L", "ingredients": [{"name": "Lemon juice", "quantity": "10", "unit": "L"}]}
+RECIPE_V2 = {**RECIPE, "ingredients": [{"name": "Lemon juice", "quantity": "9.2", "unit": "L"}, {"name": "Water", "quantity": "0.8", "unit": "L"}]}
 
 
 @pytest.fixture()
@@ -286,6 +286,6 @@ def test_the_migration_keeps_already_surveyed_products_open(client, db, org, adm
         db.get(Product, pid).needs_round = 1
     db.commit()
     with engine.begin() as conn:  # the step run_migrations does once, when the column is added
-        conn.execute(text("UPDATE products SET needs_round = 0 WHERE id IN (SELECT DISTINCT product_id FROM survey_responses)"))
+        conn.execute(text("UPDATE products SET needs_round = 0 WHERE record_no IN (SELECT DISTINCT product_id FROM survey_responses)"))
     db.expire_all()
     assert db.get(Product, surveyed).needs_round == 0 and db.get(Product, fresh).needs_round == 1

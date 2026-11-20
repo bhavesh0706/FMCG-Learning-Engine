@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { getProducts, getProductCheck, listProductChecks, reviewProductCheck } from "../services/feedbackApi";
+import { deleteSurvey } from "../services/productFeedbackApi";
+import { confirmDialog } from "./ConfirmDialog";
+import Select from "./Select";
 
 /*
-  Survey history > Product checks (admins).
+  Survey history > Product verification (admins).
   After each analysis the backend checks whether the customer talked about the
   product the survey person selected (services/product_check.py):
     Mismatch detected  -> kept out of every report until reviewed here
     Unverified         -> no product named (or mixed): counted under the selected product
   Confirm keeps the selected product, Correct moves the survey to the right product,
   Mark invalid keeps it out for good (the recording is kept). Every decision is audited.
+  Delete removes the survey completely (answers, analysis, recording), e.g. a test survey.
 */
 
 const FILTERS = [
@@ -75,6 +79,26 @@ function CheckCard({ check, products, onDone }) {
     }
   };
 
+  const remove = async () => {
+    const ok = await confirmDialog({
+      title: `Delete survey #${check.response_id}?`,
+      message: "The survey, its answers, its analysis and the recording are deleted for good, and it leaves every report. "
+        + "To only keep it out of the reports, use Mark invalid instead.",
+      confirmLabel: "Delete survey",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError("");
+    try {
+      await deleteSurvey(check.response_id);
+      onDone();
+    } catch (err) {
+      setError(errorText(err, "The survey couldn't be deleted."));
+      setBusy(false);
+    }
+  };
+
   return (
     <article className="panel pc-card">
       <header className="pc-head">
@@ -127,10 +151,10 @@ function CheckCard({ check, products, onDone }) {
           <input className="input" placeholder="Remarks (optional)" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
           {mode === "correct" ? (
             <>
-              <select className="input" value={productId} onChange={(e) => setProductId(e.target.value)} aria-label="Correct product">
+              <Select className="input" value={productId} onChange={(e) => setProductId(e.target.value)} aria-label="Correct product">
                 <option value="">Choose the product</option>
                 {products.filter((p) => p.id !== check.selected_product.id).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
+              </Select>
               <button type="button" className="btn btn-primary btn-sm" disabled={busy || !productId} onClick={() => act("correct")}>Move survey</button>
               <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => setMode(null)}>Cancel</button>
             </>
@@ -141,6 +165,7 @@ function CheckCard({ check, products, onDone }) {
               </button>
               <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => setMode("correct")}>Correct the product</button>
               <button type="button" className="btn btn-secondary btn-sm pc-invalid" disabled={busy} onClick={() => act("invalid")}>Mark invalid</button>
+              <button type="button" className="btn btn-danger btn-sm pc-delete" disabled={busy} onClick={remove}>Delete</button>
             </>
           )}
         </div>
@@ -162,7 +187,7 @@ export default function ProductChecks({ onCounts }) {
       setState({ loading: false, error: "", checks: res.checks || [], counts: res.counts || {} });
       onCounts?.(res.counts || {});
     } catch (err) {
-      setState((s) => ({ ...s, loading: false, error: errorText(err, "Product checks couldn't be loaded.") }));
+      setState((s) => ({ ...s, loading: false, error: errorText(err, "Product verification couldn't be loaded.") }));
     }
   }, [filter, onCounts]);
 
@@ -175,12 +200,12 @@ export default function ProductChecks({ onCounts }) {
   }, []);
 
   return (
-    <section className="pc" aria-label="Product checks">
+    <section className="pc" aria-label="Product verification">
       <p className="muted pc-intro">
         After each analysis we check that the customer talked about the product that was selected. Mismatches stay out of the
         reports until you confirm, correct or mark them invalid.
       </p>
-      <div className="segmented page-tabs" role="tablist" aria-label="Product check filter">
+      <div className="segmented page-tabs" role="tablist" aria-label="Product verification filter">
         {FILTERS.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={filter === key} className={filter === key ? "is-on" : ""} onClick={() => setFilter(key)}>
             {label}

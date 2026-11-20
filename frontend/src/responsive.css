@@ -261,7 +261,8 @@ body {
   .icon-btn,
   input.input,
   select.input,
-  select.select {
+  select.select,
+  .ss-trigger {
     min-height: 44px;
   }
 
@@ -279,6 +280,8 @@ body {
   input.input,
   select.input,
   select.select,
+  .ss-trigger,
+  .ss-search input,
   textarea.input {
     font-size: max(16px, 1em);
   }
@@ -817,8 +820,127 @@ body {
      specific; this guard only exists on touch screens. */
   input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]),
   select,
+  .ss-search input,
   textarea {
     font-size: max(16px, 1em) !important;
   }
 }
 
+/* ---- Super Admin portal on phones: 8 sections don't fit one fixed bottom bar, so the
+   bar scrolls sideways (the current section is scrolled into view by OrgPortal) ---- */
+@media (max-width: 760px) {
+  .org-topbar .topnav {
+    grid-auto-columns: minmax(68px, 1fr);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .org-topbar .topnav::-webkit-scrollbar {
+    display: none;
+  }
+  .org-topbar .org-brand-sub {
+    display: none;
+  }
+
+  /* Catalog setup cards, two per row: the icon sits above the text so words don't wrap
+     into a narrow column */
+  .setup-step.kpi-card {
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+  }
+  .setup-step.kpi-card .kpi-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+  .setup-step.kpi-card .kpi-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+  .kpi-number {
+    font-size: 24px !important;
+  }
+
+  /* KPI number cards: smaller icon tile on phones */
+  .h-stat.kpi-card {
+    padding: 14px 14px;
+    padding-right: 56px;
+  }
+  .h-stat.kpi-card > .kpi-icon {
+    top: 12px;
+    right: 12px;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+  }
+  .h-stat.kpi-card > .kpi-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+  .h-stat.kpi-card .h-stat-value {
+    font-size: 26px;
+  }
+}
+
+@media (max-width: 760px) {
+  /* A running total (e.g. 30 analyzed surveys) is not "new": no red badge in the tab bar */
+  .topnav .nav-count.is-total {
+    display: none;
+  }
+
+  /* Page tabs (By product · All surveys · …) keep one line and scroll sideways */
+  .segmented.page-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    max-width: 100%;
+  }
+  .segmented.page-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .segmented.page-tabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  /* Option groups with 4 or more options (e.g. Survey history's view tabs) don't fit as
+     equal segments: one line that scrolls sideways, each option at its natural width.
+     Groups of 2–3 keep the equal iOS-style segments above. */
+  .segmented:not(.state-tabs):has(> button:nth-child(4)) {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    scrollbar-width: none;
+    max-width: 100%;
+  }
+  .segmented:not(.state-tabs):has(> button:nth-child(4))::-webkit-scrollbar {
+    display: none;
+  }
+  .segmented:not(.state-tabs):has(> button:nth-child(4)) > button {
+    flex: 0 0 auto !important;
+    min-width: max-content;
+    white-space: nowrap;
+  }
+  .segmented > button .seg-count {
+    white-space: nowrap;
+  }
+
+  /* Page headers: title and description get the full width, actions wrap below */
+  .home-head {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .home-head > .page-heading,
+  .home-head > div:first-child {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .history-tabs-row {
+    flex-wrap: wrap;
+  }
+  .history-tabs-row > .history-tabs {
+    width: 100%;
+  }
+}

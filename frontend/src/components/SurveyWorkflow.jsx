@@ -2,8 +2,12 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { getCategories, getProducts, getProductQuestions, reverseGeocode } from "../services/feedbackApi";
 import { CATALOG_CHANGED, DATA_CHANGED } from "../services/appEvents";
 import { getSession } from "../services/auth";
+import { myActionPlans } from "../services/orgApi";
 import { getMasters } from "../services/nextApi";
+import { fillArray, lovChildren, lovMatch, lovValues, onLovLoaded } from "../services/lov";
 import { API_BASE_URL } from "../config";
+import { captureFix, describeFix, fixFields, isPlaceholder, isPoor, keepFix, keptFix, placeholderFor } from "../services/gps";
+import Select from "./Select";
 
 /*
   Field survey, steps 1-3: Product -> Respondent -> Questions.
@@ -29,7 +33,7 @@ export function versionLabel(product) {
   if (versions.length > 1) return `${versions.length} versions`;
   const r = product?.live_round;
   if (!r) return "";
-  return [r.recipe_version ? `Recipe v${r.recipe_version}` : null, `Round ${r.number}`].filter(Boolean).join(" · ");
+  return [r.recipe_version ? `Recipe v${r.recipe_version}` : null, `Survey ${r.number}`].filter(Boolean).join(" · ");
 }
 
 // Under the chosen product: which recipe version this survey tests, the round's
@@ -41,10 +45,10 @@ function VersionCard({ round, version = null }) {
       <div className="version-card" aria-label="Product version">
         <div className="version-chips">
           <span className="version-chip">Recipe v{version.version}</span>
-          <span className="round-chip">Round {last} · complete</span>
+          <span className="round-chip">Survey {last} · complete</span>
         </div>
         <p className="muted version-card-note">
-          This version's round has ended. The survey is added to Round {last}, so it counts in that version's report.
+          This version's survey has ended. The response is added to Survey {last}, so it counts in that version's report.
         </p>
       </div>
     );
@@ -52,7 +56,7 @@ function VersionCard({ round, version = null }) {
   if (!round) {
     return (
       <p className="version-card is-none">
-        No survey round is collecting for this product right now. This survey joins its latest round.
+        No survey is collecting for this product right now. This response joins its latest survey.
       </p>
     );
   }
@@ -61,28 +65,45 @@ function VersionCard({ round, version = null }) {
     <div className="version-card" aria-label="Recipe version being tested">
       <div className="version-chips">
         {round.recipe_version && <span className="version-chip">Recipe v{round.recipe_version}</span>}
-        <span className="round-chip is-live">Round {round.number} · {round.done} of {round.target}</span>
+        <span className="round-chip is-live">Survey {round.number} · {round.done} of {round.target}</span>
         {round.new_version && <span className="status-chip is-act">New version</span>}
       </div>
       <div className="version-progress" aria-hidden="true"><span style={{ width: `${pct}%` }} /></div>
       <p className="muted version-text">
         {round.new_version
-          ? `The recipe has changed: consumers taste recipe v${round.recipe_version}. This survey counts toward Round ${round.number}.`
-          : `This survey counts toward Round ${round.number}.`}
+          ? `The recipe has changed: consumers taste recipe v${round.recipe_version}. This response counts toward Survey ${round.number}.`
+          : `This response counts toward Survey ${round.number}.`}
       </p>
       {round.note && <p className="version-note">Note from the Super Admin: “{round.note}”</p>}
     </div>
   );
 }
 
+// "How long have you been consuming / using <product>?" (the stored codes are unchanged)
 const USAGE_PERIODS = [
-  { value: "last_week", label: "In the last week" },
-  { value: "last_month", label: "In the last month" },
-  { value: "last_3_months", label: "In the last 3 months" },
-  { value: "more_than_3_months", label: "More than 3 months ago" },
+  { value: "last_week", label: "Less than 7 days" },
+  { value: "last_month", label: "For the past 1 month" },
+  { value: "last_3_months", label: "For the last 3 months" },
+  { value: "more_than_3_months", label: "For more than 3 months" },
 ];
 
+// "consuming" for food and drink, "using" for everything else (shampoo, soap, detergent ...).
+// The category name decides first, then the product name; unclear = "using".
+const EDIBLE = /\b(food|beverage|drink|dairy|milk|cereal|snack|confection|chocolate|juice|tea|coffee|water|biscuit|bakery|bread|jelly|jam|sauce|spice|masala|ghee|butter|cheese|curd|yogh?urt|lassi|noodle|pasta|granola|flakes|oats|candy|nutrition|edible|ice ?cream|frozen|rice|atta|flour|dal|honey|pickle|sweets?)/i;
+const NON_EDIBLE = /\b(soap|shampoo|detergent|lotion|cosmetic|personal care|home care|cleaner|cleaning|toothpaste|deodorant|perfume|fragrance|hair|skin|laundry|dishwash|tissue|diaper|sanitary|repellent|polish|insecticide|household|beauty|make ?up)/i;
+export function usageVerb(productName, categoryName) {
+  if (EDIBLE.test(categoryName || "")) return "consuming";
+  if (NON_EDIBLE.test(`${productName || ""} ${categoryName || ""}`)) return "using";
+  return EDIBLE.test(productName || "") ? "consuming" : "using";
+}
+
 const GENDERS = ["Male", "Female", "Other", "Prefer not to say"];
+// From the database lists (LOV USAGE_PERIOD, GENDER) once loaded; the values above are the fallback.
+onLovLoaded(() => {
+  fillArray(USAGE_PERIODS, "USAGE_PERIOD", (v) => ({ value: v.code, label: v.label }));
+  fillArray(GENDERS, "GENDER", (v) => v.label);
+});
+
 
 const EXECUTIVE_KEY = "fmcg.survey.executiveName";
 
@@ -90,6 +111,8 @@ const EMPTY_RESPONDENT = {
   name: "", mobile: "", address: "", gender: "", age: "", location: "", consent: false,
   // Next update: country, respondent type, occupation and class (from the master lists)
   country: "India", respondent_type: "", occupation: "", sec_class: "",
+  // Country -> State -> City from the LOV lists (CustomerPlace below)
+  state: "", city: "",
 };
 
 /* Multiple choice: tick any number of options; the answer is "A | B". */
@@ -113,6 +136,7 @@ function MultiChoice({ label, options, value, onChange }) {
 const errorText = (err, fallback) => {
   const d = err?.response?.data?.detail;
   if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof d.message === "string") return d.message; // e.g. a recipe locked by a collecting survey
   if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg).replace(/^Value error, /, "");
   return err?.message || fallback;
 };
@@ -155,6 +179,172 @@ function Field({ label, required, hint, children, wide }) {
       {children(id)}
       {hint && <p className="field-hint">{hint}</p>}
     </div>
+  );
+}
+
+/* The customer's place: Country -> State -> City from the LOV lists COUNTRY / STATE / CITY
+   (each list inside the previous one), then the current location, which the address
+   lookup (GPS + geocoder) can fill in together with the country, state and city.
+   A country without states in the list (added by an admin) gets free-text fields. */
+const OTHER_CITY = "__other_city__";
+
+function CustomerPlace({ respondent, setRespondent, onLocated }) {
+  const countries = lovValues("COUNTRY") || [];
+  const country = lovMatch(countries, respondent.country);
+  const states = lovChildren("STATE", country?.id);
+  const state = lovMatch(states, respondent.state);
+  const cities = lovChildren("CITY", state?.id);
+  const [gps, setGps] = useState({ status: "idle", message: "" });
+  // "Other city": a city that isn't in the state's list, typed by hand (or found by the lookup).
+  const [otherCity, setOtherCity] = useState(false);
+  const cityInList = lovMatch(cities, respondent.city);
+  const typingCity = cities.length > 0 && (otherCity || Boolean(respondent.city && !cityInList));
+  const set = (patch) => setRespondent((r) => ({ ...r, ...patch }));
+
+  // "Use current location": the GPS (on a device that has one) works without internet;
+  // the address lookup needs the server. Offline, the position is kept with the survey
+  // and the place is filled in from it once back online (only what is still empty).
+  const pendingFix = useRef(null);
+
+  const fillFrom = async (found, onlyEmpty = false) => {
+    setGps({ status: "resolving", message: "" });
+    try {
+      const place = (await reverseGeocode(found.latitude, found.longitude)) || {};
+      const c = lovMatch(lovValues("COUNTRY") || [], place.country);
+      const stateList = lovChildren("STATE", c?.id);
+      const st = lovMatch(stateList, place.state);
+      // The lookup gives several names (city, town, district ...): the first one in the state's city list.
+      const cityList = lovChildren("CITY", st?.id);
+      const ci = [place.city, ...(place.places || [])].map((n) => lovMatch(cityList, n)).find(Boolean) || null;
+      const where = {
+        country: c?.label || place.country || "",
+        // A country with a state list: only a value of the list; otherwise the looked-up name.
+        state: st?.label || (stateList.length ? "" : place.state || ""),
+        // Not in the list: keep the looked-up name (shown as "Other city"), so the city is never lost.
+        city: ci?.label || place.city || "",
+      };
+      const area = place.locality || place.label || "";
+      // Chosen or typed by hand while offline: kept.
+      setRespondent((r) => ({
+        ...r,
+        ...(onlyEmpty && r.state && r.city ? {} : where),
+        ...(onlyEmpty && (r.location || "").trim() && !isPlaceholder(r.location) ? {} : { location: area }),
+      }));
+      pendingFix.current = null;
+      setOtherCity(false);
+      const missing = st && !ci && place.city
+        ? ` "${place.city}" isn't in the city list of ${st.label}, so it's filled in as typed. Pick a listed city if one fits, or ask an admin to add it.`
+        : c && !st && place.state ? ` Choose the state.` : "";
+      // OpenStreetMap knows no town at this spot: the city came from the district's name.
+      const fromDistrict = ci && ["state_district", "county"].includes(place.city_from)
+        ? ` The city was taken from the district (${place.city}): check it with the customer.`
+        : "";
+      setGps({ status: missing ? "warn" : "idle", message: `Found: ${place.label || "your location"}.${missing}${fromDistrict}` });
+      onLocated?.(found, place);
+    } catch (err) {
+      setGps({ status: "warn", message: err?.response?.data?.detail || "Couldn't find the address right now (the GPS position is kept). Choose the place and type the area." });
+    }
+  };
+
+  const locate = async () => {
+    setGps({ status: "locating", message: "" });
+    let found;
+    try {
+      found = await captureFix(); // { latitude, longitude, accuracy, captured_at, source }
+    } catch (err) {
+      setGps({ status: "error", message: `${err.message}`.replace("type the location", "choose the place by hand") });
+      return;
+    }
+    if (navigator.onLine === false) {
+      onLocated?.(found, null); // the survey keeps the position (offline too)
+      pendingFix.current = found;
+      // No address offline: the position is the area for now (replaced when back online,
+      // or by the server when the survey is saved).
+      setRespondent((r) => ((r.location || "").trim() && !isPlaceholder(r.location) ? r : { ...r, location: placeholderFor(found) }));
+      setGps({
+        status: "warn",
+        message: `Offline: the GPS position (${describeFix(found)}) is used as the area. It becomes the area's name when you're back online. Choose the state and city if they're empty.`,
+      });
+      return;
+    }
+    await fillFrom(found);
+  };
+
+  // Back online with a position taken offline: fill in the place from it.
+  useEffect(() => {
+    const onOnline = () => {
+      if (pendingFix.current) fillFrom(pendingFix.current, true);
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  });
+
+  const select = (id, value, options, onChange, what) => (
+    <Select id={id} className="input" value={value} onChange={(e) => onChange(e.target.value)}>
+      <option value="">{`Choose ${what}`}</option>
+      {options.map((o) => <option key={o.id} value={o.label}>{o.label}</option>)}
+    </Select>
+  );
+  const text = (id, value, onChange, placeholder) => (
+    <input id={id} className="input" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+  );
+  const busy = gps.status === "locating" || gps.status === "resolving";
+
+  return (
+    <>
+      <Field label="Country" required>
+        {(id) => countries.length
+          ? select(id, country?.label || "", countries, (v) => set({ country: v, state: "", city: "" }), "country")
+          : text(id, respondent.country, (v) => set({ country: v }), "e.g. India")}
+      </Field>
+      <Field label="State" required>
+        {(id) => states.length
+          ? select(id, state?.label || "", states, (v) => { setOtherCity(false); set({ state: v, city: "" }); }, "state")
+          : text(id, respondent.state, (v) => set({ state: v, city: "" }), country ? "Type the state" : "Choose the country first")}
+      </Field>
+      <Field label="City" required hint={typingCity ? "Not in the city list. An admin can add it in Catalog > Master lists." : null}>
+        {(id) => !cities.length
+          ? text(id, respondent.city, (v) => set({ city: v }), state || !states.length ? "Type the city" : "Choose the state first")
+          : typingCity
+          ? (
+            <div className="gps-row">
+              {text(id, respondent.city, (v) => set({ city: v }), "Type the city")}
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setOtherCity(false); set({ city: "" }); }}>
+                Choose from list
+              </button>
+            </div>
+          )
+          : (
+            <Select id={id} className="input" value={cityInList?.label || ""}
+              onChange={(e) => {
+                if (e.target.value === OTHER_CITY) {
+                  setOtherCity(true);
+                  set({ city: "" });
+                } else set({ city: e.target.value });
+              }}>
+              <option value="">Choose city</option>
+              {cities.map((o) => <option key={o.id} value={o.label}>{o.label}</option>)}
+              <option value={OTHER_CITY}>Other city (type it)</option>
+            </Select>
+          )}
+      </Field>
+      <Field label="Current location (area or locality)" required wide>
+        {(id) => (
+          <>
+            <div className="gps-row">
+              <input id={id} className="input" placeholder="e.g. Andheri West, or use the button" value={respondent.location}
+                onChange={(e) => set({ location: e.target.value })} />
+              <button type="button" className="btn btn-secondary btn-sm" onClick={locate} disabled={busy}>
+                {gps.status === "locating" ? "Finding location…" : gps.status === "resolving" ? "Finding the address…" : "Use current location"}
+              </button>
+            </div>
+            <span className={`gps-status ${gps.status === "error" ? "is-error" : gps.status === "warn" ? "is-warn" : "muted"}`} aria-live="polite">
+              {gps.message || "Fills in the country, state, city and area from this device's location."}
+            </span>
+          </>
+        )}
+      </Field>
+    </>
   );
 }
 
@@ -210,6 +400,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   // Signed in: the executive is the signed-in person, always (never a name remembered
   // from someone else who used this browser before).
   const signedInName = getSession()?.user?.name || "";
+  // Action plans: a survey person surveys only the cities allocated to them (the server checks too)
+  const [myPlans, setMyPlans] = useState([]);
+  useEffect(() => {
+    if (getSession()?.user?.role !== "executive") return;
+    myActionPlans().then((r) => setMyPlans(r.plans || [])).catch(() => setMyPlans([]));
+  }, []);
   const [executiveName, setExecutiveName] = useState(() => signedInName || readExecutive());
   const [usagePeriod, setUsagePeriod] = useState(initialContext?.usagePeriod ?? "");
   // Internal (staff, family) or External (real customers) survey
@@ -220,7 +416,13 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     getMasters().then(setMasters).catch(() => {});
   }, []);
   const [surveyLocation, setSurveyLocation] = useState(initialContext?.surveyLocation ?? "");
-  const [coords, setCoords] = useState(initialContext?.coords ?? null);
+  // GPS fix of this survey: { latitude, longitude, accuracy, captured_at, source } (services/gps.js).
+  // Kept in this browser until the survey is saved, so a reload or lost connection keeps it.
+  const [coords, setCoordsState] = useState(() => initialContext?.coords ?? keptFix());
+  const setCoords = (fix) => {
+    setCoordsState(fix);
+    keepFix(fix);
+  };
   const [gpsState, setGpsState] = useState("idle"); // idle | locating | resolving | error
   const [gpsMessage, setGpsMessage] = useState("");
   // The Survey location text came from GPS (so a new GPS reading may replace it, but typed text never is).
@@ -231,6 +433,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
   const alertRef = useRef(null);
 
   const product = useMemo(() => products.find((p) => String(p.id) === String(productId)) || null, [products, productId]);
+  const myPlan = myPlans.find((p) => String(p.product_id) === String(productId)) || null;
+  const myCities = myPlan?.cities || [];
+  const verb = usageVerb(product?.name, categories.find((c) => String(c.id) === String(product?.category_id ?? categoryId))?.name);
   // Versions of the chosen product in fieldwork. One: used automatically. Several: the
   // survey person picks (the one collecting now is suggested). None yet: the server
   // files the survey under the product's first round.
@@ -372,6 +577,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
 
   const validateRespondent = () => {
     if (!respondent.name.trim()) return "Enter the respondent's name.";
+    if (myCities.length) {
+      const city = (respondent.city || "").trim().toLowerCase();
+      if (!city) return `Choose the customer's city: you survey in ${myCities.join(", ")} only.`;
+      if (!myCities.some((c) => c.toLowerCase() === city))
+        return `You survey customers in ${myCities.join(", ")} only (action plan “${myPlan.plan_name}”).`;
+    }
     const digits = respondent.mobile.replace(/\D/g, "");
     if (respondent.mobile.trim() && (digits.length < 10 || digits.length > 13))
       return "Enter a valid mobile number (10 digits, optionally with country code).";
@@ -379,9 +590,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
       const age = Number(respondent.age);
       if (!Number.isInteger(age) || age < 1 || age > 120) return "Enter an age between 1 and 120.";
     }
-    if (!respondent.location.trim()) return "Enter where the respondent lives (city or locality).";
+    if (!(respondent.country || "").trim()) return "Choose the customer's country.";
+    if (!(respondent.state || "").trim()) return "Choose the customer's state.";
+    if (!(respondent.city || "").trim()) return "Choose the customer's city.";
+    if (!respondent.location.trim()) return "Enter the customer's current location (area or locality), or use the location button.";
     if (!executiveName.trim()) return "Enter your name as the survey executive.";
-    if (!usagePeriod) return "Choose when the customer used the product.";
+    if (!usagePeriod) return `Choose how long the customer has been ${verb} the product.`;
     if (!surveyLocation.trim()) return "Enter where this survey is taking place.";
     if (!respondent.consent) return "The respondent's consent is required before continuing.";
     return "";
@@ -423,6 +637,8 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         age: respondent.age === "" ? null : Number(respondent.age),
         location: respondent.location.trim(),
         country: (respondent.country || "").trim() || null,
+        state: (respondent.state || "").trim() || null,
+        city: (respondent.city || "").trim() || null,
         respondent_type: respondent.respondent_type || null,
         occupation: respondent.occupation || null,
         sec_class: respondent.sec_class || null,
@@ -436,8 +652,8 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         usage_period: usagePeriod,
         audience,
         location: surveyLocation.trim(),
-        latitude: coords?.latitude ?? null,
-        longitude: coords?.longitude ?? null,
+        // Same fields as the mobile apps: position, accuracy, original capture time, platform.
+        ...fixFields(coords),
       },
       answers: questions.map((q) => ({ question_id: q.id, value: String(answers[q.id] ?? "").trim() })),
       // Kept for "Next respondent, same product".
@@ -475,48 +691,55 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
 
   /* ---------- GPS ---------- */
 
-  function captureLocation() {
-    setGpsMessage("");
-    if (!navigator.geolocation) {
-      setGpsState("error");
-      setGpsMessage("This browser can't share its location. Type the survey location.");
+  // Coordinates -> address for "Survey location" (needs the server).
+  async function resolveSurveyPlace(fix) {
+    if (navigator.onLine === false) {
+      // No address offline: the position is the survey location for now (unless one was typed).
+      if (!surveyLocation.trim() || autoFilled || isPlaceholder(surveyLocation)) {
+        setSurveyLocation(placeholderFor(fix));
+        setAutoFilled(true);
+      }
+      setGpsState("idle");
+      setGpsMessage("Offline: the position is used as the survey location. It becomes the address when you're back online.");
       return;
     }
-    setGpsState("locating");
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const found = {
-          latitude: Number(pos.coords.latitude.toFixed(6)),
-          longitude: Number(pos.coords.longitude.toFixed(6)),
-          accuracy: Math.round(pos.coords.accuracy),
-        };
-        setCoords(found);
-        setGpsState("resolving");
-        try {
-          const place = await reverseGeocode(found.latitude, found.longitude);
-          if (place?.label && (!surveyLocation.trim() || autoFilled)) {
-            setSurveyLocation(place.label);
-            setAutoFilled(true);
-          }
-          setGpsState("idle");
-        } catch (err) {
-          setGpsState("error");
-          setGpsMessage(err?.response?.data?.detail || "Couldn't find the address right now. Type the survey location.");
-        }
-      },
-      (err) => {
-        setGpsState("error");
-        setGpsMessage(
-          err?.code === 1
-            ? "Location access is blocked. Allow it in the browser's site settings, or type the location."
-            : err?.code === 3
-            ? "Finding the location took too long. Try again, or type the location."
-            : "Location is turned off or unavailable. Turn it on, or type the location."
-        );
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
-    );
+    setGpsState("resolving");
+    try {
+      const place = await reverseGeocode(fix.latitude, fix.longitude);
+      if (place?.label && (!surveyLocation.trim() || autoFilled)) {
+        setSurveyLocation(place.label);
+        setAutoFilled(true);
+      }
+      setGpsState("idle");
+      setGpsMessage("");
+    } catch (err) {
+      setGpsState("idle"); // the position itself is kept
+      setGpsMessage(err?.response?.data?.detail || "Couldn't find the address right now. Type the survey location.");
+    }
   }
+
+  async function captureLocation() {
+    setGpsMessage("");
+    setGpsState("locating");
+    try {
+      const fix = await captureFix();
+      setCoords(fix);
+      await resolveSurveyPlace(fix);
+    } catch (err) {
+      setGpsState("error");
+      setGpsMessage(err.message);
+    }
+  }
+
+  // Back online with a position taken offline and no address yet: look it up now.
+  useEffect(() => {
+    const onOnline = () => {
+      if (coords && (!surveyLocation.trim() || isPlaceholder(surveyLocation))) resolveSurveyPlace(coords);
+      else setGpsMessage((m) => (m.startsWith("Offline:") ? "" : m));
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  });
 
   /* ================================================================
      Render
@@ -596,7 +819,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
               <div className="form-grid">
                 <Field label="Category" required>
                   {(id) => (
-                    <select
+                    <Select
                       id={id}
                       className="input"
                       value={categoryId}
@@ -612,12 +835,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                       {categories.map((c) => (
                         <option key={c.id} value={c.id}>{c.name}</option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </Field>
                 <Field label="Product" required>
                   {(id) => (
-                    <select
+                    <Select
                       id={id}
                       className="input"
                       value={productId}
@@ -630,22 +853,22 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                           {p.name}{versionLabel(p) ? ` (${versionLabel(p)}${p.live_round?.new_version ? ", new version" : ""})` : ""}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </Field>
                 {versions.length > 1 && (
                   <Field label="Version" required>
                     {(id) => (
-                      <select id={id} className="input" value={versionValue}
+                      <Select id={id} className="input" value={versionValue}
                         onChange={(e) => setVersionChoice(e.target.value)}>
                         {!autoVersion && <option value="">Choose the version tasted</option>}
                         {versions.map((v) => (
                           <option key={v.version} value={String(v.version)}>
-                            Version {v.version} · Round{v.rounds.length > 1 ? "s" : ""} {v.rounds.join(", ")}
+                            Version {v.version} · Survey{v.rounds.length > 1 ? "s" : ""} {v.rounds.join(", ")}
                             {v.live ? " (collecting now)" : " (complete)"}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     )}
                   </Field>
                 )}
@@ -699,11 +922,11 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   </Field>
                   <Field label="Gender">
                     {(id) => (
-                      <select id={id} className="input" value={respondent.gender}
+                      <Select id={id} className="input" value={respondent.gender}
                         onChange={(e) => setRespondent({ ...respondent, gender: e.target.value })}>
                         <option value="">Choose</option>
                         {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
-                      </select>
+                      </Select>
                     )}
                   </Field>
                   <Field label="Age">
@@ -712,31 +935,35 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         value={respondent.age} onChange={(e) => setRespondent({ ...respondent, age: e.target.value })} />
                     )}
                   </Field>
-                  <Field label="City or locality" required>
-                    {(id) => (
-                      <input id={id} className="input" placeholder="e.g. Andheri, Mumbai" value={respondent.location}
-                        onChange={(e) => setRespondent({ ...respondent, location: e.target.value })} />
-                    )}
-                  </Field>
+                  {myCities.length > 0 && (
+                    <p className="ap-note" role="note">
+                      You survey in <strong>{myCities.join(", ")}</strong> only · action plan “{myPlan.plan_name}”
+                    </p>
+                  )}
+                  <CustomerPlace respondent={respondent} setRespondent={setRespondent}
+                    onLocated={(found, place) => {
+                      // The survey usually happens where the customer is: fill the survey's GPS too, if empty.
+                      if (!coords) setCoords(found);
+                      // Offline (no address): the position stands in for the survey location.
+                      const text = place?.label || (place ? "" : placeholderFor(found));
+                      if (text && (!surveyLocation.trim() || autoFilled || isPlaceholder(surveyLocation))) {
+                        setSurveyLocation(text);
+                        setAutoFilled(true);
+                      }
+                    }} />
                   <Field label="Address (optional)">
                     {(id) => (
                       <input id={id} className="input" value={respondent.address}
                         onChange={(e) => setRespondent({ ...respondent, address: e.target.value })} />
                     )}
                   </Field>
-                  <Field label="Country">
-                    {(id) => (
-                      <input id={id} className="input" placeholder="e.g. India" value={respondent.country}
-                        onChange={(e) => setRespondent({ ...respondent, country: e.target.value })} />
-                    )}
-                  </Field>
                   {[["respondent_type", "Respondent type"], ["occupation", "Occupation"], ["sec_class", "Class (SEC)"]].map(([key, label]) => (
                     <Field key={key} label={label}>
                       {(id) => (
-                        <select id={id} className="input" value={respondent[key]} onChange={(e) => setRespondent({ ...respondent, [key]: e.target.value })}>
+                        <Select id={id} className="input" value={respondent[key]} onChange={(e) => setRespondent({ ...respondent, [key]: e.target.value })}>
                           <option value="">Choose</option>
                           {(masters[key] || []).map((m) => <option key={m.id} value={m.name}>{m.name}</option>)}
-                        </select>
+                        </Select>
                       )}
                     </Field>
                   ))}
@@ -777,9 +1004,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   </Field>
                   <div className="field is-wide">
                     <span className="field-label">
-                      When did they use {product?.name || "the product"}?<span className="req" aria-hidden="true"> *</span>
+                      How long have you been {verb} {product?.name || "the product"}?<span className="req" aria-hidden="true"> *</span>
                     </span>
-                    <ChoiceGroup label="Usage period" options={USAGE_PERIODS} value={usagePeriod} onChange={setUsagePeriod} compact />
+                    <ChoiceGroup label={`How long ${verb}`} options={USAGE_PERIODS} value={usagePeriod} onChange={setUsagePeriod} compact />
                   </div>
                   <div className="field is-wide">
                     <span className="field-label">GPS location (optional)</span>
@@ -789,12 +1016,17 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         {gpsState === "locating" ? "Finding location…" : gpsState === "resolving" ? "Finding the address…"
                           : coords ? "Update location" : "Use my current location"}
                       </button>
-                      <span className={`gps-status ${gpsState === "error" ? "is-error" : "muted"}`} aria-live="polite">
+                      <span className={`gps-status ${gpsState === "error" ? "is-error" : isPoor(coords) ? "is-warn" : "muted"}`} aria-live="polite">
                         {gpsState === "error"
                           ? gpsMessage
                           : coords
-                          ? `${coords.latitude}, ${coords.longitude} (±${coords.accuracy} m)${autoFilled ? " · Survey location filled in" : ""}`
-                          : "Fills in the survey location for you."}
+                          ? <>
+                              <strong className="gps-coords">{describeFix(coords)}</strong>
+                              {coords.recent ? " · last known position" : ""}
+                              {isPoor(coords) ? " · Low accuracy: move to an open area and update." : ""}
+                              {gpsMessage ? ` · ${gpsMessage}` : autoFilled ? " · Survey location filled in" : ""}
+                            </>
+                          : "Fills in the survey location for you. Works offline on devices with GPS."}
                       </span>
                     </div>
                   </div>

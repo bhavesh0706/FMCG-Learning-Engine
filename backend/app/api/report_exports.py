@@ -30,7 +30,7 @@ router = APIRouter(tags=["Report exports"])
 
 BREAKDOWNS = [("respondent_type", "Respondent type"), ("audience", "Internal / External"), ("city", "City"),
               ("country", "Country"), ("occupation", "Occupation"), ("sec_class", "Class (SEC)"),
-              ("gender", "Gender"), ("age_group", "Age group")]
+              ("gender", "Gender"), ("age_group", "Age group"), ("state", "State")]
 SAFE = str.maketrans({c: "-" for c in '\\/:*?"<>|'})
 
 
@@ -44,7 +44,7 @@ def _report(db: Session, request: Request, product_id: int, round_number: Option
     if round_number is not None:
         rounds = [r for r in rounds if r.number == round_number]
         if not rounds:
-            raise HTTPException(status_code=404, detail=f"Round {round_number} not found.")
+            raise HTTPException(status_code=404, detail=f"Survey {round_number} not found.")
     for rnd in rounds:
         rep = (db.query(ConsolidatedReport).filter(ConsolidatedReport.round_id == rnd.id)
                .order_by(ConsolidatedReport.id.desc()).first())
@@ -73,7 +73,7 @@ def _surveys(db: Session, rep: ConsolidatedReport) -> list:
 
 
 def _filename(product: Product, rnd: SurveyRound, ext: str) -> str:
-    return f"{product.name} - Round {rnd.number} report.{ext}".translate(SAFE)
+    return f"{product.name} - Survey {rnd.number} report.{ext}".translate(SAFE)
 
 
 # ---------------- Excel ----------------
@@ -106,7 +106,7 @@ def export_xlsx(product_id: int, request: Request, round: Optional[int] = None, 
     ws.title = "Summary"
     sent = stats.get("sentiment_distribution") or {}
     for label, value in [("Product", product.name), ("Category", category.name if category else ""), ("SKU", product.sku or ""),
-                         ("Round", rnd.number), ("Recipe version", rnd.recipe_version), ("Surveys in the report", rep.response_count),
+                         ("Survey", rnd.number), ("Recipe version", rnd.recipe_version), ("Responses in the report", rep.response_count),
                          ("Average rating (out of 5)", stats.get("overall_rating")), ("Positive", sent.get("positive", 0)),
                          ("Mixed", sent.get("mixed", 0)), ("Negative", sent.get("negative", 0)),
                          ("Conclusion", narrative.get("conclusion") or ""),
@@ -219,11 +219,11 @@ def export_pptx(product_id: int, request: Request, round: Optional[int] = None, 
             p.font.size = Pt(18)
             p.space_after = Pt(8)
 
-    sub = f"{product.name} · Round {rnd.number} · recipe v{rnd.recipe_version} · {rep.response_count} surveys"
+    sub = f"{product.name} · Survey {rnd.number} · recipe v{rnd.recipe_version} · {rep.response_count} responses"
     s = prs.slides.add_slide(blank)
     text(s, 0.8, 2.4, 11.5, 1.2, product.name, 44, True, navy)
-    text(s, 0.8, 3.6, 11.5, 0.6, f"Consumer report · Round {rnd.number} (recipe v{rnd.recipe_version})", 22, False, muted)
-    text(s, 0.8, 4.3, 11.5, 0.6, f"{rep.response_count} surveys · {datetime.utcnow().strftime('%d %b %Y')}", 16, False, muted)
+    text(s, 0.8, 3.6, 11.5, 0.6, f"Consumer report · Survey {rnd.number} (recipe v{rnd.recipe_version})", 22, False, muted)
+    text(s, 0.8, 4.3, 11.5, 0.6, f"{rep.response_count} responses · {datetime.utcnow().strftime('%d %b %Y')}", 16, False, muted)
 
     s = titled("Key results", sub)
     sent = stats.get("sentiment_distribution") or {}

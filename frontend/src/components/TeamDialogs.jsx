@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
-import { addTeamMember, getMemberProducts, resetMemberPassword, saveMemberProducts } from "../services/teamApi";
+import { addTeamMember, getMemberProducts, resetMemberPassword, saveMemberProducts, signOutMember, updateTeamMember } from "../services/teamApi";
+import { confirmDialog } from "./ConfirmDialog";
 import { listProducts } from "../services/catalogAdminApi";
 import { API_BASE_URL } from "../config";
+import Select from "./Select";
 
 /*
   Team: the admin creates each executive's login, then shares it with them.
@@ -62,6 +64,7 @@ export function AddMemberDialog({ onClose, onAdded }) {
     gender: "",
     password: generatePassword(),
     can_view_history: false,
+    role: "executive", // executive = survey person (mobile app) · admin = research team (web dashboard)
   });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -92,7 +95,8 @@ export function AddMemberDialog({ onClose, onAdded }) {
         age: form.age ? Number(form.age) : null,
         gender: form.gender || null,
         password: form.password,
-        can_view_history: form.can_view_history,
+        can_view_history: form.role === "admin" ? false : form.can_view_history,
+        role: form.role,
       });
       onAdded(res.user, form.password, res.linked_surveys || 0);
     } catch (err) {
@@ -103,8 +107,10 @@ export function AddMemberDialog({ onClose, onAdded }) {
 
   return (
     <Modal
-      title="Add team member"
-      subtitle="Create their login. They sign in to the mobile app with this mobile number and password."
+      title={form.role === "admin" ? "Add admin" : "Add team member"}
+      subtitle={form.role === "admin"
+        ? "Create their login. Admins sign in to this dashboard (and the app) with this mobile number or email and password."
+        : "Create their login. They sign in to the mobile app with this mobile number and password."}
       onClose={onClose}
       footer={
         <>
@@ -115,6 +121,20 @@ export function AddMemberDialog({ onClose, onAdded }) {
         </>
       }
     >
+      <div className="field">
+        <span className="field-label">Role *</span>
+        <div className="segmented" role="radiogroup" aria-label="Role">
+          {[["executive", "Survey person"], ["admin", "Admin"]].map(([value, label]) => (
+            <button key={value} type="button" role="radio" aria-checked={form.role === value}
+              className={form.role === value ? "is-on" : ""} onClick={() => setForm({ ...form, role: value })}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {form.role === "admin" && (
+          <span className="muted small">Admins manage the team, assign surveys, review reports and see every response. Add an email so they can reset their password.</span>
+        )}
+      </div>
       <label className="field">
         <span className="field-label">Full name *</span>
         <input className="input" value={form.name} onChange={set("name")} placeholder="e.g. Riya Kapoor" autoComplete="off" />
@@ -136,21 +156,21 @@ export function AddMemberDialog({ onClose, onAdded }) {
         </label>
         <label className="field">
           <span className="field-label">Gender</span>
-          <select className="input" value={form.gender} onChange={set("gender")}>
+          <Select className="input" value={form.gender} onChange={set("gender")}>
             <option value="">Choose</option>
             {GENDERS.map((g) => <option key={g} value={g}>{g}</option>)}
-          </select>
+          </Select>
         </label>
       </div>
       <PasswordField value={form.password} onChange={(password) => setForm({ ...form, password })} />
-      <label className="member-check">
+      {form.role !== "admin" && <label className="member-check">
         <input type="checkbox" checked={form.can_view_history}
           onChange={(e) => setForm({ ...form, can_view_history: e.target.checked })} />
         <span>
           <strong>Can see their survey history</strong>
           <span className="muted"> Ratings and summaries of their own surveys in the app.</span>
         </span>
-      </label>
+      </label>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -318,7 +338,7 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
       {state.loading ? (
         <p className="muted">Loading…</p>
       ) : !state.products.length ? (
-        <p className="muted">No product has a live round. The Super Admin starts rounds; you can assign them here once started.</p>
+        <p className="muted">No product has a live survey. The Super Admin starts surveys; you can assign them here once started.</p>
       ) : (
         <>
           <div className="assign-list">
@@ -332,8 +352,8 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
                       <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                       <span className="assign-item-text">
                         <strong>{p.name}</strong>
-                        <span className="muted" title={p.live_round ? `Round ${p.live_round.number} (started by the Super Admin)` : "Existing product: open to everyone until you assign people"}>
-                          {p.live_round ? `Round ${p.live_round.number}` : "Existing"}
+                        <span className="muted" title={p.live_round ? `Survey ${p.live_round.number} (started by the Super Admin)` : "Existing product: open to everyone until you assign people"}>
+                          {p.live_round ? `Survey ${p.live_round.number}` : "Existing"}
                         </span>
                       </span>
                       <span className={`audience audience-${also.length ? "other" : selected.has(p.id) ? "mine" : "open"}`} title="Who can survey it">
@@ -363,3 +383,83 @@ export function AssignProductsDialog({ member, team = [], onClose, onSaved }) {
     </Modal>
   );
 }
+
+
+/* Admins (role "admin") on the Team page: the main list shows survey persons only.
+   Add an admin with "Add team member" (Role: Admin). Nobody can disable or demote
+   their own account, and the last active admin stays (checked by the server too). */
+export function AdminsPanel({ users = [], meId, onChanged, onNotice, onCredentials }) {
+  const admins = users.filter((u) => u.role === "admin").sort((a, b) => a.name.localeCompare(b.name));
+  const [busy, setBusy] = useState(null);
+  const run = async (id, work, done) => {
+    setBusy(id);
+    try {
+      await work();
+      onNotice?.(done);
+      onChanged?.();
+    } catch (err) {
+      onNotice?.(errorText(err, "That didn't work. Try again."));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const toggle = async (u) => {
+    const ok = await confirmDialog({
+      title: u.is_active ? `Disable ${u.name}?` : `Reactivate ${u.name}?`,
+      message: u.is_active ? "They're signed out everywhere and can't sign in until reactivated. Their account and activity are kept." : "They can sign in again.",
+      confirmLabel: u.is_active ? "Disable" : "Reactivate",
+      danger: Boolean(u.is_active),
+    });
+    if (ok) run(u.id, () => updateTeamMember(u.id, { is_active: !u.is_active }), u.is_active ? `${u.name} is disabled.` : `${u.name} is active again.`);
+  };
+  const reset = async (u) => {
+    const ok = await confirmDialog({ title: `Reset ${u.name}'s password?`, message: "A new password is created and shown once; they're signed out everywhere.", confirmLabel: "Reset password" });
+    if (!ok) return;
+    const password = generatePassword();
+    setBusy(u.id);
+    try {
+      await resetMemberPassword(u.id, password);
+      onCredentials?.(u, password);
+      onChanged?.();
+    } catch (err) {
+      onNotice?.(errorText(err, "The password couldn't be reset."));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const signOut = async (u) => {
+    const ok = await confirmDialog({ title: `Sign ${u.name} out everywhere?`, message: "Every sign-in of this account ends now. Their password stays the same.", confirmLabel: "Sign out everywhere" });
+    if (ok) run(u.id, () => signOutMember(u.id), `${u.name} is signed out everywhere.`);
+  };
+  return (
+    <section className="panel admins-panel" aria-labelledby="admins-title">
+      <div className="admins-head">
+        <h2 id="admins-title" className="report-h">Admins <span className="count-badge">{admins.length}</span></h2>
+        <p className="muted">The research team: they manage the team, assign surveys and review reports. Add one with <strong>Add team member</strong> → Role: Admin.</p>
+      </div>
+      <ul className="admins-list">
+        {admins.map((u) => (
+          <li key={u.id} className={u.is_active ? "" : "is-off"}>
+            <span className="admins-who">
+              <strong>{u.name}</strong>{u.id === meId && <span className="status-chip is-neutral">You</span>}
+              <span className="muted">{[u.mobile, u.email].filter(Boolean).join(" · ")}</span>
+              <span className="muted small">{u.last_login_at ? `Last sign-in ${new Date(u.last_login_at).toLocaleString()}` : "Never signed in"}</span>
+            </span>
+            <span className={`status-chip ${u.is_active ? "is-ok" : "is-neg"}`}>{u.is_active ? "Active" : "Disabled"}</span>
+            <span className="admins-actions">
+              <button type="button" className="link-btn" disabled={busy === u.id} onClick={() => reset(u)}>Reset password</button>
+              <button type="button" className="link-btn" disabled={busy === u.id} onClick={() => signOut(u)}>Sign out everywhere</button>
+              {u.id !== meId && (
+                <button type="button" className={`link-btn${u.is_active ? " danger-link" : ""}`} disabled={busy === u.id} onClick={() => toggle(u)}>
+                  {u.is_active ? "Disable" : "Reactivate"}
+                </button>
+              )}
+            </span>
+          </li>
+        ))}
+        {!admins.length && <li className="muted">No admins listed.</li>}
+      </ul>
+    </section>
+  );
+}
+

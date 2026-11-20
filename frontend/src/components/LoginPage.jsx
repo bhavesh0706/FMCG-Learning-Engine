@@ -43,7 +43,8 @@ function Feature({ icon, title, text }) {
   );
 }
 
-// One sign-in for every role; "Signing in as" only adapts the wording. The account's
+// One sign-in for every role (SIGN_IN_COPY). ROLE_COPY keeps each role's wording for the
+// left panel and remembered accounts. The account's
 // role on the server always decides the dashboard, so picking the wrong one is harmless.
 const ROLE_COPY = {
   executive: {
@@ -69,7 +70,7 @@ const ROLE_COPY = {
   client: {
     tab: "Super Admin",
     title: "Super Admin sign-in",
-    sub: "See your consumer reports and manage your products, recipes and rounds.",
+    sub: "See your consumer reports and manage your products, recipes and surveys.",
     label: "Work email",
     placeholder: "insights@company.com",
     inputMode: "email",
@@ -96,17 +97,17 @@ const ROLE_BRAND = {
     features: [
       ["📊", "Live product reports", "Updated automatically after every analyzed survey"],
       ["👥", "Team management", "Add survey persons and choose what they survey"],
-      ["⚖️", "Compare recipe rounds", "See how consumers reacted to each recipe version"],
+      ["⚖️", "Compare recipe surveys", "See how consumers reacted to each recipe version"],
     ],
     foot: "You're notified of every product and recipe change by the Super Admin.",
   },
   client: {
     headline: "What consumers really think of your products.",
-    line: "Consumer reports for every round, so you can see what each recipe change achieved.",
+    line: "Consumer reports for every survey, so you can see what each recipe change achieved.",
     features: [
       ["📈", "Consumer reports", "Ratings, sentiment and what consumers liked or disliked"],
       ["🧪", "Recipe versions", "Every recipe change becomes a new version to test"],
-      ["⚖️", "Compare rounds", "See whether a change improved the product"],
+      ["⚖️", "Compare surveys", "See whether a change improved the product"],
     ],
     foot: "Reports update automatically as new surveys are analyzed.",
   },
@@ -114,6 +115,14 @@ const ROLE_BRAND = {
 const ROLE_KEY = "fmcg.loginRole";
 // "Organization" = accounts remembered before the role was renamed Super Admin.
 const ROLE_FROM_LABEL = { Admin: "admin", "Super Admin": "client", Organization: "client", "Survey person": "executive" };
+
+const SIGN_IN_COPY = {
+  title: "Sign in",
+  sub: "Enter your mobile number or email and your password. You go straight to the screens of your account.",
+  label: "Mobile number or email",
+  placeholder: "98765 43210 or name@company.com",
+  foot: "Accounts are created by your admin or the research team. The mobile app uses the same login.",
+};
 
 function savedRole() {
   try {
@@ -273,8 +282,10 @@ export default function LoginPage({ apiBase, onSignedIn }) {
   const firstField = useRef(null);
   const passwordField = useRef(null);
   const [recent, setRecent] = useState(recentAccounts);
+  // No "Signing in as" choice: the account's role on the server decides the screens.
+  // `role` (the last account that signed in on this device) only picks the left panel.
   const [role, setRole] = useState(savedRole);
-  const copy = ROLE_COPY[role];
+  const copy = SIGN_IN_COPY;
 
   const chooseRole = (r) => {
     setRole(r);
@@ -347,8 +358,8 @@ export default function LoginPage({ apiBase, onSignedIn }) {
       {/* Brand side */}
       <aside className="login-brand" aria-hidden={false}>
         <div className="login-brand-top">
-          <span className="login-logo" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+          <span className="login-logo has-logo" aria-hidden="true">
+            <img src="/favicon.svg" alt="" width="40" height="40" />
           </span>
           <span className="login-brand-name">FMCG Video Learning Engine</span>
         </div>
@@ -371,7 +382,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
         {resetting ? (
           <ResetPasswordCard
             apiBase={apiBase}
-            roleName={copy.tab}
+            roleName="Admin or Super Admin"
             initialEmail={identifier}
             simple={resetMode === "simple"}
             onCancel={() => setResetting(false)}
@@ -388,20 +399,6 @@ export default function LoginPage({ apiBase, onSignedIn }) {
             <div className="login-loading"><span className="spinner" aria-hidden="true" /> Loading…</div>
           ) : (
             <>
-              {!setup && (
-                <div className="login-roles">
-                  <span className="login-roles-label" id="login-roles-label">Signing in as</span>
-                  <div className="login-roles-seg" role="radiogroup" aria-labelledby="login-roles-label">
-                    {Object.entries(ROLE_COPY).map(([key, c]) => (
-                      <button key={key} type="button" role="radio" aria-checked={role === key}
-                        className={role === key ? "is-on" : ""} onClick={() => chooseRole(key)}>
-                        {c.tab}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               <div className="login-head">
                 <h1 id="login-title">{setup ? "Set up your workspace" : copy.title}</h1>
                 <p>
@@ -424,7 +421,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
               <label className="login-field">
                 <span>{setup ? "Mobile number or email" : copy.label}</span>
                 <input ref={setup ? undefined : firstField} className="login-input" value={identifier}
-                  inputMode={setup ? "email" : copy.inputMode} autoComplete="username"
+                  inputMode="email" autoComplete="username"
                   onChange={(e) => setIdentifier(e.target.value)}
                   placeholder={setup ? "98765 43210 or name@company.com" : copy.placeholder} />
               </label>
@@ -434,7 +431,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
                   <label htmlFor="login-password">Password</label>
                   {!setup && (
                     <button type="button" className="login-link" aria-expanded={forgot}
-                      onClick={() => (role === "executive" ? setForgot((f) => !f) : (setError(""), setResetting(true)))}>
+                      onClick={() => setForgot((f) => !f)}>
                       Forgot password?
                     </button>
                   )}
@@ -452,7 +449,12 @@ export default function LoginPage({ apiBase, onSignedIn }) {
               </div>
 
               {forgot && !setup && (
-                <p className="login-help" role="note">{copy.forgot}</p>
+                <div className="login-help" role="note">
+                  <p><strong>Admin or Super Admin:</strong> get a reset code by email.{" "}
+                    <button type="button" className="login-link" onClick={() => { setError(""); setForgot(false); setResetting(true); }}>Reset by email</button>
+                  </p>
+                  <p><strong>Survey person:</strong> ask your admin to reset it on the <strong>Team</strong> page, then sign in with the new password.</p>
+                </div>
               )}
 
               {setup && (

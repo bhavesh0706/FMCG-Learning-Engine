@@ -3,15 +3,17 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../widgets/design.dart';
 import '../services/admin_api.dart';
 import '../services/notification_service.dart';
 import '../services/org_api.dart' show Json, asJson, asJsonList, str, intOf, numOrNull;
 import '../services/session.dart';
 import 'home_screens.dart' show MobileHistoryPage, MobileSettingsPage;
 import 'notifications_screen.dart' show NotificationBellButton;
-import 'org_screens.dart' show Loaded, Panel, Pill, StatBox, EmptyNote, agoText, ratingText, showMessage;
+import 'org_screens.dart' show Loaded, Panel, Pill, EmptyNote, agoText, ratingText, showMessage;
 import 'report_screens.dart' show ProductReportPage;
-import 'next_update_screens.dart' show MastersPage, RecipeExtrasView;
+import 'next_update_screens.dart' show ActionPlansView, MastersPage, RecipeExtrasView;
+import '../widgets/search_dropdown.dart';
 
 /* ============================================================
    Admin (role "admin") in the app
@@ -64,12 +66,7 @@ class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
       appBar: AppBar(
         titleSpacing: 16,
         title: Row(children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(color: AppColors.brand, borderRadius: BorderRadius.circular(9)),
-            child: Icon(Icons.play_arrow_rounded, color: AppColors.onBrand, size: 20),
-          ),
+          const BrandLogo(size: 30),
           const SizedBox(width: 10),
           Expanded(child: Text(_titles[_tab], overflow: TextOverflow.ellipsis)),
         ]),
@@ -111,7 +108,7 @@ class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
 Widget _sectionTitle(String text, {Widget? trailing}) => Padding(
       padding: const EdgeInsets.fromLTRB(2, 18, 2, 8),
       child: Row(children: [
-        Expanded(child: Text(text, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink))),
+        Expanded(child: Text(text, style: TextStyle(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink))),
         if (trailing != null) trailing,
       ]),
     );
@@ -165,16 +162,30 @@ class AdminHomePage extends StatelessWidget {
           children: [
             Text("Every product's field feedback and its consolidated report.", style: TextStyle(color: AppColors.muted)),
             const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: StatBox(value: '${d.products.length}', label: 'Products · in ${d.categories.length} categories')),
-              const SizedBox(width: 8),
-              Expanded(child: StatBox(value: '$analyzed', label: 'Feedback analyzed · surveys')),
+            KpiGrid(cards: [
+              KpiCard(
+                label: 'Products',
+                icon: Icons.inventory_2_outlined,
+                value: '${d.products.length}',
+                note: 'in ${d.categories.length} categories',
+              ),
+              KpiCard(
+                label: 'Feedback analyzed',
+                icon: Icons.fact_check_outlined,
+                tone: KpiTone.teal,
+                value: '$analyzed',
+                note: 'surveys',
+              ),
+              KpiCard(
+                label: 'Products surveyed',
+                icon: Icons.track_changes_outlined,
+                tone: surveyed >= d.products.length && d.products.isNotEmpty ? KpiTone.pos : KpiTone.act,
+                value: '$surveyed of ${d.products.length}',
+                note: surveyed >= d.products.length && d.products.isNotEmpty
+                    ? 'Every product has surveys'
+                    : '${d.products.length - surveyed} without surveys yet',
+              ),
             ]),
-            const SizedBox(height: 8),
-            StatBox(
-              value: '$surveyed of ${d.products.length}',
-              label: surveyed >= d.products.length && d.products.isNotEmpty ? 'Products surveyed · every product has surveys' : 'Products surveyed',
-            ),
             _sectionTitle('Products'),
             if (rows.isEmpty) const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'The Super Admin adds products in their portal.'),
             for (final p in rows) ...[
@@ -257,7 +268,7 @@ class _HomeProductRowState extends State<_HomeProductRow> {
         ]),
         if (versions.length > 1) ...[
           const SizedBox(height: 8),
-          DropdownButtonFormField<int?>(
+          SearchDropdownField<int?>(
             isExpanded: true,
             value: _version,
             decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
@@ -417,7 +428,7 @@ class AdminProductPage extends StatelessWidget {
     final p = product;
     final live = asJson(p['live_round']);
     return DefaultTabController(
-      length: 3,
+      length: 4,
       child: Scaffold(
         backgroundColor: AppColors.bg,
         appBar: AppBar(
@@ -425,15 +436,17 @@ class AdminProductPage extends StatelessWidget {
             Text(str(p['name']), overflow: TextOverflow.ellipsis),
             Text(str(p['category_name']), style: TextStyle(fontSize: 12, color: AppColors.muted, fontWeight: FontWeight.w500)),
           ]),
-          bottom: TabBar(tabs: [
+          bottom: TabBar(isScrollable: true, tabAlignment: TabAlignment.start, tabs: [
             const Tab(text: 'Product details'),
             const Tab(text: 'Who can survey'),
-            Tab(text: live.isEmpty ? 'Rounds' : 'Rounds · ${intOf(live['number'])} live'),
+            const Tab(text: 'Plans'),
+            Tab(text: live.isEmpty ? 'Surveys' : 'Surveys · ${intOf(live['number'])} live'),
           ]),
         ),
         body: TabBarView(children: [
           _ProductDetailsTab(product: p),
           _WhoCanSurveyTab(productId: intOf(p['id']), name: str(p['name'])),
+          ActionPlansView(productId: intOf(p['id'])),
           _ProductRoundsTab(productId: intOf(p['id'])),
         ]),
         bottomNavigationBar: SafeArea(
@@ -550,7 +563,7 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
       });
       final n = intOf(_round?['number']);
       showMessage(context, _chosen.isEmpty
-          ? (_open ? '${widget.name} is open to every survey person again.' : 'Nobody is assigned to Round $n of ${widget.name}.')
+          ? (_open ? '${widget.name} is open to every survey person again.' : 'Nobody is assigned to Survey $n of ${widget.name}.')
           : '${widget.name} is assigned to ${_chosen.length} survey ${_chosen.length == 1 ? 'person' : 'persons'}.');
     } catch (e) {
       if (mounted) {
@@ -571,9 +584,9 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
       return ListView(padding: const EdgeInsets.all(16), children: [
         EmptyNote(
           icon: Icons.flag_outlined,
-          title: 'No live round',
-          text: 'The Super Admin starts the next round of ${widget.name}; you can assign it here once it has started. '
-              'Earlier rounds keep their survey persons as history.',
+          title: 'No live survey',
+          text: 'The Super Admin starts the next survey of ${widget.name}; you can assign it here once it has started. '
+              'Earlier surveys keep their survey persons as history.',
         ),
       ]);
     }
@@ -581,13 +594,13 @@ class _WhoCanSurveyTabState extends State<_WhoCanSurveyTab> {
     final active = (people ?? const <Json>[]).where((u) => u['is_active'] != false).toList();
     final dirty = _chosen.length != _saved.length || !_chosen.containsAll(_saved);
     return ListView(padding: const EdgeInsets.all(16), children: [
-      Text(_open ? 'Who can survey ${widget.name}' : 'Who surveys Round $n',
+      Text(_open ? 'Who can survey ${widget.name}' : 'Who collects responses for Survey $n',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
       const SizedBox(height: 4),
       Text(
           _open
-              ? 'Surveyed before rounds were needed, so it stays open: every survey person sees it until you choose people. A new recipe version needs the Super Admin to start its round.'
-              : 'Only the survey persons you assign see ${widget.name}, while Round $n is live. Each new round is assigned again.',
+              ? 'Surveyed before numbered surveys were needed, so it stays open: every survey person sees it until you choose people. A new recipe version needs the Super Admin to start its survey.'
+              : 'Only the survey persons you assign see ${widget.name}, while Survey $n is live. Each new survey is assigned again.',
           style: TextStyle(color: AppColors.muted, height: 1.4)),
       const SizedBox(height: 8),
       Row(children: [
@@ -628,15 +641,15 @@ class _ProductRoundsTab extends StatelessWidget {
       builder: (context, rounds, reload) {
         final list = [...rounds]..sort((a, b) => intOf(b['number']).compareTo(intOf(a['number'])));
         return ListView(padding: const EdgeInsets.all(16), children: [
-          Text('A round is one batch of consumer surveys for one recipe version. The Super Admin starts and ends rounds.',
+          Text('A survey is one batch of consumer responses for one recipe version. The Super Admin starts and ends surveys.',
               style: TextStyle(color: AppColors.muted, height: 1.4)),
           const SizedBox(height: 10),
-          if (list.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No rounds yet', text: 'The Super Admin starts the first round in their portal.'),
+          if (list.isEmpty) const EmptyNote(icon: Icons.flag_outlined, title: 'No surveys yet', text: 'The Super Admin starts the first survey in their portal.'),
           for (final r in list) ...[
             Panel(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Row(children: [
-                  Expanded(child: Text('Round ${intOf(r['number'])}', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink))),
+                  Expanded(child: Text('Survey ${intOf(r['number'])}', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink))),
                   Pill(str(r['status']) == 'live' ? 'Collecting' : (str(r['closed_reason']) == 'ended' ? 'Ended' : 'Complete'),
                       tone: str(r['status']) == 'live' ? 'ok' : 'muted'),
                 ]),
@@ -725,6 +738,8 @@ class _AdminTeamPageState extends State<AdminTeamPage> {
             const SizedBox(height: 12),
             FilledButton.icon(onPressed: add, icon: const Icon(Icons.person_add_alt_1), label: const Text('Add team member')),
             const SizedBox(height: 12),
+            _AdminsSection(admins: users.where((u) => str(u['role']) == 'admin').toList(), onChanged: reload),
+            const SizedBox(height: 12),
             TextField(
               decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search by name, mobile or email'),
               onChanged: (v) => setState(() => _query = v),
@@ -798,7 +813,7 @@ class _MemberCard extends StatelessWidget {
         title: disabling ? 'Disable $name?' : 'Reactivate $name?',
         message: disabling
             ? "$name is signed out everywhere and can't log in or be assigned. Their surveys and history are kept; you can reactivate them any time."
-            : '$name can log in again with their current password. Assign them to live rounds to give them products.',
+            : '$name can log in again with their current password. Assign them to live surveys to give them products.',
         confirmLabel: disabling ? 'Disable' : 'Reactivate',
         cancelLabel: 'Cancel',
       );
@@ -902,6 +917,7 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
   late final TextEditingController _password = TextEditingController(text: _generatedPassword());
   bool _history = false;
   bool _saving = false;
+  String _role = 'executive'; // executive = survey person · admin = research team
   String? _error;
 
   @override
@@ -937,8 +953,8 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
         'mobile': _mobile.text.trim(),
         if (_email.text.trim().isNotEmpty) 'email': _email.text.trim(),
         'password': pw,
-        'can_view_history': _history,
-        'role': 'executive',
+        'can_view_history': _role == 'admin' ? false : _history,
+        'role': _role,
       });
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
@@ -957,9 +973,22 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
       padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + MediaQuery.of(context).viewInsets.bottom),
       child: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-          Text('Add team member', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+          Text(_role == 'admin' ? 'Add admin' : 'Add team member', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
           const SizedBox(height: 4),
-          Text('Create their login. They sign in to the mobile app with this mobile number and password.', style: TextStyle(color: AppColors.muted)),
+          Text(
+              _role == 'admin'
+                  ? 'Admins sign in to the dashboard (and the app) with this mobile number or email and password. Add an email so they can reset their password.'
+                  : 'Create their login. They sign in to the mobile app with this mobile number and password.',
+              style: TextStyle(color: AppColors.muted)),
+          const SizedBox(height: 12),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'executive', label: Text('Survey person'), icon: Icon(Icons.person_outline)),
+              ButtonSegment(value: 'admin', label: Text('Admin'), icon: Icon(Icons.admin_panel_settings_outlined)),
+            ],
+            selected: {_role},
+            onSelectionChanged: (v) => setState(() => _role = v.first),
+          ),
           const SizedBox(height: 14),
           TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full name', hintText: 'e.g. Riya Kapoor')),
           const SizedBox(height: 10),
@@ -978,7 +1007,8 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
               ),
             ),
           ),
-          CheckboxListTile(
+          if (_role != 'admin')
+            CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             value: _history,
             onChanged: (v) => setState(() => _history = v ?? false),
@@ -1104,9 +1134,9 @@ class _ProductsSheetState extends State<_ProductsSheet> {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        Text('What ${widget.name} surveys', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+        Text('What ${widget.name} surveys', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const SizedBox(height: 4),
-        Text('Only the people you assign see a product. Existing products are open to everyone until you assign people; each new round the Super Admin starts is assigned again.',
+        Text('Only the people you assign see a product. Existing products are open to everyone until you assign people; each new survey the Super Admin starts is assigned again.',
             style: TextStyle(color: AppColors.muted, height: 1.4)),
         if (!widget.active) ...[
           const SizedBox(height: 8),
@@ -1117,7 +1147,7 @@ class _ProductsSheetState extends State<_ProductsSheet> {
         if (products != null && products.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 12),
-            child: Text('No product has a live round. The Super Admin starts rounds; assign them here once started.'),
+            child: Text('No product has a live survey. The Super Admin starts surveys; assign them here once started.'),
           ),
         if (products != null && products.isNotEmpty)
           ConstrainedBox(
@@ -1132,7 +1162,7 @@ class _ProductsSheetState extends State<_ProductsSheet> {
                       : (v) => setState(() => v == true ? _selected.add(intOf(p['id'])) : _selected.remove(intOf(p['id']))),
                   title: Text(str(p['name'])),
                   subtitle: Text(asJson(p['live_round']).isNotEmpty
-                      ? 'Round ${intOf(asJson(p['live_round'])['number'])} · ${str(p['category_name'])}'
+                      ? 'Survey ${intOf(asJson(p['live_round'])['number'])} · ${str(p['category_name'])}'
                       : 'Existing product · open to everyone unless you assign people'),
                 ),
             ]),
@@ -1141,6 +1171,70 @@ class _ProductsSheetState extends State<_ProductsSheet> {
         const SizedBox(height: 12),
         FilledButton(onPressed: _saving || products == null || !widget.active ? null : _save, child: Text(_saving ? 'Saving…' : 'Save')),
         TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+      ]),
+    );
+  }
+}
+
+
+/// Admins (role "admin"): the survey person list above shows survey persons only.
+/// Nobody can disable their own account (the server also keeps the last active admin).
+class _AdminsSection extends StatelessWidget {
+  const _AdminsSection({required this.admins, required this.onChanged});
+
+  final List<Json> admins;
+  final Future<void> Function() onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final meId = Session.user.value?.id;
+    return Panel(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Admins (${admins.length})', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+        const SizedBox(height: 2),
+        Text('Add one with Add team member → Admin.', style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+        for (final u in admins)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(intOf(u['id']) == meId ? '${str(u['name'])} (you)' : str(u['name'])),
+            subtitle: Text([str(u['mobile']), str(u['email'])].where((x) => x.isNotEmpty).join(' · ')),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              Pill(u['is_active'] == false ? 'Disabled' : 'Active', tone: u['is_active'] == false ? 'neg' : 'ok'),
+              if (intOf(u['id']) != meId)
+                PopupMenuButton<String>(
+                  tooltip: 'Actions',
+                  onSelected: (action) async {
+                    final name = str(u['name']);
+                    final active = u['is_active'] != false;
+                    if (action == 'toggle') {
+                      final ok = await confirmAction(context,
+                          title: active ? 'Disable $name?' : 'Reactivate $name?',
+                          message: active ? "They're signed out everywhere and can't sign in until reactivated." : 'They can sign in again.',
+                          confirmLabel: active ? 'Disable' : 'Reactivate');
+                      if (!ok) return;
+                      try {
+                        await AdminApi.updateMember(intOf(u['id']), {'is_active': !active});
+                        if (context.mounted) showMessage(context, active ? '$name is disabled.' : '$name is active again.');
+                      } catch (e) {
+                        if (context.mounted) showMessage(context, '$e', error: true);
+                      }
+                    } else if (action == 'signout') {
+                      try {
+                        await AdminApi.signOutMember(intOf(u['id']));
+                        if (context.mounted) showMessage(context, '$name is signed out everywhere.');
+                      } catch (e) {
+                        if (context.mounted) showMessage(context, '$e', error: true);
+                      }
+                    }
+                    await onChanged();
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(value: 'toggle', child: Text(u['is_active'] == false ? 'Reactivate' : 'Disable')),
+                    const PopupMenuItem(value: 'signout', child: Text('Sign out everywhere')),
+                  ],
+                ),
+            ]),
+          ),
       ]),
     );
   }

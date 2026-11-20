@@ -109,11 +109,11 @@ def _city(location: str | None) -> str:
     return parts[-1].title() if parts else "Not given"
 
 
-USAGE_LABELS = {
-    "last_week": "In the last week",
-    "last_month": "In the last month",
-    "last_3_months": "In the last 3 months",
-    "more_than_3_months": "More than 3 months ago",
+USAGE_LABELS = {  # "How long have you been consuming / using ...?"
+    "last_week": "Less than 7 days",
+    "last_month": "For the past 1 month",
+    "last_3_months": "For the last 3 months",
+    "more_than_3_months": "For more than 3 months",
 }
 
 
@@ -347,7 +347,9 @@ def build_stats(items: list[dict]) -> dict:
         "breakdowns": {
             "gender": _breakdown(items, lambda i: (i.get("gender") or "Not given").title()),
             "age_group": _breakdown(items, lambda i: _age_group(i.get("age"))),
-            "city": _breakdown(items, lambda i: _city(i.get("location"))),
+            # The chosen city; older customers only have the typed "Andheri, Mumbai" text.
+            "city": _breakdown(items, lambda i: i.get("city") or _city(i.get("location"))),
+            "state": _breakdown(items, lambda i: i.get("state") or "Not given"),
             "usage_period": _breakdown(items, lambda i: USAGE_LABELS.get(i.get("usage_period"), "Not given")),
             # Next update: consolidate by respondent type, Internal / External, country, occupation and class
             "respondent_type": _breakdown(items, lambda i: i.get("respondent_type") or "Not given"),

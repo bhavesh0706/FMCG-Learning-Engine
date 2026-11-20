@@ -18,6 +18,7 @@ const change = (p) =>
 export function catalogError(err, fallback = "Something went wrong. Try again.") {
   const d = err?.response?.data?.detail;
   if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof d.message === "string") return d.message; // e.g. a recipe locked by a collecting survey
   if (Array.isArray(d) && d[0]?.msg) return String(d[0].msg).replace("Value error, ", "");
   if (err?.code === "ERR_NETWORK") return `Can't reach the backend at ${API_BASE_URL}.`;
   return fallback;
@@ -65,7 +66,10 @@ export const deleteProductPermanently = (id) => change(api.delete(`/products/${i
 export const deleteCategoryPermanently = (id) => change(api.delete(`/categories/${id}/permanent`));
 // Recipe version history: every saved version, who saved it and what changed
 export const getRecipeVersions = (productId) => data(api.get(`/products/${productId}/recipe/versions`));
+// A version saved by mistake: the latest one, while no survey uses it (the organization)
+export const deleteRecipeVersion = (productId, version) => data(api.delete(`/products/${productId}/recipe/versions/${version}`));
 
 // Survey rounds (the organization starts them in its portal; admins see them and may end one early)
 export const getProductRounds = (productId) => data(api.get(`/products/${productId}/rounds`));
 export const endProductRound = (productId, number) => change(api.post(`/products/${productId}/rounds/${number}/end`));
+export const deleteProductRound = (productId, number) => change(api.delete(`/products/${productId}/rounds/${number}`));

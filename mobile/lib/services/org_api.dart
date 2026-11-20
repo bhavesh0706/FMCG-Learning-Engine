@@ -98,6 +98,9 @@ class OrgApi {
   }
 
   static Future<Json> _get(String path, [Map<String, dynamic>? query]) => _send('GET', path, query: query);
+
+  /// A survey person's action plans in live rounds: product, plan name and cities.
+  static Future<List<Json>> myActionPlans() async => asJsonList((await _get('/my/action-plans'))['plans']);
   static Future<Json> _post(String path, [Object? body]) => _send('POST', path, body: body ?? <String, dynamic>{});
   static Future<Json> _put(String path, Object body) => _send('PUT', path, body: body);
   static Future<Json> _delete(String path) => _send('DELETE', path);
@@ -121,6 +124,9 @@ class OrgApi {
       });
 
   static Future<Json> endRound(int id, int number) => _post('/org/products/$id/rounds/$number/end');
+
+  /// A survey (round) started by mistake: the latest one, while it has no responses.
+  static Future<Json> deleteRound(int id, int number) => _delete('/org/products/$id/rounds/$number');
 
   static Future<Json> updates() => _get('/org/updates');
   static Future<int> unreadUpdates() async => intOf((await _get('/org/updates/unread'))['unread']);

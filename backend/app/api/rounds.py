@@ -3,6 +3,7 @@ Survey rounds in the admin dashboard (the organization starts them in its portal
 
 GET  /products/{product_id}/rounds                every round: recipe, progress, who started it, rating
 POST /products/{product_id}/rounds/{number}/end   end the live round early (e.g. the field work stopped)
+DELETE /products/{product_id}/rounds/{number}     delete the latest round while it has no responses (started by mistake)
 
 Admins only (access.py). Surveys from the field app are filed under the live
 round automatically (services/rounds.py), so there is nothing else to manage.
@@ -11,7 +12,7 @@ round automatically (services/rounds.py), so there is nothing else to manage.
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from app.api.org import end_round_for
+from app.api.org import delete_round_for, end_round_for
 from app.api.product_feedback import rounds_summary
 from app.database.database import get_db
 from app.database.models import Product
@@ -29,3 +30,8 @@ def product_rounds(product_id: int, db: Session = Depends(get_db)):
 @router.post("/products/{product_id}/rounds/{number}/end")
 def end_product_round(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
     return end_round_for(db, request, product_id, number)
+
+
+@router.delete("/products/{product_id}/rounds/{number}")
+def delete_product_round(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
+    return delete_round_for(db, request, product_id, number)

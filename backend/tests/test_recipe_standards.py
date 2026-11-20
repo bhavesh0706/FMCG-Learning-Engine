@@ -24,6 +24,9 @@ def org(db):
 
 @pytest.fixture()
 def shop(client, db, org):
+    from conftest import end_live_surveys
+
+    end_live_surveys(db)  # rules for ALL products can't change while any survey collects
     dairy = Category(name=_unique("Dairy "), is_active=1)
     cereal = Category(name=_unique("Cereal "), is_active=1)
     db.add_all([dairy, cereal])

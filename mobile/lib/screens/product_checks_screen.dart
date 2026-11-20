@@ -4,9 +4,10 @@ import '../main.dart';
 import '../services/admin_api.dart';
 import '../services/org_api.dart';
 import 'org_screens.dart';
+import '../widgets/search_dropdown.dart';
 
 /*
-  Product checks (admins): same as the web's Survey history > Product checks.
+  Product verification (admins): same as the web's Survey history > Product verification.
   After each analysis the server checks that the customer talked about the product
   the survey person selected (backend services/product_check.py):
     Mismatch detected  -> kept out of every report until reviewed here
@@ -38,7 +39,7 @@ class ProductChecksPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Scaffold(
         backgroundColor: AppColors.bg,
-        appBar: AppBar(title: const Text('Product checks')),
+        appBar: AppBar(title: const Text('Product verification')),
         body: const ProductChecksView(),
       );
 }
@@ -266,7 +267,7 @@ class _CheckSheetState extends State<_CheckSheet> {
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           children: [
-            Text('Survey #$_id', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: AppColors.ink)),
+            Text('Survey #$_id', style: TextStyle(fontFamily: kDisplayFont, fontSize: 19, fontWeight: FontWeight.w800, color: AppColors.ink)),
             const SizedBox(height: 4),
             Text('Selected ${str(selected['name'])} · detected ${str(asJson(c['detected_product'])['name'], 'nothing')}',
                 style: TextStyle(color: AppColors.ink2)),
@@ -315,7 +316,7 @@ class _CheckSheetState extends State<_CheckSheet> {
                 child: Text('Confirm ${str(selected['name'])}'),
               ),
               const SizedBox(height: 16),
-              DropdownButtonFormField<int>(
+              SearchDropdownField<int>(
                 initialValue: _products.any((p) => intOf(p['id']) == _correctTo) ? _correctTo : null,
                 isExpanded: true,
                 decoration: const InputDecoration(labelText: 'Correct product'),

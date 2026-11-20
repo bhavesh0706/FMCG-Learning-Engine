@@ -52,12 +52,182 @@ def _add_column(table: str, column: str, ddl: str, index: bool = False):
                 raise
 
 
+def _add_unique_index(table: str, column: str) -> None:
+    """A UNIQUE index on an existing column (several NULLs stay allowed)."""
+    inspector = inspect(engine)
+    for ix in inspector.get_indexes(table):
+        if ix.get("unique") and ix.get("column_names") == [column]:
+            return
+    for uc in inspector.get_unique_constraints(table):
+        if uc.get("column_names") == [column]:
+            return
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE UNIQUE INDEX ux_{table}_{column} ON {table} ({column})"))
+        print(f"Database updated: unique index on {table}.{column}")
+    except (OperationalError, ProgrammingError) as e:
+        if not _already_exists(e):
+            raise
+
+
+def _q(name: str) -> str:
+    return engine.dialect.identifier_preparer.quote(name)
+
+
+def _rename_column(table: str, old: str, new: str) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {_q(table)} RENAME COLUMN {_q(old)} TO {_q(new)}"))
+        print(f"Database updated: renamed {table}.{old} to {new}")
+    except (OperationalError, ProgrammingError) as e:
+        # Another process renamed it a moment earlier.
+        if not _has_column(table, new):
+            raise e
+
+
+def record_no_and_audit_columns() -> None:
+    """
+    Every table (also tables the code doesn't use any more):
+      - primary key id            -> record_no   (MySQL 8 updates foreign keys that point at it)
+      - updated_at                -> mod_at
+      - created_by holding a name -> created_by_name  (recipe_standards; created_by is now an account id)
+      - adds created_by, mod_by (INT, users.record_no) and mod_at (DATETIME) where missing.
+    Data is kept. Runs again without harm: renamed tables are skipped.
+    """
+    inspector = inspect(engine)
+    for table in inspector.get_table_names():
+        cols = {c["name"]: c for c in inspector.get_columns(table)}
+        if "id" in cols and "record_no" in cols:
+            _drop_empty_record_no(table)
+            cols.pop("record_no")
+        if "id" in cols and "record_no" not in cols:
+            _rename_column(table, "id", "record_no")
+        if "updated_at" in cols and "mod_at" not in cols:
+            _rename_column(table, "updated_at", "mod_at")
+        created_by = cols.get("created_by")
+        if created_by is not None and _python_type(created_by["type"]) is str:
+            if "created_by_name" in cols:
+                _split_text_created_by(table)
+            else:
+                _rename_column(table, "created_by", "created_by_name")
+        _add_column(table, "created_by", "INT NULL")
+        _add_column(table, "mod_by", "INT NULL")
+        _add_column(table, "mod_at", "DATETIME NULL")
+    _revoked_tokens_record_no()
+
+
+def _drop_empty_record_no(table: str) -> None:
+    """
+    A table with both id (the real key) and an empty record_no: sync_columns added
+    record_no as a plain column when the models already said record_no but this
+    rename step hadn't run yet. Drop the empty column so id can be renamed.
+    Refuses (stops start-up) if record_no holds any value, so nothing is lost.
+    """
+    with engine.begin() as conn:
+        filled = conn.execute(text(f"SELECT COUNT(record_no) FROM {_q(table)}")).scalar()
+        if filled:
+            raise RuntimeError(f"{table} has both id and record_no, and record_no holds {filled} values. "
+                               "Not changed automatically; please check this table by hand.")
+        conn.execute(text(f"ALTER TABLE {_q(table)} DROP COLUMN record_no"))
+    print(f"Database updated: removed the empty {table}.record_no (id is renamed next)")
+
+
+def _split_text_created_by(table: str) -> None:
+    """
+    created_by holds names (text) and created_by_name exists too (added empty by
+    sync_columns): move the names to created_by_name, keep account ids (digits)
+    in created_by, and make created_by a number column.
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(f"SELECT record_no, created_by, created_by_name FROM {_q(table)}")).all()
+        for rid, by, by_name in rows:
+            if by is None or str(by).strip().isdigit():
+                continue
+            conn.execute(text(f"UPDATE {_q(table)} SET created_by = NULL, created_by_name = :n WHERE record_no = :r"),
+                         {"n": by_name if by_name else by, "r": rid})
+        if engine.dialect.name == "mysql":
+            conn.execute(text(f"ALTER TABLE {_q(table)} MODIFY COLUMN created_by INT NULL"))
+    print(f"Database updated: {table}.created_by names moved to created_by_name; created_by is now an account id")
+
+
+def category_project_id() -> None:
+    """
+    categories.project_id: added empty, existing categories get PRJ-0001, PRJ-0002 ...
+    in record_no order, then the column becomes required and unique.
+    """
+    if not _has_column("categories", "record_no"):
+        return
+    added = not _has_column("categories", "project_id")
+    _add_column("categories", "project_id", "VARCHAR(50) NULL")
+    with engine.begin() as conn:
+        empty = conn.execute(text("SELECT record_no FROM categories WHERE project_id IS NULL OR project_id = '' "
+                                  "ORDER BY record_no")).scalars().all()
+        if empty:
+            used = {v for (v,) in conn.execute(text("SELECT project_id FROM categories WHERE project_id IS NOT NULL"))}
+            n = 0
+            for rid in empty:
+                n += 1
+                while f"CAT-{n:04d}" in used:
+                    n += 1
+                conn.execute(text("UPDATE categories SET project_id = :p WHERE record_no = :r"), {"p": f"CAT-{n:04d}", "r": rid})
+            print(f"Database updated: project_id given to {len(empty)} existing categories")
+    # Automatic category codes PRJ-#### -> CAT-#### (once; hand-typed codes are kept)
+    import re as _re
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT record_no, project_id FROM categories WHERE project_id LIKE 'PRJ-%'")).all()
+        used = {v for (v,) in conn.execute(text("SELECT project_id FROM categories WHERE project_id IS NOT NULL"))}
+        moved = 0
+        for rid, code in rows:
+            if _re.fullmatch(r"PRJ-\d{4,}", code or "") and f"CAT-{code[4:]}" not in used:
+                conn.execute(text("UPDATE categories SET project_id = :p WHERE record_no = :r"), {"p": f"CAT-{code[4:]}", "r": rid})
+                used.add(f"CAT-{code[4:]}")
+                moved += 1
+        if moved:
+            print(f"Database updated: {moved} category code(s) PRJ-#### renamed to CAT-#### (PRJ- codes are for projects now)")
+    if not _has_index("categories", "ix_categories_project_id"):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("CREATE UNIQUE INDEX ix_categories_project_id ON categories (project_id)"))
+        except (OperationalError, ProgrammingError) as e:
+            if not _already_exists(e):
+                raise
+    if added and engine.dialect.name == "mysql":
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE categories MODIFY COLUMN project_id VARCHAR(50) NOT NULL"))
+
+
+def _revoked_tokens_record_no() -> None:
+    """revoked_tokens was keyed by token_hash: give it record_no, keep token_hash unique."""
+    if not _has_column("revoked_tokens", "token_hash") or _has_column("revoked_tokens", "record_no"):
+        return
+    if engine.dialect.name != "mysql":
+        print("WARNING: revoked_tokens has no record_no. On SQLite, drop the table and restart to recreate it.")
+        return
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE revoked_tokens DROP PRIMARY KEY, "
+            "ADD COLUMN record_no INT NOT NULL AUTO_INCREMENT PRIMARY KEY FIRST, "
+            "ADD UNIQUE INDEX ix_revoked_tokens_token_hash (token_hash)"
+        ))
+    print("Database updated: revoked_tokens now has record_no")
+
+
 def run_migrations():
+    # 0. Renames on existing tables (must come before the steps below, which use the new names).
+    record_no_and_audit_columns()
+
     # 1. New tables (categories, products, survey_questions, respondents,
     #    survey_responses, survey_answers, consolidated_reports).
     Base.metadata.create_all(bind=engine)
 
     # 2. Columns added to tables that existed before.
+    category_project_id()
+    # Customer address: Country -> State -> City (LOV lists inside each other)
+    _add_column("respondents", "state", "VARCHAR(120) NULL", index=True)
+    _add_column("respondents", "city", "VARCHAR(120) NULL", index=True)
+    _add_column("m_othermastername", "parent_master_id", "INT NULL")
+    _add_column("m_othermasterdata", "parent_id", "INT NULL", index=True)
     #    Older uploads keep NULL: they aren't linked to a survey.
     _add_column("feedback_records", "response_id", "INT NULL", index=True)
     _add_column("survey_answers", "value_en", "TEXT NULL")
@@ -92,10 +262,15 @@ def run_migrations():
     # Products already surveyed before rounds were required stay open as before.
     had_needs_round = _has_column("products", "needs_round")
     _add_column("products", "needs_round", "INT NOT NULL DEFAULT 1")
+    _add_column("products", "start_version", "INT NOT NULL DEFAULT 1")  # existing products: v1, as before
+    # Recipe plans and action plans (services/action_plans.py); the two plan tables are new
+    _add_column("products", "recipe_plan", "JSON NULL")
+    _add_column("categories", "default_plan", "JSON NULL")
+    _add_column("survey_responses", "action_plan_id", "INT NULL", index=True)
     if not had_needs_round:
         with engine.begin() as conn:
             done = conn.execute(text(
-                "UPDATE products SET needs_round = 0 WHERE id IN (SELECT DISTINCT product_id FROM survey_responses)"
+                "UPDATE products SET needs_round = 0 WHERE record_no IN (SELECT DISTINCT product_id FROM survey_responses)"
             )).rowcount
         if done:
             print(f"Database updated: {done} existing products stay open without a round")
@@ -148,11 +323,122 @@ def run_migrations():
 
     seed_defaults()
 
+    from app.services.lov import seed_lov
+
+    seed_lov()
+
+    # Offline mode: the phone's submission id makes retried uploads idempotent.
+    for table in ("respondents", "survey_responses"):
+        _add_column(table, "client_uuid", "VARCHAR(36) NULL")
+        _add_unique_index(table, "client_uuid")
+
+    # Offline GPS: accuracy, capture time and platform of a survey's GPS fix.
+    _add_column("survey_responses", "location_accuracy", "FLOAT NULL")
+    _add_column("survey_rounds", "total_at_close", "INT NULL")
+    project_totals()
+    _add_column("survey_responses", "location_captured_at", "DATETIME NULL")
+    _add_column("survey_responses", "location_source", "VARCHAR(20) NULL")
+
     # 3. Data steps (each one does nothing once done).
     backfill_feedback_tone()
     link_unclaimed_surveys()
     create_first_rounds()
     backfill_survey_versions()
+    project_versions()
+    drop_orphan_product_checks()
+    plans_before_the_survey()
+    # Encrypted recordings (services/recording_crypto.py)
+    _add_column("feedback_records", "media_encrypted", "INT NOT NULL DEFAULT 0")
+    _add_column("feedback_records", "media_key_id", "INT NULL")
+    _add_column("feedback_records", "media_wrapped_key", "TEXT NULL")
+    for table in ("upload_sessions", "analysis_jobs"):
+        _add_column(table, "enc_key_id", "INT NULL")
+        _add_column(table, "enc_wrapped_key", "TEXT NULL")
+
+
+def plans_before_the_survey() -> None:
+    """Action plans can be made in a project before its survey starts (round_id NULL)."""
+    _add_column("action_plans", "project_id", "INT NULL", index=True)
+    col = next((c for c in inspect(engine).get_columns("action_plans") if c["name"] == "round_id"), None)
+    if col is not None and not col.get("nullable", True):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE action_plans MODIFY round_id INT NULL"))
+            print("Database updated: action plans can be planned before their survey starts")
+        except (OperationalError, ProgrammingError):
+            pass  # SQLite (tests) builds the new schema from the models
+
+
+def drop_orphan_product_checks() -> None:
+    """Product verification rows left by surveys or products deleted before their check was
+    removed with them (api/product_feedback.delete_survey, catalog product delete)."""
+    with engine.begin() as conn:
+        n = conn.execute(text(
+            "DELETE FROM product_checks WHERE response_id NOT IN (SELECT record_no FROM survey_responses) "
+            "OR selected_product_id NOT IN (SELECT record_no FROM products)")).rowcount
+    if n:
+        print(f"Database updated: removed {n} product verification row(s) of deleted surveys or products")
+
+
+def project_versions() -> None:
+    """
+    projects.product_version: one project per product VERSION instead of per product.
+    Once, when the column is added:
+      - each existing project gets the version its product had when the project was
+        made (the newest recipe version saved by then; else the first one, else 1);
+      - the unique rule moves from (product_id) to (product_id, product_version);
+      - every product version without a project gets one (new projects; existing
+        projects and their history are not changed).
+    """
+    added = not _has_column("projects", "product_version")
+    _add_column("projects", "product_version", "INT NOT NULL DEFAULT 1")
+    if not _has_index("projects", "uq_project_product_version"):
+        with engine.begin() as conn:
+            if added:
+                rows = conn.execute(text("SELECT record_no, product_id, created_at FROM projects")).all()
+                for rid, pid, made in rows:
+                    v = conn.execute(text("SELECT MAX(version) FROM recipe_versions WHERE product_id = :p AND created_at <= :t"),
+                                     {"p": pid, "t": made}).scalar()
+                    if v is None:
+                        v = conn.execute(text("SELECT MIN(version) FROM recipe_versions WHERE product_id = :p"), {"p": pid}).scalar()
+                    if v is None:
+                        v = conn.execute(text("SELECT start_version FROM products WHERE record_no = :p"), {"p": pid}).scalar()
+                    conn.execute(text("UPDATE projects SET product_version = :v WHERE record_no = :r"),
+                                 {"v": int(v or 1), "r": rid})
+            try:
+                conn.execute(text("CREATE UNIQUE INDEX uq_project_product_version ON projects (product_id, product_version)"))
+            except (OperationalError, ProgrammingError) as e:
+                if not _already_exists(e):
+                    raise
+        print("Database updated: projects are per product version (product_id, product_version)")
+    # The old one-project-per-product rule (MySQL names it after the column). The new
+    # index starts with product_id, so the foreign key keeps an index.
+    for ix in inspect(engine).get_indexes("projects"):
+        if ix.get("unique") and ix.get("column_names") == ["product_id"]:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE projects DROP INDEX {_q(ix['name'])}"))
+                print(f"Database updated: dropped the one-project-per-product index {ix['name']}")
+            except (OperationalError, ProgrammingError):
+                pass  # SQLite keeps table constraints (tests build the new schema anyway)
+    if not added:
+        return
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.database.models import Product, RecipeVersion, product_first_version, project_for_version
+
+    with OrmSession(engine) as session:
+        made = 0
+        for product in session.query(Product).order_by(Product.id).all():
+            versions = sorted({v for (v,) in session.query(RecipeVersion.version).filter(RecipeVersion.product_id == product.id)})
+            for version in versions or [product_first_version(product)]:
+                before = len(session.new)
+                project_for_version(session, product, version)
+                made += len(session.new) - before
+            session.flush()
+        session.commit()
+    if made:
+        print(f"Database updated: {made} project(s) created for existing product versions")
 
 
 def _assignment_unique_per_round():
@@ -232,9 +518,9 @@ def backfill_survey_versions() -> int:
         result = conn.execute(text(
             "UPDATE survey_responses SET recipe_version = ("
             " SELECT survey_rounds.recipe_version FROM survey_rounds"
-            " WHERE survey_rounds.id = survey_responses.round_id)"
+            " WHERE survey_rounds.record_no = survey_responses.round_id)"
             " WHERE recipe_version IS NULL AND round_id IS NOT NULL"
-            " AND EXISTS (SELECT 1 FROM survey_rounds WHERE survey_rounds.id = survey_responses.round_id"
+            " AND EXISTS (SELECT 1 FROM survey_rounds WHERE survey_rounds.record_no = survey_responses.round_id"
             " AND survey_rounds.recipe_version IS NOT NULL)"
         ))
     filled = result.rowcount or 0
@@ -354,6 +640,8 @@ def sync_columns(table_names) -> None:
         if table is None or name not in existing_tables:
             continue
         present = {c["name"]: c for c in inspector.get_columns(name)}
+        # Database names (table.columns is keyed by attribute: "id" for record_no).
+        model_names = {c.name for c in table.columns}
         for column in table.columns:
             if column.name in present:
                 continue
@@ -370,7 +658,7 @@ def sync_columns(table_names) -> None:
         if engine.dialect.name == "mysql":
             _fix_types(name, table, present)
             for col_name, info in present.items():
-                if col_name in table.columns or info.get("nullable", True) or info.get("default") is not None:
+                if col_name in model_names or info.get("nullable", True) or info.get("default") is not None:
                     continue
                 if info.get("autoincrement") is True:
                     continue
@@ -409,3 +697,28 @@ def _fix_types(name: str, table, present: dict) -> None:
             print(f"WARNING: {name}.{column.name} is {info['type']} in the database but the code expects "
                   f"{column.type}. Not changed automatically (it could lose data); please check it.")
 
+def project_totals() -> None:
+    """The response total moved from the product to each project: an existing project starts with
+    its product's total (once, when the column is added)."""
+    if _has_column("projects", "total_target"):
+        return
+    _add_column("projects", "total_target", "INT NULL")
+    from sqlalchemy.orm import Session as OrmSession
+
+    from app.database.models import Product, Project
+
+    with OrmSession(engine) as session:
+        made = 0
+        for project in session.query(Project).all():
+            product = session.get(Product, project.product_id)
+            value = ((product.recipe_plan or {}) if product else {}).get("target")
+            try:
+                value = int(value) if value else None
+            except (TypeError, ValueError):
+                value = None
+            if value:
+                project.total_target = value
+                made += 1
+        session.commit()
+    if made:
+        print(f"Database updated: {made} project(s) given their product's response total")

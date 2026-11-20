@@ -47,7 +47,7 @@ export default function AnalyticsPage() {
                   <label key={p.id} className={`assign-item${picked.includes(p.id) ? " is-on" : ""}`}>
                     <input type="checkbox" checked={picked.includes(p.id)} onChange={() => toggle(p.id)} />
                     <span className="assign-item-text"><strong>{p.name}</strong>
-                      <span className="muted">{p.rounds.length ? `Rounds ${p.rounds.join(", ")}` : "No rounds yet"}</span></span>
+                      <span className="muted">{p.rounds.length ? `Surveys ${p.rounds.join(", ")}` : "No surveys yet"}</span></span>
                   </label>
                 ))}
               </fieldset>

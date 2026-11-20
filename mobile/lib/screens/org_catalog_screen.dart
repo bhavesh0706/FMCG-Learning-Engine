@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import 'package:flutter/services.dart';
+
+import '../services/api_service.dart';
 import '../services/org_api.dart';
+import '../services/recording_vault.dart';
 import 'org_product_screens.dart';
 import 'org_screens.dart';
+import '../widgets/search_dropdown.dart';
 
 /* ============================================================
    Catalog (organization): products and categories
@@ -323,7 +328,7 @@ class _CategorySheetState extends State<_CategorySheet> {
       padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + MediaQuery.of(context).viewInsets.bottom),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
         Text(widget.category == null ? 'Add a category' : 'Rename category',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+            style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const SizedBox(height: 14),
         TextField(controller: _name, decoration: const InputDecoration(labelText: 'Name', hintText: 'Breakfast Cereals')),
         const SizedBox(height: 12),
@@ -353,6 +358,24 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
   late final TextEditingController _name = TextEditingController(text: str(widget.product?['name']));
   late final TextEditingController _sku = TextEditingController(text: str(widget.product?['sku']));
   late final TextEditingController _description = TextEditingController(text: str(widget.product?['description']));
+  // New products only: the first recipe version number (1; higher if versions existed before the app)
+  final TextEditingController _startVersion = TextEditingController(text: '1');
+  // New products only, while the organization has no recording passkey yet (one for all
+  // products; the server keeps only its hash)
+  final TextEditingController _passkey = TextEditingController();
+  bool? _orgPasskey; // null: checking or offline; true: already set; false: asked here
+
+  bool get _askPasskey => _isNew && _orgPasskey == false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.product == null) {
+      ApiService().orgPasskeySet().then((set) {
+        if (mounted) setState(() => _orgPasskey = set ?? true);
+      });
+    }
+  }
   late int? _categoryId = widget.product != null
       ? intOf(widget.product!['category_id'])
       : (widget.categoryId ?? (widget.categories.isEmpty ? null : intOf(widget.categories.first['id'])));
@@ -367,6 +390,8 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
     _name.dispose();
     _sku.dispose();
     _description.dispose();
+    _startVersion.dispose();
+    _passkey.dispose();
     super.dispose();
   }
 
@@ -391,11 +416,22 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
       setState(() => _error = 'Enter the product name and choose its category.');
       return;
     }
+    final startVersion = int.tryParse(_startVersion.text.trim());
+    if (_isNew && (startVersion == null || startVersion < 1 || startVersion > 999)) {
+      setState(() => _error = 'Recipe version: enter a whole number from 1 to 999.');
+      return;
+    }
+    if (_askPasskey && _passkey.text.replaceAll(RegExp(r'[\s-]'), '').length < 8) {
+      setState(() => _error = 'Recording passkey: generate one, or type at least 8 characters.');
+      return;
+    }
     final body = <String, dynamic>{
       'name': _name.text.trim(),
       'category_id': _categoryId,
       'sku': _sku.text.trim().isEmpty ? null : _sku.text.trim(),
       'description': _description.text.trim().isEmpty ? null : _description.text.trim(),
+      if (_isNew) 'start_version': startVersion,
+      if (_askPasskey) 'recording_passkey': _passkey.text.trim(),
     };
     await _run(() async {
       if (_isNew) {
@@ -437,14 +473,14 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
       padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + MediaQuery.of(context).viewInsets.bottom),
       child: SingleChildScrollView(
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-          Text(_isNew ? 'Add a product' : 'Product details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+          Text(_isNew ? 'Add a product' : 'Product details', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
           if (_isNew)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text('Add its survey questions and recipe afterwards in Products.', style: TextStyle(color: AppColors.muted)),
             ),
           const SizedBox(height: 14),
-          DropdownButtonFormField<int>(
+          SearchDropdownField<int>(
                 isExpanded: true,
             value: hasSelected ? _categoryId : null,
             decoration: const InputDecoration(labelText: 'Category'),
@@ -456,6 +492,53 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
           const SizedBox(height: 12),
           TextField(controller: _sku, decoration: const InputDecoration(labelText: 'SKU (optional)', hintText: 'FOOD-AAM-JELLY')),
           const SizedBox(height: 12),
+          if (_isNew) ...[
+            TextField(
+              controller: _startVersion,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                labelText: 'Recipe version',
+                prefixText: 'v',
+                helperText: 'The first recipe saved gets this number; keep 1 for a new product.',
+              ),
+            ),
+            const SizedBox(height: 10),
+            if (_orgPasskey == true)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Text('Recordings of this product open with your organization\'s recording passkey (the same for every product).',
+                    style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+              ),
+            if (_askPasskey)
+            TextField(
+              controller: _passkey,
+              autocorrect: false,
+              enableSuggestions: false,
+              textCapitalization: TextCapitalization.characters,
+              decoration: InputDecoration(
+                labelText: 'Recording passkey (for all products)',
+                helperText: 'One passkey opens the recordings of every product. Stored only as a hash: copy it now.',
+                helperMaxLines: 3,
+                suffixIcon: Row(mainAxisSize: MainAxisSize.min, children: [
+                  IconButton(
+                    tooltip: 'Generate',
+                    icon: const Icon(Icons.auto_awesome_rounded),
+                    onPressed: () => setState(() => _passkey.text = RecordingVault.generatePasskey()),
+                  ),
+                  IconButton(
+                    tooltip: 'Copy',
+                    icon: const Icon(Icons.copy_rounded),
+                    onPressed: () {
+                      if (_passkey.text.isEmpty) return;
+                      Clipboard.setData(ClipboardData(text: _passkey.text));
+                      showMessage(context, 'Passkey copied.');
+                    },
+                  ),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           TextField(controller: _description, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Description (optional)', hintText: 'Pack size, variant…')),
           if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
           const SizedBox(height: 14),

@@ -12,6 +12,10 @@ const PATHS = {
   overview: "M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z",
   products: "M4 8 12 4l8 4v8l-8 4-8-4zm0 0 8 4 8-4M12 12v8",
   updates: "M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0",
+  projects: "M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 10h18",
+  recipes: "M9 3h6M10 3v6.5L4.8 18.4A1.7 1.7 0 0 0 6.3 21h11.4a1.7 1.7 0 0 0 1.5-2.6L14 9.5V3M7.5 15h9",
+  surveys: "M9 4h6a1 1 0 0 1 1 1v1h2a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h2V5a1 1 0 0 1 1-1zm0 2v1h6V6zM8 12h8M8 16h5",
+  analytics: "M4 20V10M10 20V4M16 20v-7M22 20H2",
 };
 
 export default function NavIcon({ name }) {

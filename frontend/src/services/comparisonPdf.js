@@ -89,7 +89,7 @@ export function downloadComparisonPdf({ product, comparison }) {
     clean(
       [
         product?.category_name,
-        `Round ${a.number} (recipe v${a.recipe_version ?? "-"}) vs Round ${b.number} (recipe v${b.recipe_version ?? "-"})`,
+        `Survey ${a.number} (recipe v${a.recipe_version ?? "-"}) vs Survey ${b.number} (recipe v${b.recipe_version ?? "-"})`,
         new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }),
       ]
         .filter(Boolean)
@@ -116,7 +116,7 @@ export function downloadComparisonPdf({ product, comparison }) {
   const nb = b.numbers || {};
   heading("Key numbers");
   table(
-    ["", `Round ${a.number}`, `Round ${b.number}`, "Change"],
+    ["", `Survey ${a.number}`, `Survey ${b.number}`, "Change"],
     [
       ["Consumers", na.consumers ?? "-", nb.consumers ?? "-", b.status === "live" ? "so far" : ""],
       ["Average rating (out of 5)", num(na.rating), num(nb.rating), delta(na.rating, nb.rating)],
@@ -148,7 +148,7 @@ export function downloadComparisonPdf({ product, comparison }) {
   font(10.5, "normal", C.ink2);
   if (!changes.length) {
     ensure(16);
-    doc.text(comparison.same_recipe ? "Same recipe in both rounds." : "No recipe details to compare.", M, y + 11);
+    doc.text(comparison.same_recipe ? "Same recipe in both surveys." : "No recipe details to compare.", M, y + 11);
     y += 18;
   } else {
     changes.forEach((c) => {
@@ -170,5 +170,5 @@ export function downloadComparisonPdf({ product, comparison }) {
     doc.text(`${i} / ${pages}`, W - M, H - 28, { align: "right" });
   }
   const safe = clean(product?.name || "product").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  doc.save(`${safe}-round-${a.number}-vs-${b.number}.pdf`);
+  doc.save(`${safe}-survey-${a.number}-vs-${b.number}.pdf`);
 }

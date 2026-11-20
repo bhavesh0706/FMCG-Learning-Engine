@@ -66,15 +66,15 @@ def test_a_prompt_for_one_product_filters_compares_rounds_and_limits_slides(clie
     assert plan["max_slides"] == 5 and plan["focus"] == "negative"
     # real numbers: one retailer from that city in each round
     assert [b["surveys"] for b in body["blocks"]] == [1, 1] and body["surveys"] == 2
-    assert "rounds compared" in body["summary"] and "Retailer" in body["summary"]
+    assert "surveys compared" in body["summary"] and "Retailer" in body["summary"]
     f = client.get(f"/reports/file/{body['request_id']}", headers=auth(admin))
     assert f.status_code == 200
     from pptx import Presentation
 
     deck = Presentation(io.BytesIO(f.content))
     assert 2 <= len(deck.slides) <= 5
-    titles = [s.shapes[0].text_frame.text for s in deck.slides]
-    assert any(t.startswith("Concerns") or t == "Comparison" for t in titles)
+    texts = [" ".join(sh.text_frame.text for sh in s.shapes if sh.has_text_frame) for s in deck.slides]
+    assert any("CONCERNS" in t or "COMPARISON" in t for t in texts), "the designed deck labels each slide (kicker)"
 
 
 def test_cross_product_prompts_use_the_real_numbers(client, db, admin, data):
@@ -84,15 +84,15 @@ def test_cross_product_prompts_use_the_real_numbers(client, db, admin, data):
     plan = r.json()["plan"]
     assert {data["flakes"].id, data["oats"].id} <= set(plan["product_ids"]) and "comparison" in plan["sections"]
     blocks = {b["label"]: b["surveys"] for b in r.json()["blocks"]}
-    assert blocks[f"{data['flakes'].name} · Round 2"] == 2 and blocks[f"{data['oats'].name} · Round 1"] == 1
+    assert blocks[f"{data['flakes'].name} · Survey 2"] == 2 and blocks[f"{data['oats'].name} · Survey 1"] == 1
     f = client.get(f"/reports/file/{r.json()['request_id']}", headers=auth(org))
     from pptx import Presentation
 
     deck = Presentation(io.BytesIO(f.content))
-    comparison = next(s for s in deck.slides if s.shapes[0].text_frame.text == "Comparison")
+    comparison = next(s for s in deck.slides if any(sh.has_text_frame and sh.text_frame.text == "COMPARISON" for sh in s.shapes))
     table = next(sh.table for sh in comparison.shapes if sh.has_table)
     cells = {table.cell(r, 0).text: table.cell(r, 1).text for r in range(1, len(table.rows))}
-    assert cells[f"{data['flakes'].name} · Round 2"] == "2" and cells[f"{data['oats'].name} · Round 1"] == "1"
+    assert cells[f"{data['flakes'].name} · Survey 2"] == "2" and cells[f"{data['oats'].name} · Survey 1"] == "1"
 
 
 def test_prompts_are_for_powerpoint_only(client, db, admin, data):

@@ -22,7 +22,7 @@ from app.database.models import AuditLog, FeedbackRecord, Product, ProductCheck,
 from app.services import audit
 from app.services.product_check import review
 
-router = APIRouter(prefix="/admin/product-checks", tags=["Product checks"])
+router = APIRouter(prefix="/admin/product-checks", tags=["Product verification"])
 
 LABELS = {"match": "Match", "mismatch": "Mismatch detected", "uncertain": "Unverified"}
 
@@ -57,9 +57,16 @@ def _out(c: ProductCheck, r: Optional[SurveyResponse], names: dict, customer: st
     }
 
 
+def _live(q):
+    """Only checks whose survey and selected product still exist (a deleted survey or
+    product never shows here)."""
+    return (q.join(SurveyResponse, SurveyResponse.id == ProductCheck.response_id)
+            .join(Product, Product.id == ProductCheck.selected_product_id))
+
+
 @router.get("")
 def list_checks(status: str = Query("pending"), db: Session = Depends(get_db)):
-    q = db.query(ProductCheck)
+    q = _live(db.query(ProductCheck))
     if status == "pending":
         q = q.filter(ProductCheck.review_status == "pending")
     elif status == "unverified":
@@ -73,8 +80,8 @@ def list_checks(status: str = Query("pending"), db: Session = Depends(get_db)):
     people = {p.id: p.name for p in db.query(Respondent).filter(Respondent.id.in_({r.respondent_id for r in responses.values()})).all()} if responses else {}
     names = _names(db, [i for c in checks for i in (c.selected_product_id, c.detected_product_id, c.corrected_product_id)])
     counts = {
-        "pending": db.query(ProductCheck).filter(ProductCheck.review_status == "pending").count(),
-        "unverified": db.query(ProductCheck).filter(ProductCheck.review_status == "optional").count(),
+        "pending": _live(db.query(ProductCheck)).filter(ProductCheck.review_status == "pending").count(),
+        "unverified": _live(db.query(ProductCheck)).filter(ProductCheck.review_status == "optional").count(),
     }
     return {"counts": counts, "checks": [_out(c, responses.get(c.response_id), names,
                                                people.get(getattr(responses.get(c.response_id), "respondent_id", None), "")) for c in checks]}
@@ -84,7 +91,7 @@ def _check_or_404(db: Session, response_id: int):
     c = db.query(ProductCheck).filter(ProductCheck.response_id == response_id).first()
     r = db.get(SurveyResponse, response_id)
     if c is None or r is None:
-        raise HTTPException(status_code=404, detail="No product check for this survey.")
+        raise HTTPException(status_code=404, detail="No product verification for this survey.")
     return c, r
 
 

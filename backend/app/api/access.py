@@ -47,6 +47,9 @@ PUBLIC = [
     ({"POST"}, r"^/auth/login$"),
     ({"POST"}, r"^/auth/signup$"),  # the endpoint itself refuses unless sign-up is enabled
     ({"GET"}, r"^/auth/setup-status$"),
+    # A recording stream authenticates with its own short-lived playback token (?pt=), issued only
+    # after the product passkey is verified (api/recordings.py); media players can't send headers.
+    ({"GET"}, r"^/recordings/\d+/stream$"),
     ({"POST"}, r"^/auth/setup$"),  # only works while no admin exists
     ({"POST"}, r"^/auth/logout$"),  # ends the sent token if it is still valid; harmless otherwise
     ({"POST"}, r"^/auth/password-reset/(request|confirm|simple)$"),  # forgot password (Admin, Super Admin)
@@ -80,6 +83,7 @@ ADMIN = [
 # them: these answer 403 for every role except "client".
 ORG_CONTENT = [
     ({"PUT"}, r"^/products/\d+/recipe$"),
+    ({"DELETE"}, r"^/products/\d+/recipe/versions/\d+$"),
     # Recipe standards and the recipe process attachments (Recipe Master)
     ({"POST"}, r"^/recipe-standards$"),
     ({"PUT", "DELETE"}, r"^/recipe-standards/\d+$"),
@@ -88,6 +92,11 @@ ORG_CONTENT = [
     ({"POST"}, r"^/products/\d+/questions$"),
     ({"PUT"}, r"^/products/\d+/questions/order$"),
     ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
+    # Recipe plans and action plans (the Super Admin plans; admins allocate teams under /admin)
+    ({"PUT"}, r"^/products/\d+/recipe-plan$"),
+    ({"PUT"}, r"^/categories/\d+/default-plan$"),
+    ({"POST"}, r"^/products/\d+/action-plans$"),
+    ({"PUT", "DELETE"}, r"^/action-plans/\d+$"),
 ]
 
 # Products and categories are managed by the ORGANIZATION (its portal's Catalog):
@@ -107,15 +116,25 @@ ORG_CATALOG = [
 # only aggregated results: no customer details, survey persons or recordings.
 CLIENT_ALLOWED = [
     ({"GET"}, r"^/auth/me$"),
+    # Recipe plan and action plans of a product
+    ({"GET", "PUT"}, r"^/products/\d+/recipe-plan$"),
+    ({"PUT"}, r"^/categories/\d+/default-plan$"),
+    ({"GET", "POST"}, r"^/products/\d+/action-plans$"),
+    ({"PUT", "DELETE"}, r"^/action-plans/\d+$"),
     # Custom reports from a prompt (Excel / PowerPoint, one or many products)
     ({"GET"}, r"^/reports/(options|file/\d+)$"),
     ({"POST"}, r"^/reports/plan$"),
-    # Every survey's full analysis page and its recording (read-only; re-analysis stays with admins)
-    ({"GET"}, r"^/feedback/\d+(/(video|audio|media))?$"),
+    # Every survey's full analysis page (read-only; re-analysis stays with admins). Its recording
+    # plays only with the product passkey (/recordings/...).
+    ({"GET"}, r"^/feedback/\d+$"),
+    ({"GET"}, r"^/recordings/public-key$"),
+    ({"POST"}, r"^/recordings/\d+/authorise$"),
+    ({"GET"}, r"^/recordings/\d+/history$"),
     ({"POST"}, r"^/auth/(logout-all|change-password|me/password-code)$"),
     (None, r"^/org(/|$)"),
     ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
     ({"GET"}, r"^/products/\d+/recipe/versions$"),
+    ({"DELETE"}, r"^/products/\d+/recipe/versions/\d+$"),
     # Recipe Master: list, standards, attachments
     ({"GET"}, r"^/recipes$"),
     ({"GET", "POST"}, r"^/recipe-standards$"),
@@ -126,6 +145,7 @@ CLIENT_ALLOWED = [
     # Report downloads (Excel, PowerPoint), master lists, a survey report's review history
     ({"GET"}, r"^/product-feedback/\d+/export\.(xlsx|pptx)$"),
     ({"GET"}, r"^/masters$"),
+    ({"GET"}, r"^/lov$"),
     ({"GET"}, r"^/surveys/responses/\d+/report/history$"),
     # Survey questions of a product: read, add, edit, reorder, remove
     ({"GET", "POST"}, r"^/products/\d+/questions$"),
@@ -307,4 +327,11 @@ def install_access_control(app):
         elif need == "admin" and account["role"] != "admin":
             return JSONResponse(status_code=403, content={"detail": "This is only available to admins."})
         request.state.account = account
-        return await call_next(request)
+        # Who is making changes: fills created_by / mod_by (app/database/audit_columns.py).
+        from app.database.audit_columns import current_user_id
+
+        reset = current_user_id.set(account.get("id"))
+        try:
+            return await call_next(request)
+        finally:
+            current_user_id.reset(reset)

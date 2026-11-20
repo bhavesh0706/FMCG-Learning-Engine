@@ -20,11 +20,17 @@ const api = axios.create({
 export async function uploadVideo(
   file,
   onProgress,
-  responseId = null
+  responseId = null,
+  sealed = null
 ) {
   const formData = new FormData();
 
   formData.append("file", file);
+  // Encrypted in the browser: its data key, wrapped with the server's public key
+  if (sealed?.wrappedKey) {
+    formData.append("key_id", String(sealed.keyId));
+    formData.append("wrapped_key", sealed.wrappedKey);
+  }
 
   if (responseId !== null && responseId !== undefined) {
     formData.append(

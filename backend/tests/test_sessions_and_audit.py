@@ -76,7 +76,8 @@ def test_signed_out_token_cannot_play_recordings(client, db, alice, product, tmp
     token = _login(client, alice)
     ids = start_survey(client, alice, product)
     record = _feedback_for(db, ids["response_id"], tmp_path)
-    assert client.get(f"/feedback/{record.id}/video?token={token}").status_code == 200
+    # Signed in, the survey person still can't play it (passkey-protected); signed out, not even that far.
+    assert client.get(f"/feedback/{record.id}/video?token={token}").status_code == 403
     client.post("/auth/logout", headers=_bearer(token))
     assert client.get(f"/feedback/{record.id}/video?token={token}").status_code == 401
 
@@ -191,7 +192,7 @@ def test_catalog_changes_keep_the_name_even_after_deletion(client, db, admin, pr
 def test_recipe_change_is_logged(client, db, admin, product):
     # Recipes are changed by the organization (its portal); the change is logged with its version.
     org = make_user(db, role="client")
-    recipe = {"batch_size": "10 kg", "ingredients": [{"name": "Sugar", "quantity": "2", "unit": "kg"}]}
+    recipe = {"batch_size": "10 kg", "ingredients": [{"name": "Sugar", "quantity": "10", "unit": "kg"}]}
     assert client.put(f"/products/{product.id}/recipe", json=recipe, headers=auth(org)).status_code == 200
     entry = _entries(db, action="recipe.update", target_id=product.id)[-1]
     assert entry.details["version"] == 1

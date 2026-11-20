@@ -8,7 +8,7 @@ PurePosixPath), which is exactly what happens when a database moves between comp
 import csv
 
 import pytest
-from conftest import auth, make_user, start_survey
+from conftest import auth, make_user, playback_token, start_survey
 
 from app.database.models import AnalysisJob, FeedbackRecord, RecipeAttachment
 from app.services import storage as storage_mod
@@ -118,11 +118,15 @@ def test_a_saved_recording_stores_a_key_and_plays(client, db, alice, product, st
     path = _put(store, "videos", f"{rid}_interview.m4a", b"fake media")
     fid = save_feedback_record("interview.m4a", str(path), 30, 1, 4.0, "Fine.", "Fine.", [], response_id=rid)
     db.expire_all()
-    assert db.get(FeedbackRecord, fid).video_path == f"videos/{rid}_interview.m4a", "no machine path in MySQL"
-    got = client.get(f"/feedback/{fid}/video", headers=auth(alice))
+    rec = db.get(FeedbackRecord, fid)
+    assert rec.video_path == f"videos/{rid}_interview.m4a.enc", "no machine path in MySQL"
+    assert rec.media_encrypted == 1 and b"fake media" not in store.resolve(rec.video_path).read_bytes(), "encrypted at rest"
+    assert not path.exists(), "the plaintext copy is gone"
+    admin = make_user(db, role="admin")
+    got = client.get(f"/recordings/{fid}/stream?pt={playback_token(db, admin, fid)}")
     assert got.status_code == 200 and got.content == b"fake media"
     shown = client.get(f"/feedback/{fid}", headers=auth(alice)).json()["video_path"]
-    assert shown == f"videos/{rid}_interview.m4a" and str(store.areas["videos"]) not in shown, "server path not exposed"
+    assert shown == f"videos/{rid}_interview.m4a.enc" and str(store.areas["videos"]) not in shown, "server path not exposed"
 
 
 def test_an_older_windows_recording_still_plays(client, db, alice, product, store):
@@ -132,7 +136,8 @@ def test_an_older_windows_recording_still_plays(client, db, alice, product, stor
                          duration_seconds=10.0, response_id=rid)
     db.add(rec)
     db.commit()
-    got = client.get(f"/feedback/{rec.id}/video", headers=auth(alice))
+    admin = make_user(db, role="admin")
+    got = client.get(f"/recordings/{rec.id}/stream?pt={playback_token(db, admin, rec.id)}")
     assert got.status_code == 200 and got.content == b"old media"
     assert client.get(f"/feedback/{rec.id}", headers=auth(alice)).json()["video_path"] == f"videos/{rid}_old.mp3"
 

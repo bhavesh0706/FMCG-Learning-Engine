@@ -319,22 +319,6 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
     }
   };
 
-  // Phones: open the share sheet so the user can "Save video" to the gallery. Computers: download the file.
-  const saveCopy = async () => {
-    const f = makeFile();
-    try {
-      if (navigator.canShare?.({ files: [f] })) {
-        await navigator.share({ files: [f], title: "Product review recording" });
-        return;
-      }
-    } catch (err) {
-      if (err?.name === "AbortError") return;
-    }
-    const a = document.createElement("a");
-    a.href = result.url;
-    a.download = result.name;
-    a.click();
-  };
 
   /* ----- Safety: warn before leaving with an unsaved recording, clean up on unmount ----- */
 
@@ -439,14 +423,15 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
         </div>
 
         <div className="recorder-body">
-          {isVideo ? (
-            <video className="recorder-stage" src={result.url} controls playsInline />
-          ) : (
-            <div className="recorder-audio-review">
-              <span className="recorder-audio-icon"><MicIcon size={24} /></span>
-              <audio src={result.url} controls />
-            </div>
-          )}
+          {/* No playback: the recording is encrypted before it's uploaded or saved, and only an
+              authorised admin can play it (customer privacy). */}
+          <div className="recorder-audio-review recorder-sealed">
+            <span className="recorder-audio-icon">{isVideo ? <CameraIcon size={24} /> : <MicIcon size={24} />}</span>
+            <span>
+              <strong>Recording ready</strong>
+              <span className="muted"> · it's encrypted before it leaves this device and can't be played back here.</span>
+            </span>
+          </div>
 
           {short && (
             <p className="recorder-note">
@@ -477,9 +462,6 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
                 )}
               </div>
               <div className="recorder-links">
-                <button type="button" className="link-btn" onClick={saveCopy}>
-                  Save a copy to this phone or computer
-                </button>
                 <button type="button" className="link-btn is-danger" onClick={discard}>
                   Discard and record again
                 </button>
@@ -492,8 +474,8 @@ export default function Recorder({ online, onAnalyze, onSave, analyzeLabel = "An
               )}
               {saveState === "error" && (
                 <p className="alert alert-error">
-                  The recording couldn't be saved in the app, possibly because the device is low on storage. Use "Save a
-                  copy" so you don't lose it.
+                  The recording couldn't be saved on this device (it must be encrypted first: use a secure https page, and
+                  check the device has storage left). Analyze it now instead.
                 </p>
               )}
             </>

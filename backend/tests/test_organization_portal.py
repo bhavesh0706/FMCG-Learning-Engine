@@ -21,7 +21,7 @@ from app.database.models import (
 )
 
 RECIPE = {
-    "batch_size": "10 kg",
+    "batch_size": "10 trays",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],
 }
 LESS_SUGAR = {**RECIPE, "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.65", "unit": "kg"}]}
@@ -281,6 +281,9 @@ def test_updates_feed_and_unread_count(client, db, admin, org, product):
     assert own["title"].startswith("You saved recipe v2") and not own["unread"]
     overview = client.get("/org/overview", headers=auth(org)).json()
     assert overview["numbers"]["products"] >= 1 and len(overview["updates"]) <= 4
+    # The front page lists the 10 most recently added products, newest first.
+    listed = overview["products"]
+    assert len(listed) <= 10 and [p["created_at"] for p in listed] == sorted((p["created_at"] for p in listed), reverse=True)
 
 
 def test_older_surveys_get_round_1(client, db, alice, product):

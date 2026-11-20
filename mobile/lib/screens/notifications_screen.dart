@@ -269,7 +269,7 @@ class _NotificationDetails extends StatelessWidget {
       add('Submitted', formatDate(n.time('submitted_at')));
       if (received) add('Video received', formatDate(n.time('resolved_at')));
     } else if (n.kind == AppNotification.productMismatch) {
-      chip = 'Needs a product check';
+      chip = 'Needs product verification';
       chipBg = AppColors.warnSoft;
       chipFg = AppColors.warn;
       add('Survey', n.text('response_id') == null ? null : '#${n.text('response_id')}');
@@ -305,7 +305,7 @@ class _NotificationDetails extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(n.title, style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800, color: AppColors.ink)),
+            Text(n.title, style: TextStyle(fontFamily: kDisplayFont, fontSize: 19, fontWeight: FontWeight.w800, color: AppColors.ink)),
             const SizedBox(height: 6),
             Text(n.message, style: TextStyle(fontSize: 15, height: 1.45, color: AppColors.ink2)),
             if (chip != null) ...[
@@ -354,7 +354,7 @@ class _NotificationDetails extends StatelessWidget {
                     Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProductChecksPage()));
                   },
                   icon: const Icon(Icons.fact_check_outlined),
-                  label: const Text('Review in product checks'),
+                  label: const Text('Open Product verification'),
                 ),
               ),
             ],

@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../main.dart';
+import '../widgets/design.dart';
 import '../services/org_api.dart';
 import '../services/session.dart';
 import 'home_screens.dart' show MobileSettingsPage;
 import 'org_catalog_screen.dart';
 import 'org_product_screens.dart';
-import 'next_update_screens.dart' show AnalyticsPage, OrgSurveysPage, RecipeMasterPage;
+import 'next_update_screens.dart' show AnalyticsPage, OrgSurveysPage, RecipeMasterPage, SuperAdminsPage;
 
 /* ============================================================
    Organization (client role) in the app
@@ -45,12 +46,12 @@ String ratingText(dynamic v) {
 
 /// "Round 2 · collecting · 5 of 10" for a round map.
 String roundLine(Json? r) {
-  if (r == null || r.isEmpty) return 'No round yet';
+  if (r == null || r.isEmpty) return 'No survey yet';
   final status = str(r['status']);
   final state = status == 'live'
       ? 'collecting'
       : (str(r['closed_reason']) == 'ended' ? 'ended' : 'complete');
-  return 'Round ${intOf(r['number'])} · $state · ${intOf(r['done'])} of ${intOf(r['target'])}';
+  return 'Survey ${intOf(r['number'])} · $state · ${intOf(r['done'])} of ${intOf(r['target'])}';
 }
 
 void showMessage(BuildContext context, String text, {bool error = false}) {
@@ -215,29 +216,6 @@ class Pill extends StatelessWidget {
   }
 }
 
-class StatBox extends StatelessWidget {
-  const StatBox({super.key, required this.value, required this.label, this.child});
-
-  final String value;
-  final String label;
-  final Widget? child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Panel(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        if (child == null)
-          Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.ink))
-        else
-          child!,
-        const SizedBox(height: 2),
-        Text(label, style: TextStyle(fontSize: 12, color: AppColors.muted)),
-      ]),
-    );
-  }
-}
-
 void openOrgProduct(BuildContext context, int id, String name, {String tab = 'report'}) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => OrgProductPage(productId: id, name: name, initialTab: tab)));
 }
@@ -292,12 +270,7 @@ class _OrgShellState extends State<OrgShell> {
       appBar: AppBar(
         titleSpacing: 16,
         title: Row(children: [
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(color: AppColors.brand, borderRadius: BorderRadius.circular(9)),
-            child: Icon(Icons.play_arrow_rounded, color: AppColors.onBrand, size: 20),
-          ),
+          OrgMark(name: name, size: 30),
           const SizedBox(width: 10),
           Expanded(child: Text(_tab == 0 ? name : _titles[_tab], overflow: TextOverflow.ellipsis)),
         ]),
@@ -311,6 +284,11 @@ class _OrgShellState extends State<OrgShell> {
             tooltip: 'Analytics',
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AnalyticsPage())),
             icon: const Icon(Icons.insights_outlined),
+          ),
+          IconButton(
+            tooltip: 'Super Admins',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SuperAdminsPage())),
+            icon: const Icon(Icons.manage_accounts_outlined),
           ),
           IconButton(
             tooltip: 'Settings',
@@ -371,19 +349,24 @@ class OrgOverviewPage extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            Text(_greeting(), style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: AppColors.ink)),
+            Text(_greeting(), style: TextStyle(fontFamily: kDisplayFont, fontSize: 24, fontWeight: FontWeight.w800, color: AppColors.ink)),
             const SizedBox(height: 2),
             Text('Where your products stand with consumers.', style: TextStyle(color: AppColors.muted)),
             const SizedBox(height: 14),
-            Row(children: [
-              Expanded(child: StatBox(value: '${intOf(n['products'])}', label: 'Products')),
-              const SizedBox(width: 8),
-              Expanded(child: StatBox(value: '${intOf(n['responses'])}', label: 'Consumer responses')),
-              const SizedBox(width: 8),
-              Expanded(child: StatBox(value: '${intOf(n['open_rounds'])}', label: 'Open rounds')),
+            KpiGrid(cards: [
+              KpiCard(label: 'Products', icon: Icons.inventory_2_outlined, value: '${intOf(n['products'])}'),
+              KpiCard(label: 'Consumer responses', icon: Icons.forum_outlined, tone: KpiTone.teal, value: '${intOf(n['responses'])}'),
+              KpiCard(
+                label: 'Open surveys',
+                icon: Icons.sensors,
+                tone: KpiTone.pos,
+                value: '${intOf(n['open_rounds'])}',
+                live: intOf(n['open_rounds']) > 0,
+                note: intOf(n['open_rounds']) > 0 ? 'Collecting responses now' : 'No survey running',
+              ),
             ]),
             const SizedBox(height: 18),
-            Text('Your products', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
+            Text('Recently added products', style: TextStyle(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
             const SizedBox(height: 8),
             if (products.isEmpty)
               const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'Add your first product in Catalog.'),
@@ -525,7 +508,7 @@ class OrgUpdatesPage extends StatelessWidget {
               const EmptyNote(
                 icon: Icons.notifications_none,
                 title: 'No updates yet',
-                text: 'Rounds, reports and recipe versions appear here.',
+                text: 'Surveys, reports and recipe versions appear here.',
               ),
             for (final u in updates) ...[
               Panel(

@@ -32,9 +32,9 @@ String _roundsLine(Map<String, dynamic> p) {
   }
   final live = list.where((r) => _s(r['status']) == 'live').toList();
   return [
-    '${list.length} ${list.length == 1 ? 'round' : 'rounds'}',
+    '${list.length} ${list.length == 1 ? 'survey' : 'surveys'}',
     if (versions.length > 1) versions.map((v) => 'v$v').join(' → ') else if (versions.isNotEmpty) 'version ${versions.first}',
-    live.isEmpty ? 'all complete' : 'Round ${_i(live.first['number'])} collecting',
+    live.isEmpty ? 'all complete' : 'Survey ${_i(live.first['number'])} collecting',
   ].join(' · ');
 }
 List<Map<String, dynamic>> _maps(dynamic v) =>
@@ -534,7 +534,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
       appBar: AppBar(
         backgroundColor: AppColors.bg,
         surfaceTintColor: Colors.transparent,
-        title: Text(widget.productName, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        title: Text(widget.productName, style: const TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w700)),
       ),
       body: _data == null
           ? (_error == null
@@ -587,11 +587,11 @@ class _ProductReportPageState extends State<ProductReportPage> {
               padding: const EdgeInsets.only(right: 6),
               child: ActionChip(
                 avatar: const Icon(Icons.compare_arrows, size: 18),
-                label: const Text('Compare rounds'),
+                label: const Text('Compare surveys'),
                 onPressed: () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => Scaffold(
                     backgroundColor: AppColors.bg,
-                    appBar: AppBar(title: Text('Compare rounds · ${widget.productName}')),
+                    appBar: AppBar(title: Text('Compare surveys · ${widget.productName}')),
                     body: RoundCompareView(productId: widget.productId),
                   ),
                 )),
@@ -601,8 +601,8 @@ class _ProductReportPageState extends State<ProductReportPage> {
             Padding(
               padding: const EdgeInsets.only(right: 6),
               child: ChoiceChip(
-                label: Text('Round ${_i(r['number'])}${_s(r['status']) == 'live' ? ' · live' : ''}'),
-                tooltip: 'Round ${_i(r['number'])}: version ${_i(r['recipe_version'])}',
+                label: Text('Survey ${_i(r['number'])}${_s(r['status']) == 'live' ? ' · live' : ''}'),
+                tooltip: 'Survey ${_i(r['number'])}: version ${_i(r['recipe_version'])}',
                 selected: _i(r['number']) == _round,
                 onSelected: (_) => _pickRound(_i(r['number'])),
               ),
@@ -611,7 +611,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
       ),
       const SizedBox(height: 10),
       _Card(
-        title: 'Round ${_i(current['number'])} report',
+        title: 'Survey ${_i(current['number'])} report',
         child: Text(
           [
             'Recipe v${_i(current['recipe_version'])}',
@@ -652,7 +652,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
         if (list.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 32),
-            child: Text('No customer feedback in this round yet.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
+            child: Text('No customer feedback in this survey yet.', textAlign: TextAlign.center, style: TextStyle(color: AppColors.muted)),
           ),
         for (final r in list) ...[
           InkWell(
@@ -725,7 +725,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text('Responses', style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
-                        Text('$responses', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                        Text('$responses', style: const TextStyle(fontFamily: kDisplayFont, fontSize: 22, fontWeight: FontWeight.w800)),
                       ],
                     ),
                   ),
@@ -737,7 +737,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
                         Row(
                           children: [
                             Text(avg == null ? '—' : avg.toStringAsFixed(1),
-                                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+                                style: const TextStyle(fontFamily: kDisplayFont, fontSize: 22, fontWeight: FontWeight.w800)),
                             if (avg != null) ...[const SizedBox(width: 6), RatingStars(rating: avg, size: 14)],
                           ],
                         ),
@@ -843,7 +843,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
             Row(
               children: [
                 Text(rating == null ? '—' : rating.toStringAsFixed(1),
-                    style: TextStyle(fontSize: 34, fontWeight: FontWeight.w800, color: toneColor(toneForRating(rating ?? 0)))),
+                    style: TextStyle(fontFamily: kDisplayFont, fontSize: 34, fontWeight: FontWeight.w800, color: toneColor(toneForRating(rating ?? 0)))),
                 const SizedBox(width: 6),
                 Text('/ 5', style: TextStyle(fontSize: 16, color: AppColors.muted)),
                 const Spacer(),

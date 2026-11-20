@@ -149,7 +149,7 @@
 #         chunk=chunk_text
 #     )
 
-#     text = _call_ollama(
+#     text = call_llm(
 #         prompt=prompt,
 #         num_predict=120,
 #         temperature=0.1,
@@ -221,7 +221,38 @@ import requests
 #   OLLAMA_URL=http://host.docker.internal:11434/api/generate
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "").strip() or "http://127.0.0.1:11434/api/generate"
 
-MODEL = os.environ.get("FMCG_LLM_MODEL", "").strip() or "qwen2.5:7b"
+# ------------------------------------------------------------
+# Which language model to use (ai_service/.env)
+#   USE_OLLAMA=true   -> local Ollama (OLLAMA_URL, FMCG_LLM_MODEL)    [default]
+#   USE_OLLAMA=false  -> OpenAI (OPENAI_API_KEY_ENC + master key, OPENAI_MODEL)
+# The OpenAI key is stored encrypted; see services/secret_store.py.
+# ------------------------------------------------------------
+USE_OLLAMA = os.environ.get("USE_OLLAMA", "true").strip().lower() not in ("0", "false", "no", "off")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+OPENAI_BASE_URL = (os.environ.get("OPENAI_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
+OPENAI_API_KEY = ""
+
+if not USE_OLLAMA:
+    from services.secret_store import SecretError, openai_api_key
+
+    try:
+        OPENAI_API_KEY = openai_api_key()
+    except SecretError as exc:
+        raise SystemExit(f"USE_OLLAMA=false: {exc}") from None
+    if not OPENAI_API_KEY:
+        raise SystemExit(
+            "USE_OLLAMA=false but no OpenAI key is set. Run "
+            "`python tools/encrypt_openai_key.py` to store it encrypted in "
+            "ai_service/.env, or set USE_OLLAMA=true."
+        )
+    if not os.environ.get("OPENAI_API_KEY_ENC", "").strip():
+        print("WARNING: using the plain OPENAI_API_KEY. Run tools/encrypt_openai_key.py "
+              "to store it encrypted instead.")
+
+PROVIDER = "ollama" if USE_OLLAMA else "openai"
+OLLAMA_MODEL = os.environ.get("FMCG_LLM_MODEL", "").strip() or "qwen2.5:7b"
+# The model that answers, whichever provider is active.
+MODEL = OLLAMA_MODEL if USE_OLLAMA else OPENAI_MODEL
 
 
 # ============================================================
@@ -391,24 +422,48 @@ Important:
 
 
 # ============================================================
-# OLLAMA REQUEST
+# LANGUAGE MODEL REQUEST (Ollama or OpenAI, see USE_OLLAMA)
 # ============================================================
+
+def call_llm(
+    prompt: str,
+    num_predict: int,
+    temperature: float,
+    timeout: int,
+    json_mode: bool = False,
+    ollama_model: str | None = None,
+    ollama_extra: dict | None = None,
+) -> str:
+    """Send one prompt to the active provider and return the answer text.
+
+    ollama_model / ollama_extra (e.g. keep_alive, num_ctx) apply to Ollama only.
+    """
+    if USE_OLLAMA:
+        return _call_ollama(prompt, num_predict, temperature, timeout, json_mode,
+                            model=ollama_model, extra=ollama_extra)
+    return _call_openai(prompt, num_predict, temperature, timeout, json_mode)
+
 
 def _call_ollama(
     prompt: str,
     num_predict: int,
     temperature: float,
     timeout: int,
-    json_mode: bool = False
+    json_mode: bool = False,
+    model: str | None = None,
+    extra: dict | None = None,
 ):
+    extra = dict(extra or {})
     payload = {
-        "model": MODEL,
+        "model": model or OLLAMA_MODEL,
         "prompt": prompt,
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": num_predict
-        }
+            "num_predict": num_predict,
+            **extra.pop("options", {}),
+        },
+        **extra,
     }
 
     # JSON mode is used only for structured part analysis.
@@ -428,6 +483,42 @@ def _call_ollama(
     return response_data["response"].strip()
 
 
+def _call_openai(
+    prompt: str,
+    num_predict: int,
+    temperature: float,
+    timeout: int,
+    json_mode: bool = False,
+):
+    messages = [{"role": "user", "content": prompt}]
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_completion_tokens": num_predict,
+    }
+    if json_mode:
+        # OpenAI's JSON mode needs the word "JSON" in the messages.
+        messages.insert(0, {"role": "system", "content": "Respond only with one valid JSON object."})
+        payload["response_format"] = {"type": "json_object"}
+
+    response = requests.post(
+        f"{OPENAI_BASE_URL}/chat/completions",
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        json=payload,
+        timeout=timeout,
+    )
+    if not response.ok:
+        try:
+            detail = response.json().get("error", {}).get("message", "")
+        except ValueError:
+            detail = response.text[:300]
+        raise RuntimeError(f"OpenAI error {response.status_code}: {detail}")
+
+    content = response.json()["choices"][0]["message"].get("content") or ""
+    return content.strip()
+
+
 # ============================================================
 # OVERALL SUMMARY
 # ============================================================
@@ -440,7 +531,7 @@ def analyze_feedback(
         feedback=transcript
     )
 
-    text = _call_ollama(
+    text = call_llm(
         prompt=prompt,
         num_predict=350,
         temperature=0.1,
@@ -656,7 +747,7 @@ def summarize_chunk(
     # Structured JSON response from Ollama
     # --------------------------------------------------------
 
-    text = _call_ollama(
+    text = call_llm(
         prompt=prompt,
         num_predict=900,
         temperature=0.1,

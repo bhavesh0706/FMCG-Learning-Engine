@@ -87,6 +87,8 @@ def queue_analysis(
     request: Request,
     file: UploadFile = File(...),
     response_id: Optional[int] = Form(default=None),
+    key_id: Optional[int] = Form(default=None),
+    wrapped_key: Optional[str] = Form(default=None),
     user: Optional[User] = Depends(optional_user),
     db: Session = Depends(get_db),
 ):
@@ -100,29 +102,53 @@ def queue_analysis(
     # The same survey shouldn't be analyzed twice at once (e.g. a retry after a dropped connection).
     if response_id is not None:
         response_or_404(db, request, response_id)  # only the survey's owner (or an admin)
-        running = (
-            db.query(AnalysisJob)
-            .filter(AnalysisJob.response_id == response_id, AnalysisJob.status.in_(("queued", "processing")))
-            .first()
-        )
+        running = running_job_for(db, response_id)
         if running:
             return JSONResponse(status_code=202, content=_job_out(db, running, include_result=False))
 
     # Size-capped copy (FMCG_MAX_UPLOAD_MB); 413 above the cap, 400 when empty.
-    stored = save_upload(file, get_storage().area_dir("queue"), name)
+    stored = save_upload(file, get_storage().area_dir("queue"), name + (".enc" if wrapped_key else ""))
+    if wrapped_key:
+        # Encrypted in the browser / on the phone: it must decrypt with its key (nothing is kept).
+        from app.services.recording_crypto import RecordingCryptoError, unwrap_key, verify_file
 
+        try:
+            verify_file(stored, unwrap_key(db, key_id, wrapped_key))
+        except (RecordingCryptoError, TypeError):
+            stored.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail="The encrypted recording can't be opened with this server's key. Try again.")
+
+    job = queue_stored_file(db, stored, name, response_id, user.id if user else None,
+                            key_id=key_id if wrapped_key else None, wrapped_key=wrapped_key or None)
+    return _job_out(db, job, include_result=False)
+
+
+def running_job_for(db: Session, response_id: int) -> Optional[AnalysisJob]:
+    """A queued or running analysis of this survey, if any."""
+    return (
+        db.query(AnalysisJob)
+        .filter(AnalysisJob.response_id == response_id, AnalysisJob.status.in_(("queued", "processing")))
+        .first()
+    )
+
+
+def queue_stored_file(db: Session, stored: Path, name: str, response_id: Optional[int],
+                      user_id: Optional[int], key_id: Optional[int] = None, wrapped_key: Optional[str] = None) -> AnalysisJob:
+    """Queue a recording already saved in the queue folder for analysis (commits)."""
     job = AnalysisJob(
         status="queued",
         filename=name,
         stored_path=get_storage().to_stored(stored),
         response_id=response_id,
-        user_id=user.id if user else None,
+        user_id=user_id,
+        enc_key_id=key_id,
+        enc_wrapped_key=wrapped_key,
     )
     db.add(job)
     db.commit()
     db.refresh(job)
     analysis_worker.notify()
-    return _job_out(db, job, include_result=False)
+    return job
 
 
 @router.get("/jobs/{job_id}")
@@ -175,9 +201,10 @@ def _queue_reanalysis(feedback_id: int, user: Optional[User], db: Session) -> An
             detail="The original recording is no longer stored on the server, so it can't be re-analyzed.",
         )
 
-    # Work on a copy, so the stored recording is never touched.
+    # Work on a copy, so the stored recording is never touched (an encrypted one stays encrypted).
     name = Path(record.original_filename or source.name).name
-    stored = get_storage().area_dir("queue") / f"{int(time.time() * 1000)}_re_{feedback_id}_{name}"
+    encrypted = bool(record.media_encrypted and record.media_wrapped_key)
+    stored = get_storage().area_dir("queue") / (f"{int(time.time() * 1000)}_re_{feedback_id}_{name}" + (".enc" if encrypted else ""))
     shutil.copy2(source, stored)
 
     job = AnalysisJob(
@@ -188,6 +215,8 @@ def _queue_reanalysis(feedback_id: int, user: Optional[User], db: Session) -> An
         stored_path=get_storage().to_stored(stored),
         response_id=record.response_id,  # shows "Analyzing…" for that survey meanwhile
         user_id=user.id if user else None,
+        enc_key_id=record.media_key_id if encrypted else None,
+        enc_wrapped_key=record.media_wrapped_key if encrypted else None,
     )
     db.add(job)
     db.commit()

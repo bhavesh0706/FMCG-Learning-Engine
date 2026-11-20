@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { getAuditLog } from "../services/teamApi";
+import Select from "./Select";
 
 /*
   Activity log (Team page, admins only): who changed what, and when.
@@ -11,13 +12,13 @@ const AREAS = [
   ["", "Everything"],
   ["auth.", "Sign-ins and sign-outs"],
   ["user.", "Team changes"],
-  ["round.", "Survey rounds"],
+  ["round.", "Surveys"],
   ["product.", "Products"],
   ["category.", "Categories"],
   ["question.", "Survey questions"],
   ["recipe.", "Recipes"],
   ["template.", "Question templates"],
-  ["survey.", "Surveys"],
+  ["survey.", "Survey responses"],
   ["recording.", "Recordings"],
   ["report.", "Reports"],
 ];
@@ -139,17 +140,17 @@ export default function ActivityLog() {
         <input type="search" className="search" placeholder="Search by person or description" value={q}
           onChange={(e) => setQ(e.target.value)} aria-label="Search the activity log" />
         <label className="visually-hidden" htmlFor={areaId}>Area</label>
-        <select id={areaId} className="select toolbar-select" value={area} onChange={(e) => setArea(e.target.value)}>
+        <Select id={areaId} className="select toolbar-select" value={area} onChange={(e) => setArea(e.target.value)}>
           {AREAS.map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
-        </select>
+        </Select>
         <label className="visually-hidden" htmlFor={periodId}>Period</label>
-        <select id={periodId} className="select toolbar-select" value={days} onChange={(e) => setDays(e.target.value)}>
+        <Select id={periodId} className="select toolbar-select" value={days} onChange={(e) => setDays(e.target.value)}>
           {PERIODS.map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}
-        </select>
+        </Select>
         <button type="button" className="btn btn-secondary" onClick={load} disabled={data.loading}>
           {data.loading ? "Refreshing…" : "Refresh"}
         </button>
@@ -219,11 +220,11 @@ export default function ActivityLog() {
           <div className="pager-controls">
             <div className="pager-size">
               <label htmlFor={sizeId}>Rows per page</label>
-              <select id={sizeId} className="select select-sm" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+              <Select id={sizeId} className="select select-sm" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
                 {PAGE_SIZES.map((n) => (
                   <option key={n} value={n}>{n}</option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="pager-buttons">
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setPage(page - 1)} disabled={page <= 1}>

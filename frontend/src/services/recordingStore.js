@@ -42,7 +42,9 @@ async function run(mode, work) {
   });
 }
 
-// recording = { name, blob, mimeType, kind: "audio" | "video", duration (seconds) }
+// recording = { name, blob, mimeType, kind: "audio" | "video", duration (seconds),
+//               keyId, wrappedKey }: blob is ENCRYPTED (services/recordingCrypto.js) before it's
+//               stored, so nothing playable stays in the browser.
 export async function saveRecording(recording) {
   const item = {
     id: `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -74,5 +76,6 @@ export async function requestPersistentStorage() {
 }
 
 export function recordingToFile(item) {
-  return new File([item.blob], item.name, { type: item.mimeType || item.blob.type });
+  const file = new File([item.blob], item.name, { type: item.wrappedKey ? "application/octet-stream" : item.mimeType || item.blob.type });
+  return item.wrappedKey ? Object.assign(file, { sealed: { keyId: item.keyId, wrappedKey: item.wrappedKey } }) : file;
 }

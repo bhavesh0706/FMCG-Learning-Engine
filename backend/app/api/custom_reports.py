@@ -61,7 +61,7 @@ def report_plan(body: PlanIn, request: Request, db: Session = Depends(get_db)):
     blocks = build_dataset(db, plan)
     surveys = sum((b["stats"] or {}).get("response_count", 0) for b in blocks)
     if not surveys:
-        warnings.append("No analyzed surveys match this request: the file would be empty. Try fewer filters or other rounds.")
+        warnings.append("No analyzed responses match this request: the file would be empty. Try fewer filters or other surveys.")
     row = CustomReportRequest(user_id=user.id, user_name=user.name, user_role=user.role, format=body.format,
                               prompt=(body.prompt or "").strip() or None, plan=plan, planned_by=planned_by)
     db.add(row)

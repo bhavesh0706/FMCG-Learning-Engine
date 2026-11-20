@@ -34,7 +34,7 @@ class ProductVersion {
 
   /// "Round 2 · collecting now" / "Round 1 · complete"
   String get detail {
-    final which = rounds.isEmpty ? '' : 'Round${rounds.length > 1 ? 's' : ''} ${rounds.join(', ')} · ';
+    final which = rounds.isEmpty ? '' : 'Survey${rounds.length > 1 ? 's' : ''} ${rounds.join(', ')} · ';
     return '$which${live ? 'collecting now' : 'complete'}';
   }
 
@@ -263,31 +263,34 @@ class SurveyApi {
 
   dynamic _decode(dynamic data) => data is String && data.isNotEmpty ? jsonDecode(data) : data;
 
-  Future<List<CatalogCategory>> categories() async {
-    final r = await _dio.get('/categories');
-    return _list(_decode(r.data), 'categories')
-        .whereType<Map>()
-        .map((m) => CatalogCategory.fromJson(Map<String, dynamic>.from(m)))
-        .toList();
-  }
+  /// GET [path] and return the decoded JSON (offline mode caches it as it came).
+  Future<dynamic> rawGet(String path) async => _decode((await _dio.get(path)).data);
 
-  Future<List<CatalogProduct>> products() async {
-    final r = await _dio.get('/products');
-    return _list(_decode(r.data), 'products')
-        .whereType<Map>()
-        .map((m) => CatalogProduct.fromJson(Map<String, dynamic>.from(m)))
-        .toList();
-  }
+  static List<CatalogCategory> parseCategories(dynamic data) => _list(data, 'categories')
+      .whereType<Map>()
+      .map((m) => CatalogCategory.fromJson(Map<String, dynamic>.from(m)))
+      .toList();
 
-  Future<List<SurveyQuestionItem>> questions(int productId) async {
-    final r = await _dio.get('/products/$productId/questions');
-    final list = _list(_decode(r.data), 'questions')
+  static List<CatalogProduct> parseProducts(dynamic data) => _list(data, 'products')
+      .whereType<Map>()
+      .map((m) => CatalogProduct.fromJson(Map<String, dynamic>.from(m)))
+      .toList();
+
+  static List<SurveyQuestionItem> parseQuestions(dynamic data) {
+    final list = _list(data, 'questions')
         .whereType<Map>()
         .map((m) => SurveyQuestionItem.fromJson(Map<String, dynamic>.from(m)))
         .toList();
     list.sort((a, b) => a.position.compareTo(b.position));
     return list;
   }
+
+  Future<List<CatalogCategory>> categories() async => parseCategories(await rawGet('/categories'));
+
+  Future<List<CatalogProduct>> products() async => parseProducts(await rawGet('/products'));
+
+  Future<List<SurveyQuestionItem>> questions(int productId) async =>
+      parseQuestions(await rawGet('/products/$productId/questions'));
 
   /// Recent surveys from the server, newest first (all products),
   /// with the overall number of surveys on the server.
@@ -377,10 +380,13 @@ class SurveyApi {
     required String filename,
     required int responseId,
     void Function(double progress)? onProgress,
+    int? keyId,
+    String? wrappedKey,
   }) async {
     final form = FormData.fromMap({
       'file': await MultipartFile.fromFile(path, filename: filename),
       'response_id': '$responseId',
+      if (wrappedKey != null && keyId != null) ...{'key_id': '$keyId', 'wrapped_key': wrappedKey},
     });
     final r = await _dio.post(
       '/analysis/jobs',
@@ -390,6 +396,57 @@ class SurveyApi {
         if (total > 0) onProgress?.call(sent / total);
       },
     );
+    final d = _decode(r.data);
+    return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+  }
+
+  // ---- Resumable recording upload (offline mode, backend api/resumable_uploads.py)
+
+  /// Starts (or, with the same [uploadId], looks up) an upload; returns its state:
+  /// {received_bytes, total_bytes, status, job}.
+  Future<Map<String, dynamic>> startResumableUpload({
+    required String uploadId,
+    required String filename,
+    required int totalBytes,
+    int? responseId,
+    String? sha256,
+    int? keyId,
+    String? wrappedKey,
+  }) async {
+    final r = await _dio.post('/uploads/resumable', data: {
+      'upload_id': uploadId,
+      'filename': filename,
+      'total_bytes': totalBytes,
+      'response_id': ?responseId,
+      'sha256': ?sha256,
+      // An encrypted recording: the data key wrapped with the server's public key
+      'key_id': ?keyId,
+      'wrapped_key': ?wrappedKey,
+    });
+    final d = _decode(r.data);
+    return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+  }
+
+  /// Sends one piece starting at [offset]; returns the state with received_bytes.
+  Future<Map<String, dynamic>> putUploadPiece(String uploadId, int offset, List<int> bytes) async {
+    final r = await _dio.put(
+      '/uploads/resumable/$uploadId',
+      queryParameters: {'offset': offset},
+      data: Stream.fromIterable([bytes]),
+      options: Options(
+        contentType: 'application/octet-stream',
+        headers: {Headers.contentLengthHeader: bytes.length},
+        sendTimeout: const Duration(minutes: 2),
+      ),
+    );
+    final d = _decode(r.data);
+    return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
+  }
+
+  /// All bytes sent: the server checks the file and queues its analysis (once).
+  Future<Map<String, dynamic>> completeResumableUpload(String uploadId) async {
+    final r = await _dio.post('/uploads/resumable/$uploadId/complete',
+        options: Options(receiveTimeout: const Duration(minutes: 3)));
     final d = _decode(r.data);
     return d is Map ? Map<String, dynamic>.from(d) : <String, dynamic>{};
   }
@@ -417,10 +474,13 @@ class SurveyApi {
     required String filename,
     required int responseId,
     void Function(double progress)? onProgress,
+    int? keyId,
+    String? wrappedKey,
   }) async {
     final form = FormData.fromMap({
       'file': await MultipartFile.fromFile(path, filename: filename),
       'response_id': '$responseId',
+      if (wrappedKey != null && keyId != null) ...{'key_id': '$keyId', 'wrapped_key': wrappedKey},
     });
     final r = await _dio.post(
       '/video/upload',

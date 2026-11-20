@@ -53,6 +53,9 @@ def test_recipe_attachments(client, db, admin, product):
 # ---------- 3. Standards and the Recipe Master ----------
 
 def test_standards_validate_recipes_and_show_in_the_recipe_master(client, db, admin, product):
+    from conftest import end_live_surveys
+
+    end_live_surveys(db)
     org = make_user(db, role="client")
     client.put(f"/products/{product.id}/recipe", headers=auth(org), json=RECIPE)
     rules = [

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -8,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'api_service.dart';
 import 'notification_service.dart';
+import 'offline_auth.dart';
+import 'recording_vault.dart';
 import 'survey_api.dart';
 import 'survey_queue.dart';
 
@@ -103,6 +106,26 @@ class Session {
 
   static bool get canViewHistory => user.value?.canViewHistory ?? false;
 
+  /// Signed in on this phone WITHOUT the server (offline sign-in of a survey person,
+  /// checked against the verifier saved at their last online sign-in). No server token:
+  /// nothing is uploaded until [restoreOnline] succeeds.
+  static final ValueNotifier<bool> offlineMode = ValueNotifier<bool>(false);
+
+  /// The server needs the password again before uploads can continue (an offline
+  /// session after the app restarted, or the password was changed on the server).
+  static final ValueNotifier<bool> needsOnlineSignIn = ValueNotifier<bool>(false);
+
+  /// Kept in memory only (never stored) during an offline session, so the app can sign
+  /// in to the server by itself as soon as the connection is back.
+  static String? _pendingIdentifier;
+  static String? _pendingPassword;
+
+  /// Normalised identifier of the offline session (saved in session.json, not secret).
+  static String? _offlineIdentifier;
+
+  /// A server token is available: uploads and online-only features can work.
+  static bool get hasServerSession => token != null && user.value != null;
+
   /// Admins see everyone's surveys and product reports; executives only their own surveys.
   static bool get isAdmin => user.value?.role == kRoleAdmin;
 
@@ -127,7 +150,7 @@ class Session {
 
   static Options get _auth => Options(headers: {if (token != null) 'Authorization': 'Bearer $token'});
 
-  static bool get signedIn => token != null && user.value != null;
+  static bool get signedIn => user.value != null && (token != null || offlineMode.value);
 
   static final Dio _dio = Dio(BaseOptions(
     baseUrl: ApiConfig.baseUrl,
@@ -175,6 +198,21 @@ class Session {
         token = stored;
         user.value = restored;
         if (legacy != null) await _save(); // rewrite session.json without the token
+      } else if (stored == null && saved != null && saved['offline'] == true && saved['user'] is Map) {
+        // An offline session (no server token): reopened only while offline sign-in is
+        // still allowed for this account; otherwise the person signs in again.
+        final restored = SessionUser.fromJson(Map<String, dynamic>.from(saved['user'] as Map));
+        final identifier = '${saved['identifier'] ?? ''}';
+        if (restored.role == kRoleExecutive &&
+            identifier.isNotEmpty &&
+            await OfflineAuth.stillValid(identifier, restored.id)) {
+          _offlineIdentifier = identifier;
+          offlineMode.value = true;
+          needsOnlineSignIn.value = true; // the password isn't kept across restarts
+          user.value = restored;
+        } else if (await f.exists()) {
+          await f.delete();
+        }
       } else if (stored != null && (saved == null || saved['user'] is! Map)) {
         // A token without its account (e.g. app reinstalled: the Keychain survives): sign out cleanly.
         await _deleteToken();
@@ -186,6 +224,11 @@ class Session {
 
   static Future<void> _save() async {
     final f = await _file();
+    if (user.value != null && token == null && offlineMode.value) {
+      await _deleteToken();
+      await f.writeAsString(jsonEncode({'user': user.value!.toJson(), 'offline': true, 'identifier': _offlineIdentifier}));
+      return;
+    }
     if (token == null || user.value == null) {
       if (await f.exists()) await f.delete();
       await _deleteToken();
@@ -226,6 +269,13 @@ class Session {
     if (!signedInUser.hasKnownRole) throw _unknownRole; // never fall back to a role
     token = '${data['token']}';
     user.value = signedInUser;
+    // The public key recordings are encrypted with, kept for offline surveys.
+    unawaited(RecordingVault.refresh((path) => SurveyApi().rawGet(path)));
+    offlineMode.value = false;
+    needsOnlineSignIn.value = false;
+    _offlineIdentifier = null;
+    _pendingIdentifier = null;
+    _pendingPassword = null;
     await _save();
     // The executive's name fills every survey automatically.
     if (!isClient) {
@@ -235,12 +285,116 @@ class Session {
   }
 
   /// Throws a readable message (String) on failure.
+  ///
+  /// Without a connection, a survey person who signed in online on this phone before
+  /// is signed in OFFLINE ([offlineMode]); everyone else needs the internet.
   static Future<void> login(String identifier, String password) async {
+    Map<String, dynamic> data;
     try {
       final r = await _dio.post('/auth/login', data: {'identifier': identifier.trim(), 'password': password});
-      await _signedIn(Map<String, dynamic>.from(r.data as Map));
+      data = Map<String, dynamic>.from(r.data as Map);
     } catch (e) {
-      if (e is String) rethrow; // already a readable message
+      if (isConnectionProblem(e)) return _offlineLogin(identifier, password);
+      if (e is DioException && e.response?.statusCode == 403) {
+        await OfflineAuth.forget(identifier); // account disabled: no offline access either
+      }
+      throw _message(e);
+    }
+    await _signedIn(data); // throws a readable message for an unknown role
+    await _rememberForOffline(identifier, password);
+  }
+
+  /// Survey persons keep a password verifier for offline sign-in (see offline_auth.dart).
+  static Future<void> _rememberForOffline(String identifier, String password) async {
+    final u = user.value;
+    if (u == null) return;
+    try {
+      if (u.role == kRoleExecutive && !u.mustChangePassword) {
+        await OfflineAuth.remember(identifier: identifier, password: password, user: u.toJson());
+      } else {
+        await OfflineAuth.forget(identifier);
+      }
+    } catch (e) {
+      debugPrint('Session: offline sign-in not saved ($e)');
+    }
+  }
+
+  static Future<void> _offlineLogin(String identifier, String password) async {
+    final Map<String, dynamic> saved;
+    try {
+      saved = await OfflineAuth.verify(identifier, password);
+    } on OfflineLoginError catch (e) {
+      throw e.message;
+    }
+    final offlineUser = SessionUser.fromJson(saved);
+    if (offlineUser.role != kRoleExecutive) throw OfflineLoginError(OfflineLoginProblem.notSurveyor).message;
+    token = null;
+    _offlineIdentifier = normalizeIdentifier(identifier);
+    _pendingIdentifier = identifier.trim();
+    _pendingPassword = password;
+    offlineMode.value = true;
+    needsOnlineSignIn.value = false;
+    user.value = offlineUser;
+    await _save();
+    AppProfile.executiveName.value = offlineUser.name;
+    await AppProfile.save();
+  }
+
+  /// Back online during an offline session: sign in to the server with the password
+  /// typed at the offline sign-in (kept in memory only). Returns true when uploads can
+  /// run. Without that password (the app was restarted) [needsOnlineSignIn] asks for it.
+  static Future<bool> restoreOnline() async {
+    if (!offlineMode.value || user.value == null) return hasServerSession;
+    final identifier = _pendingIdentifier;
+    final password = _pendingPassword;
+    if (identifier == null || password == null) {
+      needsOnlineSignIn.value = true;
+      return false;
+    }
+    final offlineUserId = user.value!.id;
+    try {
+      final r = await _dio.post('/auth/login', data: {'identifier': identifier, 'password': password});
+      final data = Map<String, dynamic>.from(r.data as Map);
+      final serverUser = data['user'] is Map ? data['user'] as Map : const {};
+      if ((serverUser['id'] as num?)?.toInt() != offlineUserId) {
+        throw StateError('A different account answered for this sign-in.');
+      }
+      await _signedIn(data);
+      await _rememberForOffline(identifier, password);
+      return true;
+    } catch (e) {
+      if (isConnectionProblem(e)) return false; // still no server: try again later
+      // The password was changed on the server, or the account was disabled: the saved
+      // verifier is out of date. Keep the surveys on the phone; ask for the password.
+      await OfflineAuth.forget(identifier);
+      _pendingPassword = null;
+      needsOnlineSignIn.value = true;
+      if (e is DioException && e.response?.statusCode == 403) {
+        signedOutReason.value = 'This account has been disabled. Contact your admin.';
+      }
+      return false;
+    }
+  }
+
+  /// The person typed their password again (needsOnlineSignIn). Throws a readable message.
+  static Future<void> reauthenticate(String password) async {
+    final u = user.value;
+    final identifier = _pendingIdentifier ?? _offlineIdentifier ?? u?.mobile ?? u?.email;
+    if (u == null || identifier == null) throw 'Sign in again.';
+    final r = await _tryLogin(identifier, password);
+    final serverUser = r['user'] is Map ? r['user'] as Map : const {};
+    if ((serverUser['id'] as num?)?.toInt() != u.id) {
+      throw 'These details belong to a different account. Sign out first to switch accounts.';
+    }
+    await _signedIn(r);
+    await _rememberForOffline(identifier, password);
+  }
+
+  static Future<Map<String, dynamic>> _tryLogin(String identifier, String password) async {
+    try {
+      final r = await _dio.post('/auth/login', data: {'identifier': identifier.trim(), 'password': password});
+      return Map<String, dynamic>.from(r.data as Map);
+    } catch (e) {
       throw _message(e);
     }
   }
@@ -283,6 +437,7 @@ class Session {
     try {
       final r = await _dio.post('/auth/signup', data: {'name': name.trim(), 'identifier': identifier.trim(), 'password': password});
       await _signedIn(Map<String, dynamic>.from(r.data as Map));
+      await _rememberForOffline(identifier, password);
     } catch (e) {
       if (e is String) rethrow; // already a readable message
       throw _message(e);
@@ -297,6 +452,9 @@ class Session {
       final r = await _dio.post('/auth/change-password',
           data: {'current_password': current, 'new_password': next}, options: _auth);
       await _signedIn(Map<String, dynamic>.from(r.data as Map));
+      final u = user.value;
+      final identifier = u?.mobile ?? u?.email;
+      if (identifier != null) await _rememberForOffline(identifier, next);
     } catch (e) {
       if (e is String) rethrow;
       throw _message(e);
@@ -322,6 +480,12 @@ class Session {
       await _save();
     } on DioException catch (e) {
       if (e.response?.statusCode == 401) {
+        // Ended on the server (signed out everywhere, disabled, expired): offline
+        // sign-in must not outlive it.
+        final u = user.value;
+        for (final id in [u?.mobile, u?.email]) {
+          if (id != null && id.isNotEmpty) await OfflineAuth.forget(id);
+        }
         signedOutReason.value = 'Your session ended or your account was disabled. Please log in again.';
         await logout(endOnServer: false); // the server has already ended it
       }
@@ -357,6 +521,11 @@ class Session {
     }
     Notifications.clear(); // the next account on this phone starts with an empty bell
     token = null;
+    offlineMode.value = false;
+    needsOnlineSignIn.value = false;
+    _offlineIdentifier = null;
+    _pendingIdentifier = null;
+    _pendingPassword = null;
     user.value = null;
     stats.value = null;
     AppProfile.permissionsDone = false;

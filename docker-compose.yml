@@ -80,6 +80,11 @@ services:
       AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:?set AI_SERVICE_TOKEN in .env (any long random string)}
       # AI Model Service -> Ollama on the host
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434/api/generate}
+      # Language model: true = Ollama, false = OpenAI (encrypted key + master key)
+      USE_OLLAMA: ${USE_OLLAMA:-true}
+      OPENAI_API_KEY_ENC: ${OPENAI_API_KEY_ENC:-}
+      FMCG_MASTER_KEY: ${FMCG_MASTER_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       # Sign-in tokens survive container rebuilds
       FMCG_SECRET_KEY: ${FMCG_SECRET_KEY:?set FMCG_SECRET_KEY in .env}
       BACKEND_HOST: 0.0.0.0

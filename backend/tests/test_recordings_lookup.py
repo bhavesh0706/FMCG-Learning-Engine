@@ -7,7 +7,7 @@ a Windows path), and app.services.recordings finds the file in this computer's u
 from datetime import datetime
 
 import pytest
-from conftest import auth, make_user
+from conftest import auth, make_user, playback_token
 
 from app.database.models import FeedbackRecord
 from app.services import recordings
@@ -61,11 +61,12 @@ def test_the_app_streams_a_recording_stored_with_a_windows_path(client, db, uplo
     admin = make_user(db, role="admin")
     (uploads / "videos" / "30_Bengali.mp3").write_bytes(b"ID3fake-mp3")
     rec = _record(db, r"C:\Users\iONE IT\Documents\FMCG-Learning-Engine\uploads\videos\30_Bengali.mp3")
-    r = client.get(f"/feedback/{rec.id}/video", headers=auth(admin))
+    # An older (plaintext) recording streams after the passkey check, like an encrypted one.
+    r = client.get(f"/recordings/{rec.id}/stream?pt={playback_token(db, admin, rec.id)}")
     assert r.status_code == 200 and r.content == b"ID3fake-mp3"
     assert r.headers["content-type"].startswith("audio/mpeg")
     gone = _record(db, r"C:\Users\iONE IT\Documents\FMCG-Learning-Engine\uploads\videos\31_missing.mp3")
-    assert client.get(f"/feedback/{gone.id}/video", headers=auth(admin)).status_code == 404
+    assert client.get(f"/recordings/{gone.id}/stream?pt={playback_token(db, admin, gone.id)}").status_code == 404
 
 
 def test_check_recordings_tool_reports_ok_found_and_missing(db, uploads, capsys):

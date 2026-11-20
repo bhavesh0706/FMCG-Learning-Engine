@@ -12,7 +12,7 @@ from conftest import auth, make_user, open_round
 from app.database.models import Notification, Product, RecipeVersion
 
 BASE = {
-    "batch_size": "10 kg",
+    "batch_size": "10 trays",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],
 }
 
@@ -137,7 +137,7 @@ def test_versions_are_stored_in_the_database(client, db, admin, product):
     client.put(f"/products/{product.id}/recipe", headers=auth(brand), json=BASE)
     db.expire_all()
     row = db.query(RecipeVersion).filter_by(product_id=product.id).one()
-    assert row.changed_by == brand.id and row.recipe["batch_size"] == "10 kg"
+    assert row.changed_by == brand.id and row.recipe["batch_size"] == "10 trays"
 
 
 def test_steps_are_no_longer_saved_but_earlier_steps_stay_readable(client, db, admin, product):

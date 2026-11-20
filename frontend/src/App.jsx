@@ -1,5 +1,5 @@
 // Must stay the first import: it adds the sign-in token to every API client.
-import { getSession, onSessionChange, refreshMe, signOut, withToken } from "./services/auth";
+import { getSession, onSessionChange, refreshMe, signOut } from "./services/auth";
 import { Component, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import "./App.css";
@@ -10,7 +10,6 @@ import {
   getCategories,
   getFeedbackById,
   getFeedbackHistory,
-  getFeedbackVideoUrl,
   getProducts,
   listProductChecks,
   saveSurveyAnswers,
@@ -39,19 +38,28 @@ import {
 import { getTeam, signOutMember, updateTeamMember } from "./services/teamApi";
 import ActivityLog from "./components/ActivityLog";
 import CatalogPage from "./components/CatalogPage";
+import AdminProjects from "./components/AdminProjects";
 import OrgPortal, { CompareSection } from "./components/OrgPortal";
 import LoginPage from "./components/LoginPage";
 import NotificationBell from "./components/NotificationBell";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
 import axios from "axios";
-import { AddMemberDialog, AssignProductsDialog, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
+import { AddMemberDialog, AdminsPanel, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
 import ProductChecks from "./components/ProductChecks";
 import ReportReviews from "./components/ReportReviews";
 import ReportStatus from "./components/ReportStatus";
 import ReportDownloads from "./components/ReportDownloads";
 import AnalyticsPage from "./components/AnalyticsPage";
 import { listReportReviews } from "./services/nextApi";
+import { fillArray, fillMap, onLovLoaded, patchMap, useLov } from "./services/lov";
+import { getPlanSurveys } from "./services/orgApi";
+import KpiIcon from "./components/KpiIcon";
+import NavIcon from "./components/NavIcon";
+import { keepFix } from "./services/gps";
 import { startAnalysis, waitForAnalysis, announceDataChanged, DATA_CHANGED } from "./services/analysisApi";
+import Select from "./components/Select";
+import ProtectedRecording from "./components/ProtectedRecording";
+import { canSeal, sealRecording } from "./services/recordingCrypto";
 
 
 /* ================================================================
@@ -999,11 +1007,11 @@ function HistoryList({ items, loading, error, onOpen, onRefresh, onAnalyze }) {
                   </button>
                 ))}
               </div>
-              <select className="select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
+              <Select className="select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
                 <option value="newest">Newest first</option>
                 <option value="oldest">Oldest first</option>
                 <option value="longest">Longest video</option>
-              </select>
+              </Select>
             </div>
 
             <div className="panel feedback-list">
@@ -1295,7 +1303,11 @@ export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = fal
       <div className="results-grid">
         <div className="col-main">
           <article className="panel video-panel">
-            {isAudioName(record.filename) ? (
+            {/* Encrypted: plays only after the product passkey (components/ProtectedRecording.jsx) */}
+            <ProtectedRecording feedbackId={record.id} isVideo={!isAudioName(record.filename)}>
+              {(src) => (
+                <>
+                  {isAudioName(record.filename) ? (
               <div className="audio-frame">
                 <span className="audio-frame-icon" aria-hidden="true">
                   <svg
@@ -1325,7 +1337,10 @@ export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = fal
 
                 <audio
                   key={record.id}
-                  src={withToken(getFeedbackVideoUrl(record.id))}
+                  src={src}
+                  controlsList="nodownload noremoteplayback"
+                  disablePictureInPicture
+                  onContextMenu={(e) => e.preventDefault()}
                   controls
                   preload="metadata"
                   onLoadedMetadata={(e) => {
@@ -1349,7 +1364,10 @@ export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = fal
                 <video
                   key={record.id}
                   ref={videoRef}
-                  src={withToken(getFeedbackVideoUrl(record.id))}
+                  src={src}
+                  controlsList="nodownload noremoteplayback"
+                  disablePictureInPicture
+                  onContextMenu={(e) => e.preventDefault()}
                   controls
                   preload="metadata"
                   onLoadedMetadata={(e) => {
@@ -1364,17 +1382,12 @@ export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = fal
               </div>
             ) : (
               <div className="video-frame">
-                <p>The original video can't be played in this browser.</p>
-                <p className="muted">
-                  <a
-                    href={withToken(getFeedbackVideoUrl(record.id))}
-                    download={record.filename}
-                  >
-                    Download recording
-                  </a>
-                </p>
+                <p>The recording can't be played in this browser.</p>
               </div>
             )}
+                </>
+              )}
+            </ProtectedRecording>
             <PartsTimeline parts={parts} duration={duration} currentTime={currentTime} onSeek={seekTo} />
           </article>
 
@@ -1470,15 +1483,6 @@ export function FeedbackDetail({ record, onBack, onRecordUpdated, readOnly = fal
 function SavedRecordings({ items, online, busy, onAnalyze, onDelete }) {
   if (!items.length) return null;
 
-  const download = (item) => {
-    const url = URL.createObjectURL(item.blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = item.name;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
   return (
     <section className="saved-recordings">
       <div className="recent-head">
@@ -1523,9 +1527,6 @@ function SavedRecordings({ items, online, busy, onAnalyze, onDelete }) {
                 title={online ? "Upload and analyze" : "Connect to the internet to analyze"}
               >
                 Analyze
-              </button>
-              <button type="button" className="icon-btn" onClick={() => download(item)} aria-label="Download a copy" title="Download a copy">
-                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path d="M10 3v10m0 0l-4-4m4 4l4-4M4 16h12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
               <button
                 type="button"
@@ -1707,11 +1708,11 @@ function Pager({ label, total, from, to, current, pages, pageSize, onPageSize, o
       <div className="pager-controls">
         <div className="pager-size">
           <label htmlFor={sizeId}>Rows per page</label>
-          <select id={sizeId} className="select select-sm" value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
+          <Select id={sizeId} className="select select-sm" value={pageSize} onChange={(e) => onPageSize(Number(e.target.value))}>
             {PAGE_SIZES.map((n) => (
               <option key={n} value={n}>{n > 0 ? n : "All"}</option>
             ))}
-          </select>
+          </Select>
         </div>
         <div className="pager-buttons">
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => onPage(current - 1)} disabled={current <= 1}>
@@ -1748,11 +1749,11 @@ function RoundsCell({ product }) {
   if (!n) return <span className="muted">—</span>;
   const versions = [...new Set(list.map((r) => r.recipe_version).filter((v) => v != null))];
   const live = list.find((r) => r.status === "live");
-  const status = live ? `Round ${live.number} collecting` : "all complete";
-  const tip = list.map((r) => `Round ${r.number}: version ${r.recipe_version ?? "?"}, ${r.status === "live" ? "collecting surveys" : "complete"}`).join("\n");
+  const status = live ? `Survey ${live.number} collecting` : "all complete";
+  const tip = list.map((r) => `Survey ${r.number}: version ${r.recipe_version ?? "?"}, ${r.status === "live" ? "collecting responses" : "complete"}`).join("\n");
   return (
     <span className="rounds-cell" title={tip}>
-      <span className="cell-count">{n} {n === 1 ? "round" : "rounds"}</span>
+      <span className="cell-count">{n} {n === 1 ? "survey" : "surveys"}</span>
       <span className="cell-sub">
         {versions.length > 1 ? `v${versions.join(" → v")}` : versions.length === 1 ? `version ${versions[0]}` : ""}
         {versions.length ? " · " : ""}{status}
@@ -1764,7 +1765,7 @@ function RoundsCell({ product }) {
 // "Version 2 · Round 2 (collecting)": a product version in fieldwork (survey_versions item).
 function versionLabel(v) {
   const rounds = v.rounds || [];
-  const which = rounds.length ? `Round${rounds.length > 1 ? "s" : ""} ${rounds.join(", ")}` : "";
+  const which = rounds.length ? `Survey${rounds.length > 1 ? "s" : ""} ${rounds.join(", ")}` : "";
   return [`Version ${v.version}`, which].filter(Boolean).join(" · ") + (v.live ? " (collecting)" : "");
 }
 
@@ -1778,7 +1779,7 @@ function ProductBadges({ product }) {
   if (!r && !orgRecipe) return null;
   return (
     <span className="product-badges">
-      {r && <span className="round-chip is-live">Round {r.number} · {r.done} of {r.target}</span>}
+      {r && <span className="round-chip is-live">Survey {r.number} · {r.done} of {r.target}</span>}
       {orgRecipe && <span className="status-chip is-act">Recipe v{c.version} by {c.by_name || "the Super Admin"} · {timeAgo(c.at)}</span>}
     </span>
   );
@@ -1961,19 +1962,22 @@ function HomeDashboard({
       )}
 
       <div className="home-stats home-stats-3">
-        <div className="h-stat">
+        <div className="h-stat kpi-card tone-brand">
+          <KpiIcon name="products" />
           <span className="h-stat-label">Products</span>
           <span className="h-stat-value">{catalog.loading ? "…" : formatCount(products.length)}</span>
           <span className="h-stat-note">
             in {formatCount(categories.length)} {categories.length === 1 ? "category" : "categories"}
           </span>
         </div>
-        <div className="h-stat">
+        <div className="h-stat kpi-card tone-teal">
+          <KpiIcon name="analyzed" />
           <span className="h-stat-label">Feedback analyzed</span>
           <span className="h-stat-value">{surveyStats ? formatCount(analyzedCount) : "…"}</span>
-          <span className="h-stat-note">surveys</span>
+          <span className="h-stat-note">customer surveys with a finished analysis</span>
         </div>
-        <div className="h-stat">
+        <div className={`h-stat kpi-card ${products.length && withFeedback.length === products.length ? "tone-pos" : "tone-act"}`}>
+          <KpiIcon name="coverage" />
           <span className="h-stat-label">Products surveyed</span>
           <span className="h-stat-value">
             {catalog.loading ? "…" : (
@@ -2012,7 +2016,7 @@ function HomeDashboard({
               onChange={(e) => setQ(e.target.value)}
               aria-label="Search products"
             />
-            <select className="input toolbar-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Category">
+            <Select className="input toolbar-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Category">
               <option value="all">All categories</option>
               {[...categories]
                 .sort((a, b) => a.name.localeCompare(b.name))
@@ -2021,12 +2025,12 @@ function HomeDashboard({
                     {c.name} ({formatCount(productCountByCategory[c.id] || 0)})
                   </option>
                 ))}
-            </select>
-            <select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort by">
+            </Select>
+            <Select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort by">
               {Object.entries(SORTS).map(([key, s]) => (
                 <option key={key} value={key}>{s.label}</option>
               ))}
-            </select>
+            </Select>
           </div>
 
           {catalog.error ? (
@@ -2083,7 +2087,7 @@ function HomeDashboard({
                             {versions.length > 1 && (
                               <label className="version-pick">
                                 <span className="visually-hidden">Version of {p.name}</span>
-                                <select className="select select-sm" value={picked}
+                                <Select className="select select-sm" value={picked}
                                   onChange={(e) => setVersionPick((m) => ({ ...m, [p.id]: e.target.value }))}>
                                   <option value="all">All {versions.length} versions</option>
                                   {versions.map((v) => (
@@ -2091,7 +2095,7 @@ function HomeDashboard({
                                       {versionLabel(v)}
                                     </option>
                                   ))}
-                                </select>
+                                </Select>
                               </label>
                             )}
                             <ProductBadges product={p} />
@@ -2245,7 +2249,7 @@ const HISTORY_SORTS = {
 function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "products", onTabChange }) {
   // Product checks waiting for review (badge on the tab)
   const [checkCounts, setCheckCounts] = useState({});
-  // Survey reports waiting for an admin (badge on the Report reviews tab)
+  // Survey reports waiting for an admin (badge on the Report approvals tab)
   const [reviewCounts, setReviewCounts] = useState({});
   useEffect(() => {
     listReportReviews("pending_admin").then((r) => setReviewCounts(r?.counts || {})).catch(() => {});
@@ -2330,14 +2334,14 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
             All surveys
           </button>
           <button type="button" role="tab" aria-selected={tab === "checks"} className={tab === "checks" ? "is-on" : ""} onClick={() => onTabChange?.("checks")}>
-            Product checks
+            Product verification
             {checkCounts.pending > 0 && <span className="seg-count" aria-label={`${checkCounts.pending} need review`}> {checkCounts.pending}</span>}
           </button>
           <button type="button" role="tab" aria-selected={tab === "analytics"} className={tab === "analytics" ? "is-on" : ""} onClick={() => onTabChange?.("analytics")}>
             Analytics
           </button>
           <button type="button" role="tab" aria-selected={tab === "reviews"} className={tab === "reviews" ? "is-on" : ""} onClick={() => onTabChange?.("reviews")}>
-            Report reviews
+            Report approvals
             {reviewCounts.pending_admin > 0 && <span className="seg-count" aria-label={`${reviewCounts.pending_admin} to review`}> {reviewCounts.pending_admin}</span>}
           </button>
         </div>
@@ -2362,13 +2366,13 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
         <div className="table-toolbar">
           <input type="search" className="search" placeholder="Search products, categories or SKUs" value={q}
             onChange={(e) => setQ(e.target.value)} aria-label="Search products" />
-          <select className="input toolbar-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Filter by category">
+          <Select className="input toolbar-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Filter by category">
             <option value="all">All categories</option>
             {categories.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-          </select>
-          <select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort products">
+          </Select>
+          <Select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort products">
             {Object.entries(HISTORY_SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
+          </Select>
         </div>
 
         <div className="segmented state-tabs" role="tablist" aria-label="Show">
@@ -2403,7 +2407,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
                 <thead>
                   <tr>
                     <th scope="col">Product</th>
-                    <th scope="col" title="One round = one batch of customer surveys for one product version">Feedback rounds</th>
+                    <th scope="col" title="One survey = one batch of customer responses for one product version">Surveys</th>
                     <th scope="col">Responses</th>
                     <th scope="col">Avg rating</th>
                     <th scope="col">Sentiment</th>
@@ -2534,7 +2538,7 @@ function TeamPage() {
           }
         : {
             title: `Reactivate ${user.name}?`,
-            message: `${user.name} can log in again with their current password. Assign them to live rounds to give them products to survey.`,
+            message: `${user.name} can log in again with their current password. Assign them to live surveys to give them products to survey.`,
             confirmLabel: "Reactivate",
             cancelLabel: "Cancel",
           }
@@ -2730,13 +2734,12 @@ function TeamPage() {
                               const total = liveIds.length;
                               const names = mine.map((pid) => productNames[pid]).filter(Boolean);
                               return (
-                                <button type="button" className="assign-btn" onClick={() => setDialog({ type: "products", member: u })}
-                                  title={names.length ? `Can survey: ${names.join(", ")}` : "Nothing to survey yet"}>
+                                <span className="assign-btn is-readonly"
+                                  title={`${names.length ? `Can survey: ${names.join(", ")}. ` : ""}Teams are allocated in Projects → the project → Survey plan.`}>
                                   <strong className={mine.length ? "" : "assign-none"}>
                                     {!total ? "Nothing open" : mine.length ? `${mine.length} of ${total} open` : "Not assigned"}
                                   </strong>
-                                  <span className="assign-edit">Manage</span>
-                                </button>
+                                </span>
                               );
                             })()}
                           </td>
@@ -2781,7 +2784,8 @@ function TeamPage() {
             </table>
           </div>
         )}
-        <div className="team-help">
+        <details className="team-help">
+          <summary>How these settings work</summary>
           <p>
             <strong>Survey history</strong> on: the executive's mobile app shows the History tab, with the ratings and
             summaries of their own surveys. Off: the app shows only their numbers and whether each survey was analyzed.
@@ -2790,8 +2794,8 @@ function TeamPage() {
           <p>
             <strong>Disable</strong> a member who leaves or should be paused: they're signed out everywhere, can't log in
             and can't be assigned. Their account, surveys and activity are kept; <strong>Reactivate</strong> restores access.
-            <strong> Can survey</strong> shows the live rounds assigned to each person: the Super Admin starts every round,
-            then you assign it (Manage, or Catalog → product → Who can survey).
+            <strong> Can survey</strong> shows the live surveys assigned to each person: the Super Admin starts every survey,
+            and you allocate its team in Projects → the project → Survey plan (the only place teams are allocated).
           </p>
           <p>
             <strong>Sign out everywhere</strong> ends every sign-in of that person at once (a lost or shared phone) without
@@ -2800,8 +2804,13 @@ function TeamPage() {
             keeps the sign-in fresh.
           </p>
           <p className="muted">Changes reach the app the next time it's opened or refreshed. Admins always have access.</p>
-        </div>
+        </details>
       </section>
+
+      {tab === "members" && !data.loading && (
+        <AdminsPanel users={data.users} meId={getSession()?.user?.id} onChanged={load} onNotice={setNotice}
+          onCredentials={(member, password) => setDialog({ type: "credentials", member, password, reset: true })} />
+      )}
 
       {dialog?.type === "add" && (
         <AddMemberDialog
@@ -2817,18 +2826,6 @@ function TeamPage() {
         <CredentialsDialog member={dialog.member} password={dialog.password} linked={dialog.linked}
           reset={dialog.reset} onClose={() => setDialog(null)} />
       )}
-      {dialog?.type === "products" && (
-        <AssignProductsDialog
-          member={dialog.member}
-          team={data.users}
-          onClose={() => setDialog(null)}
-          onSaved={(ids) => {
-            setDialog(null);
-            setData((d) => ({ ...d, users: d.users.map((x) => (x.id === dialog.member.id ? { ...x, assigned_products: ids } : x)) }));
-            setNotice(`Saved. ${dialog.member.name}'s products are updated in the app and on the web.`);
-          }}
-        />
-      )}
       {dialog?.type === "reset" && (
         <ResetPasswordDialog
           member={dialog.member}
@@ -2843,18 +2840,32 @@ function TeamPage() {
 /* ================================================================
    Survey person's Analyze page: their own surveys
    ================================================================ */
+// Labels and colours of a survey's status (LOV SURVEY_STATUS).
+const SURVEY_STATUS = {
+  needs_review: { tone: "warn", label: "Product to verify" },
+  invalid: { tone: "neg", label: "Marked invalid" },
+  analyzed: { tone: "ok", label: "Analyzed" },
+  processing: { tone: "act", label: "Analyzing…" },
+  queued: { tone: "neutral", label: "In queue" },
+  failed: { tone: "warn", label: "Analysis failed" },
+  none: { tone: "neutral", label: "No recording yet" },
+};
+
 
 function surveyStatus(sv) {
   // Product check (backend services/product_check.py): the feedback seems to be about
   // another product; kept out of the reports until an admin reviews it.
-  if (sv.status === "needs_review") return { tone: "warn", label: "Product check" };
-  if (sv.status === "invalid") return { tone: "neg", label: "Marked invalid" };
-  if (sv.feedback) return { tone: "ok", label: "Analyzed" };
+  if (sv.status === "needs_review") return { ...SURVEY_STATUS.needs_review };
+  if (sv.status === "invalid") return { ...SURVEY_STATUS.invalid };
+  if (sv.feedback) return { ...SURVEY_STATUS.analyzed };
   const st = sv.analysis?.status;
-  if (st === "processing") return { tone: "act", label: "Analyzing…", spin: true };
-  if (st === "queued") return { tone: "neutral", label: `In queue${sv.analysis.position ? ` · #${sv.analysis.position}` : ""}` };
-  if (st === "failed") return { tone: "warn", label: "Analysis failed" };
-  return { tone: "neutral", label: "No recording yet" };
+  if (st === "processing") return { ...SURVEY_STATUS.processing, spin: true };
+  if (st === "queued") {
+    const q = SURVEY_STATUS.queued;
+    return { ...q, label: `${q.label}${sv.analysis.position ? ` · #${sv.analysis.position}` : ""}` };
+  }
+  if (st === "failed") return { ...SURVEY_STATUS.failed };
+  return { ...SURVEY_STATUS.none };
 }
 
 function MySurveys({ user, onTakeSurvey }) {
@@ -2922,17 +2933,20 @@ function MySurveys({ user, onTakeSurvey }) {
       </header>
 
       <div className="home-stats">
-        <div className="h-stat">
+        <div className="h-stat kpi-card tone-brand">
+          <KpiIcon name="analyzed" />
           <span className="h-stat-label">Total</span>
           <span className="h-stat-value">{data.loading && !data.items.length ? "…" : formatCount(data.items.length)}</span>
           <span className="h-stat-note">surveys by {user?.name?.split(" ")[0] || "you"}</span>
         </div>
-        <div className="h-stat">
+        <div className="h-stat kpi-card tone-teal">
+          <KpiIcon name="today" />
           <span className="h-stat-label">Today</span>
           <span className="h-stat-value">{formatCount(todayCount)}</span>
           <span className="h-stat-note">taken today</span>
         </div>
-        <div className="h-stat">
+        <div className={`h-stat kpi-card ${inProgress ? "tone-act" : "tone-pos"}`}>
+          <KpiIcon name="coverage" />
           <span className="h-stat-label">Analyzed</span>
           <span className="h-stat-value">{formatCount(analyzed)}</span>
           <span className="h-stat-note">{inProgress ? `${formatCount(inProgress)} in progress` : "all done"}</span>
@@ -2997,7 +3011,7 @@ function MySurveys({ user, onTakeSurvey }) {
                         {sv.round ? (
                           <span className="version-stack">
                             {sv.recipe_version && <span className="version-chip">v{sv.recipe_version}</span>}
-                            <span className="round-chip">Round {sv.round}</span>
+                            <span className="round-chip">Survey {sv.round}</span>
                           </span>
                         ) : (
                           <span className="muted">—</span>
@@ -3055,7 +3069,7 @@ function MySurveys({ user, onTakeSurvey }) {
    One of my surveys: recording + transcript, result, survey answers
    ================================================================ */
 
-const USAGE_LABEL = { last_week: "Used in the last week", last_month: "Used in the last month", last_3_months: "Used in the last 3 months", more_than_3_months: "Used more than 3 months ago" };
+const USAGE_LABEL = { last_week: "Used for less than 7 days", last_month: "Used for the past 1 month", last_3_months: "Used for the last 3 months", more_than_3_months: "Used for more than 3 months" };
 
 function transcriptRows(t) {
   if (!t) return [];
@@ -3075,6 +3089,8 @@ const aspectTone = (s) => {
   return "neutral";
 };
 const SEVERITY_ORDER = { high: 0, medium: 1, low: 2 };
+// [code, label] from the highest rating down (LOV RATING_SCALE).
+const RATING_SCALE = [["5", "5 ★"], ["4", "4 ★"], ["3", "3 ★"], ["2", "2 ★"], ["1", "1 ★"]];
 
 /* Everything the page shows, derived from the recording's own analysis (nothing fixed). */
 function analyseFeedback(fb) {
@@ -3272,11 +3288,8 @@ function MySurveyDetail({ responseId, onBack }) {
       <h2 className="my-card-title" id="rec-title">Recording</h2>
       {fb ? (
         <>
-          {fb.is_video ? (
-            <video className="my-media" controls preload="metadata" src={withToken(getFeedbackVideoUrl(fb.id))} />
-          ) : (
-            <audio className="my-media my-audio" controls preload="metadata" src={withToken(getFeedbackVideoUrl(fb.id))} />
-          )}
+          {/* Encrypted: the survey person who recorded it can't play it (only an authorised admin can) */}
+          <ProtectedRecording feedbackId={fb.id} isVideo={Boolean(fb.is_video)}>{() => null}</ProtectedRecording>
           <p className="muted my-media-meta">
             {fb.duration_seconds ? formatDuration(fb.duration_seconds) : ""}
             {fb.language ? ` · spoken in ${fb.language}` : ""}
@@ -3319,7 +3332,7 @@ function MySurveyDetail({ responseId, onBack }) {
           {sv.survey_location && <span>Surveyed at {sv.survey_location}</span>}
           {sv.usage_period && <span>{USAGE_LABEL[sv.usage_period] || sv.usage_period}</span>}
           {sv.recipe_version && <span className="version-chip">Recipe v{sv.recipe_version}</span>}
-          {sv.round && <span className="round-chip">Round {sv.round}</span>}
+          {sv.round && <span className="round-chip">Survey {sv.round}</span>}
           <span className={`status-chip is-${st.tone}`}>{st.label}</span>
         </div>
         <ReportStatus responseId={sv.id ?? responseId} status={sv.report_status} analyzed={sv.status === "analyzed"} />
@@ -3591,13 +3604,13 @@ function AllSurveysList({ onOpenFeedback }) {
       <div className="table-toolbar">
         <input type="search" className="search" placeholder="Search customer, product, area or executive" value={q}
           onChange={(e) => setQ(e.target.value)} aria-label="Search surveys" />
-        <select className="input toolbar-select" value={product} onChange={(e) => setProduct(e.target.value)} aria-label="Filter by product">
+        <Select className="input toolbar-select" value={product} onChange={(e) => setProduct(e.target.value)} aria-label="Filter by product">
           <option value="all">All products</option>
           {products.map((p) => <option key={p} value={p}>{p}</option>)}
-        </select>
-        <select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort surveys">
+        </Select>
+        <Select className="input toolbar-select" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort surveys">
           {Object.entries(SURVEY_SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
+        </Select>
         <button type="button" className="btn btn-secondary" onClick={load} disabled={data.loading}>
           {data.loading ? "Refreshing…" : "Refresh"}
         </button>
@@ -3770,9 +3783,10 @@ function BreakdownTable({ rows }) {
 }
 
 const BREAKDOWNS = {
-  gender: "Gender", age_group: "Age group", city: "City", usage_period: "When used",
+  gender: "Gender", age_group: "Age group", city: "City", usage_period: "How long used",
   // Next update: report dimensions
   respondent_type: "Respondent type", audience: "Internal / External", country: "Country", occupation: "Occupation", sec_class: "Class (SEC)",
+  state: "State",
 };
 
 /* ================================================================
@@ -3908,7 +3922,7 @@ function ConsolidatedReportView({ report, product, forClient = false }) {
       <div className="report-grid">
         <section className="panel report-card">
           <h3 className="report-h">Rating distribution</h3>
-          <DistributionBars distribution={Object.fromEntries(["5", "4", "3", "2", "1"].map((k) => [`${k} ★`, ratingDist[k] || 0]))} total={n} />
+          <DistributionBars distribution={Object.fromEntries(RATING_SCALE.map(([k, label]) => [label, ratingDist[k] || 0]))} total={n} />
           {st.median_rating != null && <p className="muted report-note">Median rating {Number(st.median_rating).toFixed(1)} out of 5.</p>}
         </section>
         <section className="panel report-card">
@@ -3971,7 +3985,7 @@ function ConsolidatedReportView({ report, product, forClient = false }) {
                     <p className="question-result-avg">
                       Average <strong>{qr.average != null ? qr.average.toFixed(1) : "—"}</strong> / 5
                     </p>
-                    <DistributionBars distribution={Object.fromEntries(["5", "4", "3", "2", "1"].map((k) => [`${k} ★`, qr.distribution?.[k] || 0]))} total={qr.answered} />
+                    <DistributionBars distribution={Object.fromEntries(RATING_SCALE.map(([k, label]) => [label, qr.distribution?.[k] || 0]))} total={qr.answered} />
                   </>
                 )}
                 {["yes_no", "single_choice", "multiple_choice", "preference"].includes(qr.type) && (
@@ -4061,6 +4075,174 @@ function ConsolidatedReportView({ report, product, forClient = false }) {
   );
 }
 
+/* ---------- Action plans on the report page (Admin, read-only) ----------
+   Each plan of the round shown, with its team; open a plan to see the surveys each
+   member took, and open any survey's video analysis. */
+
+const AUDIENCE_LABEL = { internal: "Internal", external: "External" };
+// Plan dates are plain dates ("2026-11-20"): read them as local dates. formatDateTime treats
+// values as UTC timestamps ("2026-11-20Z"), which Safari can't read (it showed "— – —").
+const shortDate = (d) => {
+  const [y, m, day] = String(d).slice(0, 10).split("-").map(Number);
+  const dt = new Date(y, (m || 1) - 1, day || 1);
+  return Number.isNaN(dt.getTime()) ? String(d) : dt.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+};
+const planDates = (p) =>
+  p.start_date || p.end_date
+    ? `${p.start_date ? shortDate(p.start_date) : "…"} – ${p.end_date ? shortDate(p.end_date) : "…"}`
+    : "No dates set";
+
+function PlanSurveyRows({ surveys, onOpenFeedback }) {
+  if (!surveys.length) return <p className="muted ps-none">No surveys yet.</p>;
+  return (
+    <div className="table-wrap">
+      <table className="data-table ps-table">
+        <thead>
+          <tr>
+            <th scope="col">Date</th>
+            <th scope="col">Customer</th>
+            <th scope="col">City</th>
+            <th scope="col">Status</th>
+            <th scope="col">Rating</th>
+            <th scope="col">Sentiment</th>
+            <th scope="col" className="col-summary">Summary</th>
+            <th scope="col"><span className="visually-hidden">Analysis</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {surveys.map((s) => (
+            <tr key={s.response_id} className={s.feedback_id ? "is-clickable" : "is-pending"}
+              onClick={s.feedback_id ? () => onOpenFeedback(s.feedback_id) : undefined}>
+              <td>{formatDateTime(s.created_at)}</td>
+              <td>{s.customer || `Survey #${s.response_id}`}</td>
+              <td>{s.city || "—"}</td>
+              <td>
+                <span className={`status-chip ${s.status === "analyzed" ? "is-ok" : s.status === "draft" ? "is-neutral" : "is-act"}`}>
+                  {s.status_label}
+                </span>
+              </td>
+              <td>{toRating(s.rating) ? <RatingStars rating={s.rating} compact /> : <span className="muted">—</span>}</td>
+              <td>{s.tone ? <SentimentPill sentiment={TONE_SENTIMENT[s.tone] || SENTIMENTS.neutral} small /> : <span className="muted">—</span>}</td>
+              <td className="col-summary"><span className="summary-clip">{s.summary || "—"}</span></td>
+              <td className="cell-action">
+                {s.feedback_id ? (
+                  <button type="button" className="btn btn-secondary btn-sm"
+                    onClick={(e) => { e.stopPropagation(); onOpenFeedback(s.feedback_id); }}>
+                    View analysis
+                  </button>
+                ) : (
+                  <span className="muted small">No recording yet</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PlanSurveysView({ data, error, openPlan, onOpenPlan, onOpenFeedback }) {
+  if (error) return <p className="alert alert-error" role="alert">{error}</p>;
+  if (!data) return <div className="panel"><p className="muted">Loading action plans…</p></div>;
+  const { round, plans = [], unplanned = [] } = data;
+  if (!round) return <div className="panel"><p className="muted">This product has no survey yet.</p></div>;
+
+  if (openPlan != null) {
+    const isUnplanned = openPlan === "none";
+    const plan = isUnplanned ? null : plans.find((p) => p.id === openPlan);
+    if (!isUnplanned && !plan) return null;
+    return (
+      <section className="ps-detail" aria-labelledby="ps-detail-title">
+        <button type="button" className="back-link" onClick={() => onOpenPlan(null)}>
+          <ChevronIcon dir="left" /> All action plans
+        </button>
+        <div className="panel ps-head">
+          <h2 id="ps-detail-title" className="report-h">
+            {isUnplanned ? "Not in an action plan" : `${plan.name} · Team and responses`}
+          </h2>
+          <p className="muted">
+            {isUnplanned
+              ? `Responses of Survey ${round.number} taken before action plans existed, or by an admin.`
+              : `Survey ${round.number} · Recipe v${round.recipe_version ?? "—"} · ${plan.done} of ${plan.target} responses done · ${planDates(plan)}${plan.cities.length ? ` · ${plan.cities.join(", ")}` : ""}`}
+          </p>
+        </div>
+        {isUnplanned ? (
+          <section className="panel ps-member">
+            <PlanSurveyRows surveys={unplanned} onOpenFeedback={onOpenFeedback} />
+          </section>
+        ) : plan.members.length === 0 ? (
+          <section className="panel"><p className="muted">No one is allocated to this plan yet (Projects → the project → Survey plan).</p></section>
+        ) : (
+          plan.members.map((m) => (
+            <section key={m.user_id} className="panel ps-member" aria-label={m.name}>
+              <h3 className="ps-member-title">
+                <span className="avatar" aria-hidden="true">{(m.name || "?").trim()[0]?.toUpperCase()}</span>
+                <span>
+                  <strong>{m.name}</strong>
+                  <span className="muted"> · {m.cities.length ? m.cities.join(", ") : "any city"} · {plural(m.surveys.length, "survey")}</span>
+                  {m.former && <span className="status-chip is-neutral ps-former">no longer in this plan</span>}
+                </span>
+              </h3>
+              <PlanSurveyRows surveys={m.surveys} onOpenFeedback={onOpenFeedback} />
+            </section>
+          ))
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="ps-list" aria-labelledby="ps-title">
+      <div className="panel ps-head">
+        <h2 id="ps-title" className="report-h">
+          Action plans · Survey {round.number}
+          {round.recipe_version ? <span className="status-chip is-neutral">Recipe v{round.recipe_version}</span> : null}
+        </h2>
+        <p className="muted">
+          {plans.length ? `${plural(plans.length, "plan")} · target ${round.target} consumers. Open a plan to see each team member's responses.`
+            : "No action plans in this survey. The Super Admin creates them on the product's Action plans tab."}
+        </p>
+      </div>
+      <div className="ap-grid">
+        {plans.map((p) => {
+          const pct = p.target ? Math.min(100, Math.round((100 * p.done) / p.target)) : 0;
+          return (
+            <article key={p.id} className="ap-card">
+              <div className="ap-card-head">
+                <h3>{p.name}</h3>
+                <span className="muted small">{p.done} of {p.target}</span>
+              </div>
+              <div className="ap-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={`${p.name} progress`}>
+                <span style={{ width: `${pct}%` }} />
+              </div>
+              <p className="ap-meta">{planDates(p)}{p.audience ? ` · ${AUDIENCE_LABEL[p.audience]}` : ""}</p>
+              <p className="ap-meta">
+                {p.cities.length ? p.cities.map((c) => <span key={c} className="ap-chip is-small">{c}</span>) : <span className="muted">Any city</span>}
+              </p>
+              <ul className="ap-members">
+                {p.members.map((m) => (
+                  <li key={m.user_id}>{m.name}<span className="muted"> · {m.cities.length ? m.cities.join(", ") : "any city"} · {plural(m.surveys.length, "survey")}</span></li>
+                ))}
+                {!p.members.length && <li className="muted">No one allocated yet.</li>}
+              </ul>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => onOpenPlan(p.id)}>
+                View team and surveys ({p.survey_count})
+              </button>
+            </article>
+          );
+        })}
+      </div>
+      {unplanned.length > 0 && (
+        <div className="unlinked-note">
+          <span><strong>{plural(unplanned.length, "response")}</strong> of this survey {unplanned.length === 1 ? "is" : "are"} not in an action plan (taken before plans existed, or by an admin).</span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onOpenPlan("none")}>View</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ---------- One product: report + every customer's feedback ---------- */
 
 function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFeedback }) {
@@ -4068,8 +4250,14 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const [elapsed, setElapsed] = useState(0);
-  const [tab, setTab] = useState("report");
+  // The tab and open action plan are remembered, so Back from a survey's analysis returns here.
+  const remembered = pageCache.pfView?.productId === productId ? pageCache.pfView : null;
+  const [tab, setTabState] = useState(remembered?.tab || "report");
+  const [openPlan, setOpenPlanState] = useState(remembered?.openPlan ?? null);
+  const setTab = (t) => { setTabState(t); pageCache.pfView = { productId, tab: t, openPlan: t === "plans" ? openPlan : null }; };
+  const setOpenPlan = (id) => { setOpenPlanState(id); pageCache.pfView = { productId, tab: "plans", openPlan: id }; };
   const [round, setRound] = useState(initialRound); // null = every survey of the product
+  const [plansData, setPlansData] = useState({ data: null, error: "" });
   // "Compare rounds": two rounds side by side (same view as the organization portal).
   const [comparing, setComparing] = useState(false);
 
@@ -4087,6 +4275,15 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
   useEffect(() => {
     load();
   }, [load]);
+  // Action plans of the round shown (count on the button, and the Action plans view)
+  const loadPlans = useCallback(() => {
+    getPlanSurveys(productId, round)
+      .then((d) => setPlansData({ data: d, error: "" }))
+      .catch((err) => setPlansData({ data: null, error: err?.response?.status === 404 ? "" : "Action plans couldn't be loaded." }));
+  }, [productId, round]);
+  useEffect(() => {
+    loadPlans();
+  }, [loadPlans]);
   // Not while a report is being generated (it updates the page itself).
   useAutoRefresh((opts) => (generating ? null : load(opts)));
   const waitingForReport = Boolean(
@@ -4162,27 +4359,27 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
           <h1 id="pf-title">{product.name}</h1>
           <p className="home-sub">
             {comparing
-              ? `${rounds.length} feedback rounds, each testing one version of the product`
+              ? `${rounds.length} surveys, each testing one version of the product`
               : <>
                   {formatCount(summary.responses)} customer {summary.responses === 1 ? "response" : "responses"} analyzed
-                  {shown ? ` in Round ${shown.number}` : rounds.length > 1 ? ` in ${rounds.length} rounds` : ""}
+                  {shown ? ` in Survey ${shown.number}` : rounds.length > 1 ? ` in ${rounds.length} surveys` : ""}
                 </>}
             {product.sku ? ` · ${product.sku}` : ""}
           </p>
-          {live && <span className="product-badges"><span className="round-chip is-live">Round {live.number} · {live.done} of {live.target}</span></span>}
+          {live && <span className="product-badges"><span className="round-chip is-live">Survey {live.number} · {live.done} of {live.target}</span></span>}
         </div>
         {rounds.length > 1 && (
-          <div className="segmented round-picker" role="group" aria-label="Feedback round">
+          <div className="segmented round-picker" role="group" aria-label="Surveys">
             <button type="button" aria-pressed={comparing} className={comparing ? "is-on" : ""} onClick={() => setComparing(true)}
-              title="Two rounds side by side: rating, aspects and what changed in the recipe">
-              Compare rounds
+              title="Two surveys side by side: rating, aspects and what changed in the recipe">
+              Compare surveys
             </button>
             {rounds.map((r) => (
               <button key={r.number} type="button" aria-pressed={!comparing && round === r.number}
                 className={!comparing && round === r.number ? "is-on" : ""}
-                onClick={() => { setComparing(false); setRound(r.number); }}
-                title={`Round ${r.number}: version ${r.recipe_version ?? "?"}${r.status === "live" ? ", collecting surveys" : ""}`}>
-                Round {r.number}{r.status === "live" ? " · live" : ""}
+                onClick={() => { setComparing(false); setRound(r.number); if (openPlan != null) setOpenPlan(null); }}
+                title={`Survey ${r.number}: version ${r.recipe_version ?? "?"}${r.status === "live" ? ", collecting responses" : ""}`}>
+                Survey {r.number}{r.status === "live" ? " · live" : ""}
               </button>
             ))}
           </div>
@@ -4193,7 +4390,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
       {comparing ? (
         <div className="pf-compare">
           <p className="rounds-explainer">
-            Each round is one batch of customer surveys for one version of {product.name}. Pick two rounds to see
+            Each survey is one batch of customer responses for one version of {product.name}. Pick two surveys to see
             what changed in the recipe and how customers responded.
           </p>
           <CompareSection product={product} rounds={rounds} />
@@ -4201,12 +4398,14 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
       ) : (
       <>
         <div className="home-stats">
-          <div className="h-stat">
+          <div className="h-stat kpi-card tone-brand">
+            <KpiIcon name="responses" />
             <span className="h-stat-label">Responses</span>
             <span className="h-stat-value">{formatCount(summary.responses)}</span>
             <span className="h-stat-note">{summary.pending ? `${summary.pending} awaiting a recording` : "analyzed surveys"}</span>
           </div>
-          <div className="h-stat">
+          <div className="h-stat kpi-card tone-act">
+            <KpiIcon name="rating" />
             <span className="h-stat-label">Average rating</span>
             <span className="h-stat-value h-stat-rating">
               {summary.avg_rating != null ? summary.avg_rating.toFixed(1) : "—"}
@@ -4214,7 +4413,8 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
             </span>
             <span className="h-stat-note">from individual analyses</span>
           </div>
-          <div className="h-stat h-stat-wide">
+          <div className="h-stat h-stat-wide kpi-card tone-teal">
+            <KpiIcon name="sentiment" />
             <span className="h-stat-label">Customer sentiment</span>
             <ToneBar counts={summary.sentiment} />
             <div className="bar-legend">
@@ -4232,7 +4432,16 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
           <button type="button" role="tab" aria-selected={tab === "responses"} className={tab === "responses" ? "is-on" : ""} onClick={() => setTab("responses")}>
             Customer feedback <span className="seg-count">{responses.length}</span>
           </button>
+          <button type="button" role="tab" aria-selected={tab === "plans"} className={tab === "plans" ? "is-on" : ""}
+            onClick={() => { setTab("plans"); loadPlans(); }}>
+            Action plans <span className="seg-count">{plansData.data?.plans?.length ?? "…"}</span>
+          </button>
         </div>
+
+        {tab === "plans" && (
+          <PlanSurveysView data={plansData.data} error={plansData.error} openPlan={openPlan}
+            onOpenPlan={(id) => { setOpenPlan(id); window.scrollTo({ top: 0 }); }} onOpenFeedback={onOpenFeedback} />
+        )}
 
         {tab === "report" && (
           <>
@@ -4246,7 +4455,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
                 ) : report ? (
                   <>
                     <strong>
-                      {shown ? `Round ${shown.number} report` : "Consolidated report"}
+                      {shown ? `Survey ${shown.number} report` : "Consolidated report"}
                       {updating && <span className="status-chip is-act report-updating-chip">Updating with the latest analyses…</span>}
                     </strong>
                     <span>
@@ -4279,7 +4488,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
             </div>
             {genError && <p className="alert alert-error report-error" role="alert">{genError}</p>}
             {report && !generating && (
-              <ConsolidatedReportView report={report} product={shown ? { ...product, name: `${product.name} · Round ${shown.number}` } : product} />
+              <ConsolidatedReportView report={report} product={shown ? { ...product, name: `${product.name} · Survey ${shown.number}` } : product} />
             )}
           </>
         )}
@@ -4287,7 +4496,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
         {tab === "responses" && (
           <section className="panel home-products">
             {responses.length === 0 ? (
-              <p className="muted table-empty">No surveys for {product.name}{shown ? ` in Round ${shown.number}` : ""} yet.</p>
+              <p className="muted table-empty">No responses for {product.name}{shown ? ` in Survey ${shown.number}` : ""} yet.</p>
             ) : (
               <div className="table-wrap">
                 <table className="data-table">
@@ -4296,7 +4505,7 @@ function ProductFeedbackPage({ productId, initialRound = null, onBack, onOpenFee
                     <tr>
                       <th scope="col">Customer</th>
                       <th scope="col" className="col-category">City</th>
-                      {rounds.length > 0 && <th scope="col">Round</th>}
+                      {rounds.length > 0 && <th scope="col">Survey</th>}
                       <th scope="col">Rating</th>
                       <th scope="col">Sentiment</th>
                       <th scope="col" className="col-summary">Summary</th>
@@ -4402,16 +4611,40 @@ class ResultsBoundary extends Component {
    ================================================================ */
 
 const ROLE_PAGES = {
-  admin: ["home", "history", "catalog", "team"],
+  admin: ["home", "history", "projects", "catalog", "team"],
   executive: ["survey", "analyze", "mine"], // "analyze" = step 4 of a survey in progress
 };
 const ROLE_START = { admin: "home", executive: "survey" };
-const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine: "my-surveys", history: "survey-history", catalog: "catalog", team: "team" };
+const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine: "my-surveys", history: "survey-history", projects: "projects", catalog: "catalog", team: "team" };
 const SLUG_PAGE = Object.fromEntries(Object.entries(PAGE_SLUG).map(([k, v]) => [v, k]));
-const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", catalog: "Catalog", team: "Team" };
+const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", projects: "Projects", catalog: "Catalog", team: "Team" };
 
 const roleOf = (user) => (user?.role === "admin" ? "admin" : user?.role === "client" ? "client" : "executive");
 const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Super Admin" };
+
+/* ---------- LOV: the lists above come from the database once loaded ----------
+   m_othermastername / m_othermasterdata (services/lov.js). The values written in
+   the code are the fallback while loading or if the lists can't be loaded. */
+// "Less than 7 days" -> "Used for less than 7 days"; "For the past 1 month" -> "Used for the past 1 month"
+const usedPhrase = (label) => {
+  const l = `${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  return l.startsWith("for ") ? `Used ${l}` : `Used for ${l}`;
+};
+const withTone = (item, v) => {
+  item.label = v.label;
+  if (v.extra?.tone) item.tone = v.extra.tone;
+};
+onLovLoaded(() => {
+  fillMap(USAGE_LABEL, "USAGE_PERIOD", (v) => usedPhrase(v.label));
+  patchMap(BREAKDOWNS, "REPORT_BREAKDOWN", (_, v) => v.label);
+  patchMap(SENTIMENTS, "SENTIMENT", withTone);
+  patchMap(SEVERITY_ORDER, "SEVERITY", (_, v) => v.sort_order);
+  patchMap(ROLE_LABEL, "USER_ROLE", (_, v) => v.label);
+  patchMap(STATE_LABEL, "PRODUCT_STATE", (_, v) => v.label);
+  patchMap(STATE_TONE, "PRODUCT_STATE", (tone, v) => v.extra?.tone || tone);
+  patchMap(SURVEY_STATUS, "SURVEY_STATUS", withTone);
+  fillArray(RATING_SCALE, "RATING_SCALE", (v) => [v.code, v.label]);
+});
 const pageFromHash = () => SLUG_PAGE[(window.location.hash || "").replace(/^#\/?/, "").split(/[/?]/)[0]] || null;
 
 function UserMenu({ user }) {
@@ -4499,8 +4732,6 @@ function AppContent({ user }) {
   const [historyTab, setHistoryTab] = useState("products"); // products | surveys
   // The analysis running in the background: { filename, status, position, elapsed }
   const [job, setJob] = useState(null);
-  // Analyzed surveys (the same number History shows), for the tab badge.
-  const [analyzedCount, setAnalyzedCount] = useState(null);
   const [unlinked, setUnlinked] = useState({ loading: false, error: "", items: [] });
   const [selectedFeedbackLoading, setSelectedFeedbackLoading] = useState(false);
 
@@ -4549,9 +4780,12 @@ function AppContent({ user }) {
     refreshSaved();
   }, [refreshSaved]);
 
+  // "Save for later": encrypted first, so only ciphertext is kept on this device.
   const handleSaveRecording = async (recording) => {
+    if (!canSeal()) throw new Error("Recordings can only be saved on this device on a secure (https) page.");
+    const sealed = await sealRecording(recording.blob, recording.name);
     await requestPersistentStorage();
-    await saveRecording(recording);
+    await saveRecording({ ...recording, blob: sealed.file, size: sealed.file.size, keyId: sealed.keyId, wrappedKey: sealed.wrappedKey });
     await refreshSaved();
   };
 
@@ -4580,22 +4814,6 @@ function AppContent({ user }) {
     };
   }, [selectedPart]);
 
-  // silent: used on page load and after an upload, so errors don't show on the upload page.
-  // Analyzed surveys: the same number History shows (not every row in feedback_records).
-  const loadAnalyzedCount = useCallback(async () => {
-    if (!isAdminUser) return; // survey history is admin-only
-    try {
-      const res = await getRecentSurveys(1);
-      setAnalyzedCount(res?.analyzed_total ?? null);
-    } catch {
-      // Older backend or offline: keep the last number.
-    }
-  }, [isAdminUser]);
-
-  useEffect(() => {
-    loadAnalyzedCount();
-  }, [loadAnalyzedCount]);
-
   const loadFeedbackHistory = useCallback(async ({ silent = false } = {}) => {
     if (!isAdminUser) return; // the full list of recordings is admin-only
     setHistoryLoading(true);
@@ -4614,10 +4832,9 @@ function AppContent({ user }) {
   useAutoRefresh(
     useCallback(
       (opts) => {
-        loadAnalyzedCount();
         loadFeedbackHistory(opts);
       },
-      [loadAnalyzedCount, loadFeedbackHistory]
+      [loadFeedbackHistory]
     )
   );
 
@@ -4716,6 +4933,13 @@ function AppContent({ user }) {
     }
   };
 
+  const [projectRequest, setProjectRequest] = useState(null); // open a project in Projects (from the bell)
+  const goProjects = (projectId = null) => {
+    setProjectRequest(projectId);
+    setView("projects");
+    setSelectedFeedback(null);
+    window.scrollTo({ top: 0 });
+  };
   const [catalogRequest, setCatalogRequest] = useState(null); // open a product in Catalog (from the bell)
   const goCatalog = () => {
     setCatalogRequest(null);
@@ -4857,6 +5081,7 @@ function AppContent({ user }) {
       }
       await submitSurveyResponse(d.responseId);
       commit({ submitted: true });
+      keepFix(null); // the GPS fix is on the server now (services/gps.js)
     }
     return d.responseId;
   };
@@ -4906,7 +5131,7 @@ function AppContent({ user }) {
     setView("analyze");
     setSelectedFeedback(null);
     setFile(f);
-    setVideoUrl(URL.createObjectURL(f));
+    setVideoUrl(""); // never played back here: the recording is encrypted before it's uploaded
     setVideoError(false);
     setVideoDuration(0);
     setCurrentTime(0);
@@ -4933,11 +5158,15 @@ function AppContent({ user }) {
         setProgress(pct);
         if (pct >= 100) setStage("processing");
       };
+      // Encrypted in the browser before it's sent (a saved recording already is). On a page
+      // without WebCrypto (plain http) it goes as it is and the server encrypts it at once.
+      const sealed = f.sealed ? { file: f, ...f.sealed } : canSeal() ? await sealRecording(f, f.name) : null;
+      const upload = sealed?.file || f;
       let result;
       try {
         // Queue it: the upload returns at once and the analysis runs in the background,
         // so every other page keeps working meanwhile.
-        const queued = await startAnalysis(f, responseId, onUpload);
+        const queued = await startAnalysis(upload, responseId, onUpload, sealed);
         setStage("processing");
         setJob({ filename: f.name, status: queued.status, position: queued.position, elapsed: 0 });
         const finished = await waitForAnalysis(queued.job_id, (j) =>
@@ -4947,7 +5176,7 @@ function AppContent({ user }) {
       } catch (err) {
         // Older backend without the queue: analyze directly, as before.
         if (err?.response?.status !== 404 || err?.config?.url?.includes("/analysis/jobs/")) throw err;
-        result = await uploadVideo(f, onUpload, responseId);
+        result = await uploadVideo(upload, onUpload, responseId, sealed);
       } finally {
         setJob(null);
       }
@@ -5120,6 +5349,7 @@ function AppContent({ user }) {
     else if (view === "home") page = "Home";
     else if (view === "team") page = "Team";
     else if (view === "catalog") page = "Catalog";
+    else if (view === "projects") page = "Projects";
     else if (view === "mine") page = "My surveys";
     else if (busy) page = "Analyzing…";
     else if (stage === "done" && data) page = file?.name || data.filename || "Results";
@@ -5155,7 +5385,7 @@ function AppContent({ user }) {
       <header className="topbar">
         <div className="topbar-inner">
           <button type="button" className="brand" onClick={goStart} aria-label="FMCG Video Learning Engine, go to the start page">
-            <span className="brand-mark" aria-hidden="true"><PlayGlyph size={16} /></span>
+            <img className="brand-mark brand-logo" src="/favicon.svg" alt="" aria-hidden="true" width="32" height="32" />
             <span className="brand-name">FMCG Video Learning Engine</span>
           </button>
 
@@ -5173,6 +5403,7 @@ function AppContent({ user }) {
                   aria-current={view === "home" ? "page" : undefined}
                   onClick={goHome}
                 >
+                  <NavIcon name="home" />
                   Home
                 </button>
               )}
@@ -5183,6 +5414,7 @@ function AppContent({ user }) {
                   aria-current={view === "survey" || view === "analyze" ? "page" : undefined}
                   onClick={goSurvey}
                 >
+                  <NavIcon name="survey" />
                   <span className="nav-long">Take survey</span>
                   <span className="nav-short" aria-hidden="true">Survey</span>
                 </button>
@@ -5194,6 +5426,7 @@ function AppContent({ user }) {
                   aria-current={view === "mine" ? "page" : undefined}
                   onClick={goMine}
                 >
+                  <NavIcon name="mine" />
                   My surveys
                 </button>
               )}
@@ -5204,13 +5437,20 @@ function AppContent({ user }) {
                   aria-current={view === "history" ? "page" : undefined}
                   onClick={goHistory}
                 >
+                  <NavIcon name="history" />
                   <span className="nav-long">Survey history</span>
                   <span className="nav-short" aria-hidden="true">History</span>
-                  {(analyzedCount ?? 0) > 0 && (
-                    <span className="nav-count" aria-label={`${analyzedCount} analyzed surveys`}>
-                      {analyzedCount}
-                    </span>
-                  )}
+                </button>
+              )}
+              {allowedPages.includes("projects") && (
+                <button
+                  type="button"
+                  className={view === "projects" ? "is-active" : ""}
+                  aria-current={view === "projects" ? "page" : undefined}
+                  onClick={() => goProjects()}
+                >
+                  <NavIcon name="projects" />
+                  Projects
                 </button>
               )}
               {allowedPages.includes("catalog") && (
@@ -5220,6 +5460,7 @@ function AppContent({ user }) {
                   aria-current={view === "catalog" ? "page" : undefined}
                   onClick={goCatalog}
                 >
+                  <NavIcon name="catalog" />
                   Catalog
                 </button>
               )}
@@ -5230,6 +5471,7 @@ function AppContent({ user }) {
                   aria-current={view === "team" ? "page" : undefined}
                   onClick={goTeam}
                 >
+                  <NavIcon name="team" />
                   Team
                 </button>
               )}
@@ -5239,6 +5481,7 @@ function AppContent({ user }) {
               onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
               onOpenRounds={isAdminUser ? (pid) => openCatalogProduct(pid, "rounds") : undefined}
               onOpenProduct={isAdminUser ? (pid) => openCatalogProduct(pid, "details") : undefined}
+              onOpenProject={isAdminUser ? (id) => goProjects(id) : undefined}
             />
             <UserMenu user={user} />
           </div>
@@ -5289,6 +5532,10 @@ function AppContent({ user }) {
               }}
               canSurvey={!isAdminUser}
             />
+          </ResultsBoundary>
+        ) : view === "projects" ? (
+          <ResultsBoundary resetKey="projects" onRetry={() => goProjects()}>
+            <AdminProjects key={projectRequest ?? "list"} openId={projectRequest} onOpened={() => {}} />
           </ResultsBoundary>
         ) : view === "catalog" ? (
           <ResultsBoundary resetKey="catalog" onRetry={goCatalog}>
@@ -5384,7 +5631,7 @@ function AppContent({ user }) {
                         {surveyDraft.round && (
                           <div>
                             <dt>Version</dt>
-                            <dd>{surveyDraft.recipeVersion ? `Recipe v${surveyDraft.recipeVersion} · ` : ""}Round {surveyDraft.round}</dd>
+                            <dd>{surveyDraft.recipeVersion ? `Recipe v${surveyDraft.recipeVersion} · ` : ""}Survey {surveyDraft.round}</dd>
                           </div>
                         )}
                         <div>
@@ -5701,8 +5948,8 @@ function AppContent({ user }) {
                         </div>
                       ) : (
                         <div className="video-fallback">
-                          <p>This browser can't preview this video format.</p>
-                          <p className="muted">The transcript and summary are still complete. MP4 files play here.</p>
+                          <p>The recording was encrypted before it was sent.</p>
+                          <p className="muted">To protect the customer's privacy it isn't played back here. The transcript and summary are complete.</p>
                         </div>
                       )}
                       <MomentMap segments={segments} duration={duration} currentTime={currentTime} onSeek={seekTo} />
@@ -5856,6 +6103,7 @@ function AppContent({ user }) {
 export default function App() {
   const [session, setSession] = useState(getSession);
   useEffect(() => onSessionChange(setSession), []);
+  useLov(Boolean(session?.token)); // LOV lists from the database (services/lov.js)
   // Latest role and permissions from the server whenever the app opens, and every
   // 30 minutes while it stays open (this also renews the sign-in before it expires).
   const token = session?.token;

@@ -103,69 +103,16 @@ def get_feedback(
 # ============================================================
 
 @router.get("/{feedback_id}/video")
-def get_feedback_video(
-    feedback_id: int,
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """Return the original audio or video recording."""
-
-    record = feedback_or_404(db, request, feedback_id)
-
-    if not record.video_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Recording path is not available.",
-        )
-
-    # The stored path may come from another computer (data moved Windows -> Mac):
-    # resolve_recording finds the file in this computer's uploads folder.
-    video_path = resolve_recording(record.video_path)
-
-    if video_path is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Original recording file could not be found.",
-        )
-
-    # Explicit MIME types for common audio/video formats.
-    extension = video_path.suffix.lower()
-    mime_types = {
-        ".mp3": "audio/mpeg",
-        ".wav": "audio/wav",
-        ".m4a": "audio/mp4",
-        ".aac": "audio/aac",
-        ".ogg": "audio/ogg",
-        ".oga": "audio/ogg",
-        ".opus": "audio/ogg",
-        ".flac": "audio/flac",
-        ".mp4": "video/mp4",
-        ".mov": "video/quicktime",
-        ".webm": "audio/webm",
-    }
-
-    media_type = mime_types.get(extension)
-    if not media_type:
-        media_type = (
-            mimetypes.guess_type(video_path.name)[0]
-            or "application/octet-stream"
-        )
-
-    download_filename = (
-        Path(record.original_filename).name
-        if record.original_filename
-        else video_path.name
-    )
-
-    return FileResponse(
-        path=str(video_path),
-        media_type=media_type,
-        filename=download_filename,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Cross-Origin-Resource-Policy": "cross-origin",
-        },
-    )
+def get_feedback_video(feedback_id: int, request: Request, db: Session = Depends(get_db)):
+    """Recordings are confidential: they're no longer served here (to any role). An Admin given
+    access to the product (or the Super Admin) plays one with the product passkey:
+    POST /recordings/{id}/authorise, then GET /recordings/{id}/stream (api/recordings.py)."""
+    feedback_or_404(db, request, feedback_id)
+    raise HTTPException(status_code=403, detail={
+        "code": "recording_protected",
+        "message": "Recordings are encrypted. An Admin with access to this product plays them with the product's passkey.",
+        "authorise_url": f"/recordings/{feedback_id}/authorise",
+    })
 
 
 # ============================================================

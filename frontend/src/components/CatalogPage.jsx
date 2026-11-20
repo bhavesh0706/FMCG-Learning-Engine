@@ -1,5 +1,12 @@
+import { ActionPlansSection, PlanFields, planBody, planForm, planProblem } from "./ActionPlans";
+import { getOrgPasskey, saveProjectPlan } from "../services/orgApi";
 import MastersDialog from "./MastersDialog";
-import { AttachmentsCard, CostingCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
+import KpiIcon from "./KpiIcon";
+import { onLovLoaded, patchMap } from "../services/lov";
+import { AttachmentsCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
+
+// ₹ with up to 2 decimals; "—" when unknown (same as the old Costing table)
+const money = (v) => (v == null ? "—" : `₹${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { confirmDialog } from "./ConfirmDialog";
 import Modal from "./Modal";
@@ -11,12 +18,11 @@ import {
   deleteCategoryPermanently,
   deleteProductPermanently,
   endProductRound,
-  getProductExecutives,
+  deleteProductRound,
+  deleteRecipeVersion,
   getProductRounds,
   getRecipe,
   getRecipeVersions,
-  listTeam,
-  saveProductExecutives,
   listCategories,
   listProducts,
   listQuestions,
@@ -27,6 +33,8 @@ import {
   updateProduct,
   updateQuestion,
 } from "../services/catalogAdminApi";
+import Select from "./Select";
+import { generatePasskey, passkeyProblem } from "../services/recordingCrypto";
 
 /*
   Catalog (admin)
@@ -101,17 +109,31 @@ function productStatus(p) {
 function CategoryDialog({ category, onClose, onSaved }) {
   const [name, setName] = useState(category?.name || "");
   const [description, setDescription] = useState(category?.description || "");
+  // Unique per category; empty on a new category = the next PRJ-#### is generated.
+  const [projectId, setProjectId] = useState(category?.project_id || "");
+  const [plan, setPlan] = useState(planForm(category?.default_plan)); // default recipe plan of its products
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const valid = name.trim().length >= 2;
+  const pid = projectId.trim();
+  const pidOk = !pid || /^[A-Za-z0-9][A-Za-z0-9_\-/.]*$/.test(pid);
+  const valid = name.trim().length >= 2 && pidOk && (!category || pid);
 
   const save = async () => {
     if (!valid) return;
     setBusy(true);
     setError("");
     try {
+      const problem = planProblem(plan);
+      if (problem) {
+        setError(problem);
+        setBusy(false);
+        return;
+      }
       const body = { name: name.trim(), description: description.trim() || null };
+      if (!category) body.default_plan = planBody(plan);
+      if (pid) body.project_id = pid;
       const saved = category ? await updateCategory(category.id, body) : await createCategory(body);
+      if (category) await saveProjectPlan(category.id, planBody(plan));
       onSaved(saved, category ? "Category updated." : `Category "${saved.name}" created. Now add its products.`);
     } catch (err) {
       setError(catalogError(err, "The category couldn't be saved."));
@@ -122,7 +144,7 @@ function CategoryDialog({ category, onClose, onSaved }) {
   return (
     <Modal
       title={category ? "Edit category" : "Add a category"}
-      subtitle={category ? null : "Group similar products, e.g. Beverages, Personal Care, Snacks."}
+      subtitle={category ? null : "A category groups related products, e.g. Beverages, Personal Care, Snacks."}
       onClose={onClose}
       footer={
         <>
@@ -139,10 +161,21 @@ function CategoryDialog({ category, onClose, onSaved }) {
           onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
       </label>
       <label className="field">
+        <span className="field-label">Category code{category ? " *" : ""}</span>
+        <input className="input" value={projectId} maxLength={50}
+          placeholder={category ? "e.g. CAT-0001" : "Leave empty to create one (CAT-0001, CAT-0002 …)"}
+          onChange={(e) => setProjectId(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
+        {!pidOk && <span className="form-error">Use letters, numbers and - _ / . only (no spaces).</span>}
+      </label>
+      <label className="field">
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={description} placeholder="Optional"
           onChange={(e) => setDescription(e.target.value)} />
       </label>
+      <details className="ap-details">
+        <summary>Default recipe plan for this category's products (optional)</summary>
+        <PlanFields value={plan} onChange={setPlan} idPrefix="project-plan" />
+      </details>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -166,7 +199,7 @@ function VersionsCell({ product }) {
         {saved.map((v) => {
           const sv = surveyed.get(v);
           const tip = [`Version ${v}`, v === latest ? "latest recipe" : null,
-            sv ? `surveyed in Round${sv.rounds.length > 1 ? "s" : ""} ${sv.rounds.join(", ")}${sv.live ? " (collecting now)" : ""}` : "not surveyed yet"]
+            sv ? `surveyed in Survey${sv.rounds.length > 1 ? "s" : ""} ${sv.rounds.join(", ")}${sv.live ? " (collecting now)" : ""}` : "not surveyed yet"]
             .filter(Boolean).join(" · ");
           return (
             <span key={v} title={tip} tabIndex={0}
@@ -180,18 +213,38 @@ function VersionsCell({ product }) {
   );
 }
 
-function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNeedCategory }) {
-  const active = categories.filter((c) => c.is_active);
+function ProductDialog({ categories, defaultCategoryId, lockCategory = false, onClose, onCreated, onNeedCategory }) {
+  // Opened from inside a category: the product goes into that category only
+  const active = categories.filter((c) => c.is_active && (!lockCategory || String(c.id) === String(defaultCategoryId)));
   const [form, setForm] = useState({
     category_id: defaultCategoryId || active[0]?.id || "",
     name: "",
     sku: "",
     description: "",
+    start_version: "1", // the first recipe version number (higher if versions existed before the app)
+    recording_passkey: "", // only its hash is stored (backend services/recording_access.py)
   });
+  const [passkeyCopied, setPasskeyCopied] = useState(false);
+  // One recording passkey for the whole organization: asked here only while none is set yet.
+  const [orgPasskey, setOrgPasskey] = useState(null); // null = loading, true = set, false = not set
+  useEffect(() => {
+    getOrgPasskey().then((s) => setOrgPasskey(Boolean(s.has_passkey))).catch(() => setOrgPasskey(true));
+  }, []);
+  const askPasskey = orgPasskey === false;
+  // Recipe plan: starts from the project's default plan until the Super Admin edits it
+  const projectPlan = (cid) => planForm(categories.find((c) => String(c.id) === String(cid))?.default_plan);
+  const [plan, setPlan] = useState(() => projectPlan(form.category_id));
+  const [planEdited, setPlanEdited] = useState(false);
+  useEffect(() => {
+    if (!planEdited) setPlan(projectPlan(form.category_id));
+  }, [form.category_id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-  const valid = form.name.trim().length >= 2 && form.category_id;
+  const startVersion = Number(form.start_version);
+  const versionOk = Number.isInteger(startVersion) && startVersion >= 1 && startVersion <= 999;
+  const valid = form.name.trim().length >= 2 && form.category_id && versionOk && !planProblem(plan)
+    && (!askPasskey || !passkeyProblem(form.recording_passkey));
 
   // Survey questions and the recipe are added by the organization in its portal,
   // so a new product starts without them (the server refuses starting questions).
@@ -215,6 +268,9 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         description: form.description.trim() || null,
+        start_version: startVersion,
+        recipe_plan: planBody(plan),
+        ...(askPasskey ? { recording_passkey: form.recording_passkey.trim() } : {}),
       });
       onCreated(p);
     } catch (err) {
@@ -239,9 +295,9 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
     >
       <label className="field">
         <span className="field-label">Category *</span>
-        <select className="input" value={form.category_id} onChange={set("category_id")}>
+        <Select className="input" value={form.category_id} onChange={set("category_id")}>
           {active.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        </Select>
       </label>
       <label className="field">
         <span className="field-label">Product name *</span>
@@ -252,9 +308,55 @@ function ProductDialog({ categories, defaultCategoryId, onClose, onCreated, onNe
         <input className="input" value={form.sku} placeholder="e.g. FOOD-AAM-JELLY" onChange={set("sku")} />
       </label>
       <label className="field">
+        <span className="field-label">Recipe version *</span>
+        <div className="version-input">
+          <span aria-hidden="true">v</span>
+          <input className="input" type="number" inputMode="numeric" min="1" max="999" step="1" value={form.start_version}
+            onChange={set("start_version")} aria-describedby="start-version-help" />
+        </div>
+        <span id="start-version-help" className={versionOk ? "muted small" : "form-error small"}>
+          {versionOk
+            ? `The first recipe saved becomes v${startVersion}; later changes continue from it. Keep 1 for a new product.`
+            : "Enter a whole number from 1 to 999."}
+        </span>
+      </label>
+      <label className="field">
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={form.description} placeholder="Pack size, variant… (optional)" onChange={set("description")} />
       </label>
+      {orgPasskey === true && (
+        <p className="field-hint passkey-note">
+          Recordings of this product open with your organization's recording passkey (the same for every product).
+          Choose who may play them on the product's Recording access tab.
+        </p>
+      )}
+      {askPasskey && (
+      <fieldset className="passkey-field">
+        <legend>Recording passkey (for all products) *</legend>
+        <p className="muted small">
+          Consumer recordings are encrypted. One passkey opens the recordings of every product, for the Admins you allow on each
+          product's Recording access tab. It's stored only as a hash and shown just now: copy it.
+        </p>
+        <div className="passkey-row">
+          <input className="input passkey-input" value={form.recording_passkey} autoComplete="off" spellCheck={false}
+            placeholder="Generate one, or type at least 8 characters" aria-label="Recording passkey"
+            onChange={(e) => { setPasskeyCopied(false); set("recording_passkey")(e); }} />
+          <button type="button" className="btn btn-secondary btn-sm"
+            onClick={() => { setPasskeyCopied(false); setForm((f) => ({ ...f, recording_passkey: generatePasskey() })); }}>Generate</button>
+          <button type="button" className="btn btn-secondary btn-sm" disabled={!form.recording_passkey}
+            onClick={() => navigator.clipboard?.writeText(form.recording_passkey).then(() => setPasskeyCopied(true)).catch(() => {})}>
+            {passkeyCopied ? "Copied" : "Copy"}
+          </button>
+        </div>
+        {form.recording_passkey && passkeyProblem(form.recording_passkey) && <p className="form-error small">{passkeyProblem(form.recording_passkey)}</p>}
+      </fieldset>
+      )}
+      <details className="ap-details" open>
+        <summary>Recipe plan: responses, team, dates, cities</summary>
+        <p className="muted small">The defaults of this product's action plans; you can add more plans per survey later.</p>
+        <PlanFields value={plan} onChange={(v) => { setPlan(v); setPlanEdited(true); }} idPrefix="product-plan" />
+        {planProblem(plan) && <p className="form-error small">{planProblem(plan)}</p>}
+      </details>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -314,8 +416,8 @@ function DeleteForeverDialog({ kind, name, details, onClose, onConfirm }) {
 function LiveRoundChip({ round }) {
   if (!round) return null;
   return (
-    <span className="round-chip is-live" title={`Round ${round.number} is collecting surveys (recipe v${round.recipe_version ?? "—"})`}>
-      Round {round.number} · {round.done} of {round.target}
+    <span className="round-chip is-live" title={`Survey ${round.number} is collecting responses (recipe v${round.recipe_version ?? "—"})`}>
+      Survey {round.number} · {round.done} of {round.target}
     </span>
   );
 }
@@ -412,25 +514,39 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
     {
       done: categories.some((c) => c.is_active),
       title: "Categories",
-      text: categories.length ? `${categories.filter((c) => c.is_active).length} active` : "Group your products",
+      icon: "categories",
+      tone: "brand",
+      value: categories.filter((c) => c.is_active).length,
+      text: categories.length ? "active categories" : "Group your products",
       action: canManage && !categories.length ? { label: "Add category", run: () => setDialog({ type: "category" }) } : null,
     },
     {
       done: activeProducts.length > 0,
       title: "Products",
-      text: activeProducts.length ? `${activeProducts.length} active` : "Add what you want feedback on",
+      icon: "products",
+      tone: "teal",
+      value: activeProducts.length,
+      text: activeProducts.length ? "active products" : "Add what you want feedback on",
       action: canManage && !activeProducts.length ? { label: "Add product", run: () => setDialog({ type: "product" }) } : null,
     },
     {
       done: activeProducts.length > 0 && readyCount === activeProducts.length,
       title: "Survey questions",
-      text: activeProducts.length ? `${readyCount} of ${activeProducts.length} products ready · added by the Super Admin` : "5–10 per product, added by the Super Admin",
+      icon: "questions",
+      tone: "act",
+      value: activeProducts.length ? readyCount : 0,
+      of: activeProducts.length,
+      text: activeProducts.length ? "products have their 5–10 questions" : "5–10 per product, added by the Super Admin",
       action: null,
     },
     {
       done: activeProducts.length > 0 && recipeCount === activeProducts.length,
       title: "Recipes",
-      text: activeProducts.length ? `${recipeCount} of ${activeProducts.length} products have one · added by the Super Admin` : "Added by the Super Admin",
+      icon: "recipes",
+      tone: "pos",
+      value: activeProducts.length ? recipeCount : 0,
+      of: activeProducts.length,
+      text: activeProducts.length ? "products have a recipe" : "Added by the Super Admin",
       action: null,
     },
   ];
@@ -473,6 +589,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           categories={categories}
           products={products}
           defaultCategoryId={categoryId !== "all" ? categoryId : undefined}
+          lockCategory={categoryId !== "all"}
           onClose={() => setDialog(null)}
           onNeedCategory={() => setDialog({ type: "category" })}
           onCreated={async (p) => {
@@ -543,8 +660,8 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           <h1 id="catalog-title">Catalog</h1>
           <p className="home-sub">
             {canManage
-              ? "Your products and categories. The research team is notified of every change."
-              : "The products executives survey. Products and categories are added and changed by the Super Admin."}
+              ? "Your categories and products. The research team is notified of every change."
+              : "The products executives survey. Categories and products are added and changed by the Super Admin."}
           </p>
         </div>
         <div className="catalog-head-actions">
@@ -557,9 +674,6 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
             <>
               <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "category" })}>
                 Add category
-              </button>
-              <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>
-                Add product
               </button>
             </>
           )}
@@ -576,11 +690,18 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
 
       {!loading && (
         <section className={`setup-guide${setupDone ? " is-done" : ""}`} aria-label="Catalog setup">
-          {steps.map((st, i) => (
-            <div key={st.title} className={`setup-step${st.done ? " is-done" : ""}`}>
-              <span className="setup-num" aria-hidden="true">{st.done ? "✓" : i + 1}</span>
+          {steps.map((st) => (
+            <div key={st.title} className={`setup-step kpi-card tone-${st.tone}${st.done ? " is-done" : ""}`}>
+              <KpiIcon name={st.icon} />
               <div className="setup-text">
-                <strong>{st.title}</strong>
+                <strong className="kpi-title">
+                  {st.title}
+                  <span className={`kpi-state${st.done ? " is-done" : ""}`}>{st.done ? "✓ Complete" : "To do"}</span>
+                </strong>
+                <span className="kpi-number">
+                  {st.value}
+                  {st.of ? <small> of {st.of}</small> : null}
+                </span>
                 <span>{st.text}</span>
                 {st.action && (
                   <button type="button" className="link-btn" onClick={st.action.run}>{st.action.label} →</button>
@@ -626,6 +747,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           <div className="catalog-main-head">
             <div>
               <h2 className="panel-title" id="products-title">{category ? category.name : "All products"}</h2>
+              {category?.project_id && <p className="muted">Category code: {category.project_id}</p>}
               <p className="muted">
                 {category?.description ||
                   (category ? `${countIn(category.id)} active products` : `${activeProducts.length} active products in ${categories.filter((c) => c.is_active).length} categories`)}
@@ -633,9 +755,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
             </div>
             {category && canManage && (
               <div className="catalog-main-actions">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ type: "category", category })}>Edit</button>
+                {/* An empty category shows its own Add product box below instead */}
+                {category.is_active && (visible.length > 0 || query) && (
+                  <button type="button" className="btn btn-primary btn-sm" onClick={() => setDialog({ type: "product" })}>Add product</button>
+                )}
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ type: "category", category })}>Edit category</button>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => toggleCategory(category)}>
-                  {category.is_active ? "Deactivate" : "Reactivate"}
+                  {category.is_active ? "Deactivate category" : "Reactivate category"}
                 </button>
                 {!category.is_active && (
                   <button
@@ -649,7 +775,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
                     }
                     onClick={() => setDialog({ type: "delete-category", category })}
                   >
-                    Delete permanently
+                    Delete category permanently
                   </button>
                 )}
               </div>
@@ -669,7 +795,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
               <p>{query ? "Try a different name or SKU." : canManage
                 ? "Add a product to start collecting feedback on it."
                 : "The Super Admin adds products in their portal."}</p>
-              {!query && canManage && (
+              {!query && canManage && (!category || category.is_active) && (
                 <button type="button" className="btn btn-primary" onClick={() => setDialog({ type: "product" })}>Add product</button>
               )}
             </div>
@@ -766,8 +892,8 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
     ? [["details", "Product details"]]
     : [
         ["details", "Product details"],
-        ["access", "Who can survey"],
-        ["rounds", product.live_round ? `Rounds · Round ${product.live_round.number} live` : "Rounds"],
+        ["access", "Survey team"],
+        ["rounds", product.live_round ? `Surveys · Survey ${product.live_round.number} live` : "Surveys"],
       ];
   return (
     <>
@@ -782,144 +908,21 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
         {tab === "details" && (
           <DetailsTab product={product} categories={categories} onChanged={onChanged} notify={notify} onDeleted={onDeleted} readOnly={!canManage} />
         )}
-        {tab === "access" && <SurveyAccess product={product} notify={notify} />}
+        {tab === "access" && (
+          <>
+            <p className="alert alert-info" role="note">
+              Survey teams are allocated in <strong>Projects</strong>: open the project of this product's recipe, then choose
+              Allocate team on each survey plan. This page shows the teams only.
+            </p>
+            <ActionPlansSection productId={product.id} role="admin" readOnly />
+          </>
+        )}
         {tab === "rounds" && <RoundsTab product={product} notify={notify} onChanged={onChanged} onOpenRound={onOpenRound} />}
       </section>
     </>
   );
 }
 
-/* Who surveys the product's LIVE round (services/product_access.py): the Super Admin
-   starts each round, an admin assigns it; nothing is open to everyone, and each new
-   round is assigned again. Disabled members can't be assigned. */
-function SurveyAccess({ product, notify }) {
-  const [state, setState] = useState({ loading: true, team: [], selected: new Set(), saved: "", round: null, open: false });
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    Promise.all([listTeam(), getProductExecutives(product.id)])
-      .then(([team, assigned]) => {
-        if (!alive) return;
-        const people = listOf(team, "users").filter((u) => u.role === "executive"); // survey persons only
-        const ids = assigned?.user_ids || [];
-        setState({ loading: false, team: people, selected: new Set(ids), saved: JSON.stringify([...ids].sort((a, b) => a - b)),
-          round: assigned?.round || null, open: assigned?.needs_round === false });
-      })
-      .catch((err) => alive && setState((s) => ({ ...s, loading: false, error: catalogError(err) })));
-    return () => {
-      alive = false;
-    };
-  }, [product.id]);
-
-  const active = state.team.filter((u) => u.is_active);
-  const toggle = (id) =>
-    setState((s) => {
-      const next = new Set(s.selected);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return { ...s, selected: next };
-    });
-
-  const wanted = [...state.selected].sort((a, b) => a - b);
-  const dirty = JSON.stringify(wanted) !== state.saved;
-  const save = async () => {
-    setBusy(true);
-    try {
-      const res = await saveProductExecutives(product.id, wanted);
-      const ids = res?.user_ids || [];
-      setState((s) => ({ ...s, saved: JSON.stringify([...ids].sort((a, b) => a - b)) }));
-      notify("ok", ids.length
-        ? `${product.name} is assigned to ${ids.length} ${ids.length === 1 ? "survey person" : "survey persons"}; only they see it now.`
-        : state.open ? `${product.name} is open to every survey person again.` : `Nobody is assigned to Round ${state.round.number} of ${product.name}.`);
-    } catch (err) {
-      notify("error", catalogError(err, "Couldn't save who surveys this product."));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="survey-access" aria-labelledby="access-title">
-      <div className="tab-intro">
-        <strong id="access-title">{state.round && !state.open ? `Who surveys Round ${state.round.number}` : "Who can survey this product"}</strong>
-        <p className="muted">
-          {state.open
-            ? `${product.name} was surveyed before rounds were needed, so it stays open: every survey person sees it until you choose specific people. A new recipe version needs the Super Admin to start its round.`
-            : `Only the survey persons you assign see ${product.name} in their product list, on the web and in the app, while the round is live. Each new round the Super Admin starts is assigned again.`}
-        </p>
-      </div>
-      {state.loading ? (
-        <p className="muted">Loading…</p>
-      ) : state.error ? (
-        <p className="form-error" role="alert">{state.error}</p>
-      ) : !state.round ? (
-        <p className="muted">
-          No round of {product.name} is live, so there's nothing to assign. The Super Admin starts the next round; you can assign it here
-          once it has started. Earlier rounds keep their survey persons as history.
-        </p>
-      ) : (
-        <>
-          <div className="access-step">
-            <div className="access-people-head">
-              <h4 className="access-step-title">
-                <span className="access-step-no">{state.round.number}</span>
-                {state.open ? "Choose survey persons (optional)" : `Choose the survey persons for Round ${state.round.number}`}
-              </h4>
-              {active.length > 0 && (
-                <span className="access-people-tools">
-                  <span className="muted">{state.selected.size} of {active.length} selected</span>
-                  <button type="button" className="link-btn" onClick={() => setState((x) => ({ ...x, selected: new Set(active.map((u) => u.id)) }))}>Select all</button>
-                  <button type="button" className="link-btn" onClick={() => setState((x) => ({ ...x, selected: new Set() }))}>Clear</button>
-                </span>
-              )}
-            </div>
-            {state.team.length === 0 ? (
-              <p className="muted">No survey persons yet. Add them on the Team page.</p>
-            ) : (
-              <ul className="people-list">
-                {state.team.map((u) => {
-                  const on = state.selected.has(u.id);
-                  return (
-                    <li key={u.id} className={on ? "is-on" : ""}>
-                      <span className="people-avatar" aria-hidden="true">{(u.name || "?").trim()[0]?.toUpperCase()}</span>
-                      <span className="people-text">
-                        <strong>{u.name}</strong>
-                        <span className="muted">{u.mobile || u.email}{u.is_active ? "" : " · Disabled: reactivate on the Team page"}</span>
-                      </span>
-                      <span className={`people-state${on ? " is-on" : ""}`}>{!u.is_active ? "Disabled" : on ? "Assigned" : "Not assigned"}</span>
-                      <label className="toggle" aria-label={`${u.name} surveys Round ${state.round.number} of ${product.name}`}>
-                        <input type="checkbox" role="switch" checked={on} disabled={!u.is_active} onChange={() => toggle(u.id)} />
-                        <span className="toggle-track" aria-hidden="true"><span className="toggle-thumb" /></span>
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-
-          <div className="access-result">
-            <span className="access-result-text">
-              {state.selected.size === 0 && state.open
-                ? <>Nobody chosen: <strong>every survey person</strong> can survey {product.name}.</>
-                : state.selected.size === 0
-                ? <>Nobody is assigned: no survey person sees <strong>{product.name}</strong> yet.</>
-                : <>Only <strong>{state.team.filter((u) => state.selected.has(u.id)).map((u) => u.name).join(", ")}</strong> will see {product.name} (Round {state.round.number}).</>}
-            </span>
-            <span className="access-result-actions">
-              {dirty && <span className="muted">Unsaved changes</span>}
-              <button type="button" className="btn btn-primary" disabled={busy || !dirty} onClick={save}>
-                {busy ? "Saving…" : "Save"}
-              </button>
-            </span>
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
-
-// readOnly: the admin dashboard (products are changed by the organization).
 function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnly = false }) {
   const [deleting, setDeleting] = useState(false);
   const [form, setForm] = useState({
@@ -1007,11 +1010,11 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnl
         </label>
         <label className="field">
           <span className="field-label">Category</span>
-          <select className="input" value={form.category_id} onChange={set("category_id")}>
+          <Select className="input" value={form.category_id} onChange={set("category_id")}>
             {categories.filter((c) => c.is_active || c.id === product.category_id).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       <label className="field">
@@ -1057,6 +1060,15 @@ const REPORT_ROLES = {
   purchase_intent: { label: "Purchase intent", hint: "Would they buy it? Put the positive answer first.", types: ["yes_no", "single_choice"] },
   ease: { label: "Ease of use / preparation", hint: "How easy it was to use or prepare.", types: ["rating", "yes_no", "single_choice"] },
 };
+
+// Labels from the database lists (LOV QUESTION_TYPE, REPORT_ROLE) once loaded; the values above are the fallback.
+onLovLoaded(() => {
+  patchMap(TYPES, "QUESTION_TYPE", (_, v) => v.label);
+  patchMap(REPORT_ROLES, "REPORT_ROLE", (role, v) => {
+    role.label = v.label;
+    if (v.extra?.hint) role.hint = v.extra.hint;
+  });
+});
 
 // readOnly: the admin dashboard lists the questions but can't change them (the
 // organization manages them in its portal; the server refuses admin changes too).
@@ -1148,9 +1160,9 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       <div className="catalog-row">
         <label className="field">
           <span className="field-label">Answer type</span>
-          <select className="input" value={editing.question_type} onChange={(e) => setEditing({ ...editing, question_type: e.target.value })}>
+          <Select className="input" value={editing.question_type} onChange={(e) => setEditing({ ...editing, question_type: e.target.value })}>
             {Object.entries(TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-          </select>
+          </Select>
         </label>
         <label className="catalog-check">
           <input type="checkbox" checked={editing.required} onChange={(e) => setEditing({ ...editing, required: e.target.checked })} />
@@ -1159,13 +1171,13 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       </div>
       <label className="field">
         <span className="field-label">Use in the client report as</span>
-        <select className="input" value={editing.report_role || ""}
+        <Select className="input" value={editing.report_role || ""}
           onChange={(e) => setEditing({ ...editing, report_role: e.target.value })}>
           <option value="">Not in the client summary (still in survey answers)</option>
           {Object.entries(REPORT_ROLES)
             .filter(([k, r]) => r.types.includes(editing.question_type) || k === editing.report_role)
             .map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}
-        </select>
+        </Select>
         {editing.report_role && REPORT_ROLES[editing.report_role] && (
           <span className="field-hint">
             {REPORT_ROLES[editing.report_role].types.includes(editing.question_type)
@@ -1275,6 +1287,38 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 /* ---------------- Recipe ---------------- */
 
 const blankIngredient = () => ({ name: "", quantity: "", unit: "", cost_per_kg: "", notes: "" });
+
+/* Batch weight (the server checks the same: services/recipe_tools.batch_check).
+   The weighed ingredients must add up to exactly the batch size, to the gram. */
+const WEIGHT_TO_KG = { kg: 1, kgs: 1, g: 0.001, gm: 0.001, gms: 0.001, gram: 0.001, grams: 0.001, mg: 0.000001, l: 1, ltr: 1, litre: 1, liter: 1, ml: 0.001 };
+const BATCH_UNITS = { ...WEIGHT_TO_KG, kilo: 1, kilos: 1, kilogram: 1, kilograms: 1, t: 1000, ton: 1000, tons: 1000, tonne: 1000, tonnes: 1000, quintal: 100, quintals: 100 };
+const kgText = (v) => String(Math.round(v * 1000) / 1000);
+
+export function batchCheck(recipe) {
+  const text = String(recipe?.batch_size || "").toLowerCase().replace(/,/g, "");
+  let batch = null;
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/g)) {
+    if (BATCH_UNITS[m[2]] !== undefined) { batch = Number(m[1]) * BATCH_UNITS[m[2]]; break; }
+  }
+  let total = 0, weighed = false;
+  for (const ing of recipe?.ingredients || []) {
+    const qty = Number(String(ing.quantity ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0]);
+    const unit = String(ing.unit || "").trim().toLowerCase();
+    if (ing.name?.trim() && Number.isFinite(qty) && WEIGHT_TO_KG[unit] !== undefined) { total += qty * WEIGHT_TO_KG[unit]; weighed = true; }
+  }
+  if (!batch || !weighed) return { checked: false, ok: true, message: "" };
+  total = Math.round(total * 1000) / 1000; // whole grams: no floating-point dust (0.1 + 0.2)
+  const diff = Math.round((total - batch) * 1000) / 1000;
+  const ok = diff === 0;
+  return {
+    checked: true, ok, batch, total, diff,
+    message: ok
+      ? `Ingredients total ${kgText(total)} kg: exactly the ${kgText(batch)} kg batch.`
+      : diff < 0
+        ? `Ingredients total ${kgText(total)} kg, ${kgText(-diff)} kg less than the ${kgText(batch)} kg batch. The ingredients must add up to exactly ${kgText(batch)} kg: add ${kgText(-diff)} kg, or change the batch size.`
+        : `Ingredients total ${kgText(total)} kg, ${kgText(diff)} kg more than the ${kgText(batch)} kg batch. The ingredients must add up to exactly ${kgText(batch)} kg: remove ${kgText(diff)} kg, or change the batch size.`,
+  };
+}
 const blankStep = () => ({ title: "", details: "", temperature: "", duration: "" });
 
 // "82" + "kg" -> grams (mass) or millilitres (volume); null when it can't be compared.
@@ -1291,12 +1335,15 @@ function amountOf(i) {
 // manages recipes in its portal; the server refuses admin changes too).
 export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
+  const [reloadKey, setReloadKey] = useState(0); // new value = the recipe is loaded again
   const [recipe, setRecipe] = useState(null);
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState({ batch: false, ingredients: false, steps: false });
   // Costing, standards, attachments, earlier steps (from the server)
   const [extras, setExtras] = useState(null);
+  // A save refused because the recipe doesn't meet its recipe standards: { message, failures }
+  const [stdError, setStdError] = useState(null);
   const reloadExtras = () => getRecipe(product.id).then((d) => setExtras(d)).catch(() => {});
 
   useEffect(() => {
@@ -1319,7 +1366,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
     return () => {
       alive = false;
     };
-  }, [product.id, onNotice]);
+  }, [product.id, onNotice, reloadKey]);
 
   const dirty = useMemo(() => recipe && JSON.stringify(recipe) !== saved, [recipe, saved]);
   if (!recipe) return <p className="muted">Loading recipe…</p>;
@@ -1335,6 +1382,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   };
 
   const save = async () => {
+    if (!batchCheck(recipe).ok) return; // the bar below says why
     setBusy(true);
     try {
       const clean = {
@@ -1347,6 +1395,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         notes: recipe.notes.trim() || null,
       };
       const res = await saveRecipe(product.id, clean);
+      setStdError(null);
       if (res) setExtras(res);
       const next = { ...recipe, ingredients: clean.ingredients.map((i) => ({ ...i, cost_per_kg: i.cost_per_kg ?? "" })), steps: [] };
       setRecipe(next);
@@ -1355,11 +1404,19 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
       setHistoryKey((k) => k + 1);
       onNotice({
         tone: "ok",
-        text: `Recipe saved: ${res?.recipe?.ingredients?.length || 0} ingredients, ${res?.recipe?.steps?.length || 0} steps. The next report refresh uses it.`,
+        text: res?.version_updated_in_place
+          ? `Recipe saved as version ${res.version}: its survey has no responses yet, so it keeps testing version ${res.version} (no new version).`
+          : `Recipe saved: ${res?.recipe?.ingredients?.length || 0} ingredients, ${res?.recipe?.steps?.length || 0} steps. The next report refresh uses it.`,
       });
       onSaved?.();
     } catch (err) {
-      onNotice({ tone: "error", text: catalogError(err, "The recipe couldn't be saved.") });
+      const d = err?.response?.data?.detail;
+      if (err?.response?.status === 409 && d?.code === "recipe_standards_not_met") {
+        // Not saved: the box above the save bar lists every standard the recipe doesn't meet
+        setStdError({ message: d.message, failures: d.failed_standards || [] });
+      } else {
+        onNotice({ tone: "error", text: catalogError(err, "The recipe couldn't be saved.") });
+      }
     } finally {
       setBusy(false);
     }
@@ -1367,6 +1424,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const discard = () => {
     setRecipe(JSON.parse(saved));
     setEditing({ batch: false, ingredients: false, steps: false });
+    setStdError(null);
   };
 
   // Share of the batch, when every quantity is a weight (or every one a volume).
@@ -1375,9 +1433,26 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
   const comparable = amounts.length > 0 && amounts.every(Boolean) && kinds.size === 1;
   const total = comparable ? amounts.reduce((n, a) => n + a.value, 0) : 0;
   const totalLabel = comparable ? (kinds.has("mass") ? (total >= 1000 ? `${+(total / 1000).toFixed(2)} kg` : `${+total.toFixed(1)} g`) : (total >= 1000 ? `${+(total / 1000).toFixed(2)} l` : `${+total.toFixed(1)} ml`)) : null;
+  // Costing from the server (same numbers as before): matched to each ingredient by name
+  const costing = extras?.costing;
+  const costRows = costing?.ingredients || [];
+  const hasCosting = costRows.length > 0;
+  const costByName = new Map(costRows.map((r) => [String(r.name || "").trim().toLowerCase(), r]));
+  const costOf = (ing) => costByName.get(String(ing.name || "").trim().toLowerCase()) || null;
 
   return (
     <div className="recipe">
+      {extras && !readOnly && (
+        extras.standards_count > 0 ? (
+          <p className="recipe-std-note is-ok">
+            <strong>{extras.standards_count} recipe standard{extras.standards_count === 1 ? "" : "s"}</strong> {extras.standards_count === 1 ? "applies" : "apply"} to this product: the recipe is saved only when it meets {extras.standards_count === 1 ? "it" : "all of them"}.
+          </p>
+        ) : (
+          <p className="recipe-std-note is-warn">
+            <strong>No recipe standards yet.</strong> Set them first on the <strong>Recipe standards</strong> tab: the recipe is then saved only when it meets them.
+          </p>
+        )
+      )}
       <div className="tab-intro">
         <strong>Recipe</strong>
         <p className="muted">
@@ -1417,13 +1492,20 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         <header className="recipe-card-head">
           <div>
             <h3>Ingredients for one batch <span className="count-badge">{recipe.ingredients.filter((i) => i.name.trim()).length}</span></h3>
-            <p className="muted">What goes into the product, how much, and why it's there.</p>
+            <p className="muted">What goes into the product, how much, why it's there, and its cost. Cost in Use = Cost per KG × share of the batch (its cost in 1 kg of product).</p>
           </div>
-          {!editing.ingredients && !readOnly && (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("ingredients")}>
-              {recipe.ingredients.length ? "Edit ingredients" : "Add ingredients"}
-            </button>
-          )}
+          <div className="recipe-card-actions">
+            {!editing.ingredients && costing?.ingredients?.length > 0 && (
+              <span className={`status-chip ${costing.complete ? "is-ok" : "is-warn"}`}>
+                {costing.complete ? "Costing complete" : `${costing.missing_costs.length} without a cost`}
+              </span>
+            )}
+            {!editing.ingredients && !readOnly && (
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("ingredients")}>
+                {recipe.ingredients.length ? "Edit ingredients" : "Add ingredients"}
+              </button>
+            )}
+          </div>
         </header>
 
         {editing.ingredients ? (
@@ -1459,12 +1541,15 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
                   <th scope="col">Ingredient</th>
                   <th scope="col" className="num-cell">Quantity</th>
                   {comparable && <th scope="col">Share of batch</th>}
+                  {hasCosting && <th scope="col" className="num-cell">Cost per KG</th>}
+                  {hasCosting && <th scope="col" className="num-cell">Cost in Use</th>}
                   <th scope="col">Purpose</th>
                 </tr>
               </thead>
               <tbody>
                 {recipe.ingredients.map((ing, i) => {
                   const share = comparable && total ? (100 * amounts[i].value) / total : null;
+                  const cost = costOf(ing, i);
                   return (
                     <tr key={i}>
                       <td><strong>{ing.name}</strong></td>
@@ -1477,17 +1562,21 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
                           </span>
                         </td>
                       )}
+                      {hasCosting && <td className="num-cell">{money(cost?.cost_per_kg)}</td>}
+                      {hasCosting && <td className="num-cell">{money(cost?.cost_in_use)}</td>}
                       <td className="muted">{ing.notes || "—"}</td>
                     </tr>
                   );
                 })}
               </tbody>
-              {comparable && (
+              {(comparable || hasCosting) && (
                 <tfoot>
                   <tr>
                     <td><strong>Total</strong></td>
-                    <td className="num-cell"><strong>{totalLabel}</strong></td>
-                    <td><strong>100%</strong></td>
+                    <td className="num-cell"><strong>{comparable ? totalLabel : ""}</strong></td>
+                    {comparable && <td><strong>100%</strong></td>}
+                    {hasCosting && <td className="num-cell muted">{costing.batch_cost != null ? `Batch: ${money(costing.batch_cost)}` : ""}</td>}
+                    {hasCosting && <td className="num-cell" title="Recipe cost per kg"><strong>{money(costing.cost_per_kg)}</strong><span className="muted cost-unit"> /kg</span></td>}
                     <td />
                   </tr>
                 </tfoot>
@@ -1501,7 +1590,6 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
 
       {/* ---- production process ---- */}
       {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
-      <CostingCard costing={extras?.costing} />
       {readOnly && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
       <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />
       <LegacyStepsCard legacy={extras?.legacy_steps} />
@@ -1522,19 +1610,45 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         )}
       </section>
 
+      {batchCheck(recipe).checked && (
+        <p className={`batch-check ${batchCheck(recipe).ok ? "is-ok" : "is-over"}`} role={batchCheck(recipe).ok ? "status" : "alert"}>
+          {batchCheck(recipe).message}
+        </p>
+      )}
+
+      {stdError && dirty && !readOnly && (
+        <div className="round-blocked recipe-std-error" role="alert">
+          <p><strong>{stdError.message}</strong></p>
+          <ul className="recipe-std-fails">
+            {stdError.failures.map((f) => (
+              <li key={f.rule_id}><strong>{f.name}</strong>{f.reason ? `: ${f.reason}` : ""}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {dirty && !readOnly && (
         <div className="recipe-savebar" role="status">
-          <span>You have unsaved changes to the recipe.</span>
+          <span>{!batchCheck(recipe).ok ? "Fix the batch weight to save: the ingredients must add up to exactly the batch size."
+            : stdError ? "Not saved: change the recipe so it meets the standards listed above, then save again."
+            : "You have unsaved changes to the recipe."}</span>
           <span className="recipe-savebar-actions">
             <button type="button" className="btn btn-secondary btn-sm" onClick={discard} disabled={busy}>Discard</button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={save} disabled={busy}>
+            <button type="button" className="btn btn-primary btn-sm" onClick={save} disabled={busy || !batchCheck(recipe).ok}>
               {busy ? "Saving…" : "Save recipe"}
             </button>
           </span>
         </div>
       )}
 
-      <RecipeHistory key={historyKey} productId={product.id} />
+      <RecipeHistory key={historyKey} productId={product.id} canDelete={!readOnly}
+        onDeleted={(text) => {
+          setReloadKey((k) => k + 1);
+          setHistoryKey((k) => k + 1);
+          onNotice({ tone: "ok", text });
+          onSaved?.();
+        }}
+        onError={(text) => onNotice({ tone: "error", text })} />
     </div>
   );
 }
@@ -1571,7 +1685,7 @@ function compareRecipes(a, b) {
   return { ingredients, steps, batch: { a: ra.batch_size || "—", b: rb.batch_size || "—" } };
 }
 
-function RecipeHistory({ productId }) {
+function RecipeHistory({ productId, canDelete = false, onDeleted, onError }) {
   const [state, setState] = useState({ loading: true, error: "", versions: [] });
   const [open, setOpen] = useState(false);
   const [pair, setPair] = useState(null); // [older, newer] version numbers being compared
@@ -1594,6 +1708,26 @@ function RecipeHistory({ productId }) {
     setPair([previous ? previous.version : v.version, v.version]);
   };
   const cmp = pair ? compareRecipes(byNumber(pair[0]), byNumber(pair[1])) : null;
+  // A version saved by mistake: the latest one, while no survey uses it.
+  const removeVersion = async (v) => {
+    const previous = versions.find((x) => x.version < v.version);
+    const ok = await confirmDialog({
+      title: `Delete recipe version ${v.version}?`,
+      message: previous
+        ? `No survey uses version ${v.version}. The recipe goes back to version ${previous.version}, and the next change becomes version ${v.version} again.`
+        : `No survey uses version ${v.version}, the only version. The product will have no recipe until you add one.`,
+      confirmLabel: `Delete v${v.version}`,
+      cancelLabel: "Keep it",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteRecipeVersion(productId, v.version);
+      onDeleted?.(previous ? `Version ${v.version} was deleted. The recipe is back to version ${previous.version}.` : `Version ${v.version} was deleted.`);
+    } catch (err) {
+      onError?.(catalogError(err, "The version couldn't be deleted."));
+    }
+  };
 
   return (
     <section className="recipe-history" aria-labelledby={`history-${productId}`}>
@@ -1626,17 +1760,26 @@ function RecipeHistory({ productId }) {
                   {v.version !== versions[versions.length - 1].version && (
                     <button type="button" className="link-btn" onClick={() => startCompare(v)}>Compare with previous</button>
                   )}
+                  {canDelete && v.version === versions[0].version && !v.rounds?.length && (
+                    <button type="button" className="link-btn danger" onClick={() => removeVersion(v)}
+                      title="Saved by mistake? The latest version can be deleted while no survey uses it.">Delete this version</button>
+                  )}
                 </div>
                 {v.changes?.length > 0 && (
                   <ul className="version-changes">
                     {v.changes.map((c) => <li key={c}>{c}</li>)}
                   </ul>
                 )}
-                {v.rounds?.length > 0 && (
+                {(v.rounds?.length > 0 || v.project) && (
                   <div className="version-rounds">
-                    <span className="muted">Tested in</span>
+                    {v.project && (
+                      <span className="version-project" title={`Project of version ${v.version}: ${v.project.project_name}`}>
+                        {v.project.project_code}
+                      </span>
+                    )}
+                    {v.rounds?.length > 0 && <span className="muted">Tested in</span>}
                     {v.rounds.map((r) => (
-                      <span key={r.number} className={`round-chip${r.status === "live" ? " is-live" : ""}`}>Round {r.number}</span>
+                      <span key={r.number} className={`round-chip${r.status === "live" ? " is-live" : ""}`}>Survey {r.number}</span>
                     ))}
                   </div>
                 )}
@@ -1648,13 +1791,13 @@ function RecipeHistory({ productId }) {
             <div className="version-compare" role="region" aria-label="Compare recipe versions">
               <div className="version-compare-head">
                 <strong>Compare</strong>
-                <select className="select select-sm" value={pair[0]} onChange={(e) => setPair([Number(e.target.value), pair[1]])} aria-label="Older version">
+                <Select className="select select-sm" value={pair[0]} onChange={(e) => setPair([Number(e.target.value), pair[1]])} aria-label="Older version">
                   {versions.map((v) => <option key={v.version} value={v.version}>v{v.version}</option>)}
-                </select>
+                </Select>
                 <span aria-hidden="true">→</span>
-                <select className="select select-sm" value={pair[1]} onChange={(e) => setPair([pair[0], Number(e.target.value)])} aria-label="Newer version">
+                <Select className="select select-sm" value={pair[1]} onChange={(e) => setPair([pair[0], Number(e.target.value)])} aria-label="Newer version">
                   {versions.map((v) => <option key={v.version} value={v.version}>v{v.version}</option>)}
-                </select>
+                </Select>
                 <button type="button" className="link-btn" onClick={() => setPair(null)}>Close</button>
               </div>
               <div className="table-wrap">
@@ -1719,7 +1862,7 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
       const d = await getProductRounds(product.id);
       setState({ loading: false, error: "", rounds: d?.rounds || [] });
     } catch (err) {
-      setState({ loading: false, error: catalogError(err, "The rounds couldn't be loaded."), rounds: [] });
+      setState({ loading: false, error: catalogError(err, "The surveys couldn't be loaded."), rounds: [] });
     }
   }, [product.id]);
   useEffect(() => {
@@ -1728,9 +1871,9 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
 
   const end = async (r) => {
     const ok = await confirmDialog({
-      title: `End Round ${r.number} now?`,
-      message: `${r.done} of ${r.target} consumers have been surveyed. New surveys of ${product.name} will still be filed under this round until the Super Admin starts the next one.`,
-      confirmLabel: `End Round ${r.number}`,
+      title: `End Survey ${r.number} now?`,
+      message: `${r.done} of ${r.target} consumers have been surveyed. New responses for ${product.name} will still be filed under this survey until the Super Admin starts the next one.`,
+      confirmLabel: `End Survey ${r.number}`,
       cancelLabel: "Keep collecting",
       danger: true,
     });
@@ -1738,37 +1881,59 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
     setBusy(true);
     try {
       await endProductRound(product.id, r.number);
-      notify("ok", `Round ${r.number} of ${product.name} has ended.`);
+      notify("ok", `Survey ${r.number} of ${product.name} has ended.`);
       await load();
       onChanged?.();
     } catch (err) {
-      notify("error", catalogError(err, "The round couldn't be ended."));
+      notify("error", catalogError(err, "The survey couldn't be ended."));
     } finally {
       setBusy(false);
     }
   };
 
-  if (state.loading) return <p className="muted">Loading rounds…</p>;
+  const remove = async (r) => {
+    const ok = await confirmDialog({
+      title: `Delete Survey ${r.number}?`,
+      message: `Survey ${r.number} of ${product.name} has no responses yet. It is removed with its action plans and team assignments; the recipe versions stay.`,
+      confirmLabel: `Delete Survey ${r.number}`,
+      cancelLabel: "Keep it",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await deleteProductRound(product.id, r.number);
+      notify("ok", `Survey ${r.number} of ${product.name} was deleted.`);
+      await load();
+      onChanged?.();
+    } catch (err) {
+      notify("error", catalogError(err, "The survey couldn't be deleted."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.loading) return <p className="muted">Loading surveys…</p>;
   if (state.error) return <p className="form-error" role="alert">{state.error}</p>;
   const rounds = [...state.rounds].reverse();
   return (
     <div className="rounds-tab">
       <header className="tab-head">
         <div>
-          <h3>Survey rounds</h3>
+          <h3>Surveys</h3>
           <p className="muted">
-            Rounds are started by the organization in its portal. Surveys from the field app go into the live round automatically.
+            Surveys are started by the organization in its portal. Responses from the field app go into the live survey automatically.
           </p>
         </div>
       </header>
       {rounds.length === 0 ? (
-        <p className="muted">No rounds yet. The first survey of {product.name} opens Round 1.</p>
+        <p className="muted">No surveys yet. The first response for {product.name} opens Survey 1.</p>
       ) : (
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th scope="col">Round</th>
+                <th scope="col">Survey</th>
                 <th scope="col">Status</th>
                 <th scope="col">Recipe</th>
                 <th scope="col">Progress</th>
@@ -1780,7 +1945,7 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
             <tbody>
               {rounds.map((r) => (
                 <tr key={r.number}>
-                  <td><strong>Round {r.number}</strong><div className="muted small">{shortDate(r.started_at)}{r.closed_at ? ` – ${shortDate(r.closed_at)}` : " – now"}</div></td>
+                  <td><strong>Survey {r.number}</strong><div className="muted small">{shortDate(r.started_at)}{r.closed_at ? ` – ${shortDate(r.closed_at)}` : " – now"}</div></td>
                   <td>
                     <span className={`round-chip${r.status === "live" ? " is-live" : ""}`}>
                       {r.status === "live" ? "Collecting" : r.closed_reason === "ended" ? "Ended early" : "Completed"}
@@ -1807,7 +1972,11 @@ function RoundsTab({ product, notify, onChanged, onOpenRound }) {
                       <button type="button" className="btn btn-secondary btn-sm" onClick={() => onOpenRound(product.id, r.number)}>Open report</button>
                     )}
                     {r.status === "live" && (
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => end(r)} disabled={busy}>End round</button>
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => end(r)} disabled={busy}>End survey</button>
+                    )}
+                    {r.number === state.rounds[state.rounds.length - 1]?.number && !r.done && (
+                      <button type="button" className="btn btn-secondary btn-sm acct-danger" onClick={() => remove(r)} disabled={busy}
+                        title="Started by mistake? A survey can be deleted while it has no responses.">Delete</button>
                     )}
                   </td>
                 </tr>

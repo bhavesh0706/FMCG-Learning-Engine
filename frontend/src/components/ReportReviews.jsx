@@ -61,14 +61,14 @@ export default function ReportReviews({ onCounts }) {
       setState({ loading: false, error: "", reports: res.reports || [], counts: res.counts || {} });
       onCounts?.(res.counts || {});
     } catch (err) {
-      setState((s) => ({ ...s, loading: false, error: errorText(err, "Report reviews couldn't be loaded.") }));
+      setState((s) => ({ ...s, loading: false, error: errorText(err, "Report approvals couldn't be loaded.") }));
     }
   }, [filter, onCounts]);
   useEffect(() => { load(); }, [load]);
   return (
-    <section className="pc" aria-label="Report reviews">
+    <section className="pc" aria-label="Report approvals">
       <p className="muted pc-intro">Survey persons submit each survey's report for review. Approve to forward it to the Super Admin, or return it with a note.</p>
-      <div className="segmented page-tabs" role="tablist" aria-label="Report review filter">
+      <div className="segmented page-tabs" role="tablist" aria-label="Report approvals filter">
         {FILTERS.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={filter === key} className={filter === key ? "is-on" : ""} onClick={() => setFilter(key)}>
             {label}{key === "pending_admin" && state.counts.pending_admin != null && <span className="seg-count"> {state.counts.pending_admin}</span>}

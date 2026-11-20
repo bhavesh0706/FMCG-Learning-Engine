@@ -187,7 +187,7 @@ def set_product_users(db: Session, product_id: int, user_ids) -> list:
     An existing open product with nobody assigned is open to everyone again."""
     r = current_round_of(db, product_id)
     if r is None:
-        raise AssignmentError("No round of this product is live. The Super Admin starts rounds; assign people once it has started.")
+        raise AssignmentError("No survey of this product is live. The Super Admin starts surveys; assign people once it has started.")
     wanted = _assignable_people(db, user_ids)
     current = set(assignees_for_product(db, product_id))
     for uid in current - wanted:
@@ -204,7 +204,7 @@ def set_user_products(db: Session, user_id: int, product_ids) -> list:
     rounds = current_rounds(db)
     wanted = {int(p) for p in product_ids}
     if wanted - set(rounds):
-        raise AssignmentError("Some products have no live round. The Super Admin starts rounds; assign them once started.")
+        raise AssignmentError("Some products have no live survey. The Super Admin starts surveys; assign them once started.")
     current = set(assignments_for_user(db, user_id))
     for pid in current - wanted:
         db.query(ProductAssignment).filter_by(round_id=rounds[pid].id, user_id=user_id).delete(synchronize_session=False)

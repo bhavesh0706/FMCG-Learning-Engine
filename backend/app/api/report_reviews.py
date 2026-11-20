@@ -32,7 +32,7 @@ from app.database.models import (Category, FeedbackRecord, Product, ReportReview
                                  SurveyResponse, User)
 from app.services import audit
 
-router = APIRouter(tags=["Report reviews"])
+router = APIRouter(tags=["Report approvals"])
 
 LABELS = {
     "generated": "Generated",
@@ -87,7 +87,7 @@ def _row(db: Session, r: SurveyResponse, products: dict, cats: dict, people: dic
         "recipe_version": r.recipe_version, "executive_name": r.executive_name,
         "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
         "customer": person.name if person else None,
-        "city": person.location if person else None, "country": person.country if person else None,
+        "city": (person.city or person.location) if person else None, "country": person.country if person else None,
         "respondent_type": person.respondent_type if person else None, "occupation": person.occupation if person else None,
         "sec_class": person.sec_class if person else None, "audience": r.audience,
         "feedback_id": rec.id if rec else None,

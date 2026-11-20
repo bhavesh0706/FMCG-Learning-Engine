@@ -79,6 +79,10 @@ def recipe_extras(db: Session, product: Product) -> dict:
         "attachments": [_attachment_out(a) for a in files],
         "legacy_steps": legacy,  # steps of an earlier version, shown read-only
         "latest_version": _latest_version(db, product.id),  # (not "version": a save returns its own)
+        # Active standards that apply to this product (its own, its category's, all products'):
+        # the recipe must meet every one to be saved. Known before the first recipe too.
+        "standards_count": sum(1 for r in rules if r.applies_to_all or r.product_id == product.id
+                               or (r.category_id is not None and r.category_id == product.category_id)),
     }
 
 
@@ -141,7 +145,7 @@ def _standard_out(r: RecipeStandard, cats: dict, products: Optional[dict] = None
     return {"id": r.id, "name": r.name, "kind": r.kind, "ingredient": r.ingredient, "min_value": r.min_value,
             "max_value": r.max_value, "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
             "category_id": r.category_id, "category_name": cats.get(r.category_id), "applies_to_all": bool(r.applies_to_all),
-            "scope": scope, "scope_label": label, "is_active": bool(r.is_active), "created_by": r.created_by}
+            "scope": scope, "scope_label": label, "is_active": bool(r.is_active), "created_by": r.created_by_name}
 
 
 def _check_standard(body: StandardIn, db: Session) -> None:
@@ -182,10 +186,24 @@ def _fields(body: StandardIn) -> dict:
     return d
 
 
+def _standards_lock(db: Session, *scopes) -> None:
+    """A standard can't be added, changed or removed while a product it applies to is being surveyed."""
+    from app.services.rounds import live_survey_lock
+
+    for s in scopes:
+        if s is None:
+            continue
+        locked = live_survey_lock(db, [getattr(s, "product_id", None)], getattr(s, "category_id", None),
+                                  everything=bool(getattr(s, "applies_to_all", False)))
+        if locked:
+            raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
+
+
 @router.post("/recipe-standards", status_code=201)
 def add_standard(body: StandardIn, request: Request, db: Session = Depends(get_db)):
     _check_standard(body, db)
-    r = RecipeStandard(**_fields(body), is_active=1 if body.is_active else 0, created_by=account(request).get("name"))
+    _standards_lock(db, body)
+    r = RecipeStandard(**_fields(body), is_active=1 if body.is_active else 0, created_by_name=account(request).get("name"))
     db.add(r)
     db.commit()
     audit.note(request, summary=f"Added recipe standard “{r.name}”")
@@ -198,6 +216,7 @@ def change_standard(standard_id: int, body: StandardIn, request: Request, db: Se
     if r is None:
         raise HTTPException(status_code=404, detail="Rule not found.")
     _check_standard(body, db)
+    _standards_lock(db, r, body)  # neither the rule's current products nor its new ones may be collecting
     for k, v in _fields(body).items():
         setattr(r, k, v)
     r.is_active = 1 if body.is_active else 0
@@ -211,6 +230,7 @@ def remove_standard(standard_id: int, request: Request, db: Session = Depends(ge
     r = db.get(RecipeStandard, standard_id)
     if r is None:
         raise HTTPException(status_code=404, detail="Rule not found.")
+    _standards_lock(db, r)
     db.delete(r)
     db.commit()
     audit.note(request, summary=f"Removed recipe standard “{r.name}”")
@@ -233,6 +253,11 @@ async def upload_attachment(product_id: int, request: Request, file: UploadFile 
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found.")
+    from app.services.rounds import live_survey_lock
+
+    locked = live_survey_lock(db, [product.id])
+    if locked:
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
     name = Path(file.filename or "file").name[:200]
     ext = Path(name).suffix.lower()
     if ext not in ALLOWED:
@@ -275,6 +300,11 @@ def download_attachment(attachment_id: int, request: Request, db: Session = Depe
 @router.delete("/recipe-attachments/{attachment_id}")
 def delete_attachment(attachment_id: int, request: Request, db: Session = Depends(get_db)):
     a = _attachment_or_404(db, request, attachment_id)
+    from app.services.rounds import live_survey_lock
+
+    locked = live_survey_lock(db, [a.product_id])
+    if locked:
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
     path = get_storage().resolve(a.stored_path)  # only ever inside the storage folders
     db.delete(a)
     db.commit()

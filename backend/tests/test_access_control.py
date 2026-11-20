@@ -106,7 +106,11 @@ def test_feedback_and_recording_only_for_owner_and_admin(client, db, alice, bob,
     assert client.get(f"/feedback/{record.id}", headers=auth(bob)).status_code == 404
     assert client.get(f"/feedback/{record.id}/video", headers=auth(bob)).status_code == 404
     assert client.get(f"/feedback/{record.id}", headers=auth(alice)).status_code == 200
-    assert client.get(f"/feedback/{record.id}/video", headers=auth(alice)).status_code == 200
+    # Recordings are encrypted and play only with the product passkey (test_recording_security.py):
+    # the survey person who recorded it can't get it, nor can an Admin without the passkey flow.
+    played = client.get(f"/feedback/{record.id}/video", headers=auth(alice))
+    assert played.status_code == 403 and played.json()["detail"]["code"] == "recording_protected"
+    assert client.get(f"/feedback/{record.id}/video", headers=auth(admin)).status_code == 403
     assert client.get(f"/feedback/{record.id}", headers=auth(admin)).status_code == 200
 
 

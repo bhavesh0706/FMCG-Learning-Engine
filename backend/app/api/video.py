@@ -565,6 +565,14 @@ def save_feedback_record(
 
         next_feedback_id = get_next_feedback_id(db)
 
+        # Encrypted at rest: the stored recording becomes FMCGREC1 with its own data key
+        # (wrapped with the server's key) and the plaintext copy is deleted. Only an Admin
+        # with the product passkey can play it (services/recording_access.py).
+        media_key_id = media_wrapped_key = None
+        if get_storage().key_for(video_path) is not None:  # only the server's own copies, never another file
+            media_key_id, media_wrapped_key = seal_at_rest(db, Path(video_path))
+            video_path = Path(str(video_path) + ".enc")
+
         record = FeedbackRecord(
 
             id=next_feedback_id,
@@ -573,8 +581,11 @@ def save_feedback_record(
                 original_filename
             ),
 
-            # A storage key ("videos/123_x.mp4"), valid on every computer
+            # A storage key ("videos/123_x.mp4.enc"), valid on every computer
             video_path=get_storage().to_stored(video_path),
+            media_encrypted=1 if media_wrapped_key else 0,
+            media_key_id=media_key_id,
+            media_wrapped_key=media_wrapped_key,
 
             duration_seconds=(
                 float(duration_seconds)
@@ -667,11 +678,56 @@ def save_feedback_record(
 # UPLOAD VIDEO
 # ============================================================
 
+def seal_at_rest(db: Session, plain: Path) -> tuple:
+    """Encrypts a stored plaintext recording into <name>.enc and deletes the plaintext.
+    Only for files inside the storage folders (videos/, audio/, queue/)."""
+    from app.services.recording_crypto import encrypt_file
+
+    if get_storage().key_for(plain) is None:
+        raise ValueError(f"{plain} is outside the storage folders: not encrypted (and never deleted).")
+
+    target = Path(str(plain) + ".enc")
+    key_id, wrapped = encrypt_file(db, plain, target)
+    plain.unlink(missing_ok=True)
+    return key_id, wrapped
+
+
 @router.post("/upload")
 async def upload_video(
     request: Request,
     file: UploadFile = File(...),
     response_id: int | None = Form(None),
+    key_id: int | None = Form(None),
+    wrapped_key: str | None = Form(None),
+):
+    """A recording to analyze now. An encrypted one (from the phone / browser) is decrypted
+    into a private temp file for the analysis only; the stored copy is encrypted again."""
+    # Called directly (analysis worker, tests): unset Form(...) defaults count as "not given".
+    if not isinstance(wrapped_key, str) or not wrapped_key or not isinstance(key_id, int):
+        return await _upload_video(request, file, response_id)
+    from app.services.recording_crypto import RecordingCryptoError, decrypt_to_temp, unwrap_key
+
+    sealed = save_upload(file, get_storage().area_dir("queue"), safe_name(file.filename) + ".enc")
+    keys_db = SessionLocal()
+    try:
+        plain = decrypt_to_temp(sealed, unwrap_key(keys_db, key_id, wrapped_key), suffix=Path(file.filename or "").suffix)
+    except (RecordingCryptoError, TypeError):
+        raise HTTPException(status_code=422, detail="The encrypted recording can't be opened with this server's key.")
+    finally:
+        keys_db.close()
+        sealed.unlink(missing_ok=True)
+    handle = open(plain, "rb")
+    try:
+        return await _upload_video(request, UploadFile(file=handle, filename=file.filename), response_id)
+    finally:
+        handle.close()
+        plain.unlink(missing_ok=True)
+
+
+async def _upload_video(
+    request: Request,
+    file: UploadFile,
+    response_id: int | None = None,
 ):
 
     total_start = time.time()
@@ -794,6 +850,18 @@ async def upload_video(
             # too long recordings were kept before, so they still are.)
             if ai_error.code == "unreadable":
                 video_path.unlink(missing_ok=True)
+            else:
+                # Kept (too short / too long), as before, but never as plaintext: encrypted, with its
+                # wrapped key beside it (only the server can open it).
+                try:
+                    keep_db = SessionLocal()
+                    try:
+                        kid, wrapped = seal_at_rest(keep_db, Path(video_path))
+                    finally:
+                        keep_db.close()
+                    Path(str(video_path) + ".enc.key").write_text(json.dumps({"key_id": kid, "wrapped_key": wrapped}))
+                except Exception:
+                    Path(video_path).unlink(missing_ok=True)
             print(f"AI service error ({ai_error.status_code}): {ai_error.detail}"[:500])
             raise HTTPException(status_code=ai_error.status_code, detail=ai_error.detail)
 

@@ -18,7 +18,7 @@ from conftest import _unique, answers_payload, assign, auth, make_user, open_rou
 from app.database.models import Category, FeedbackRecord, Product, SurveyQuestion, SurveyResponse
 
 RECIPE = {
-    "batch_size": "10 kg",
+    "batch_size": "10 trays",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],
     "steps": [{"title": "Mix"}, {"title": "Bake"}],
 }
@@ -217,7 +217,8 @@ def test_who_can_survey_never_hides_products_from_the_organization(client, db, o
     # The organization still reads and changes its questions and recipe.
     assert client.get(f"/products/{product.id}/questions", headers=auth(org)).status_code == 200
     assert client.post(f"/products/{product.id}/questions", headers=auth(org), json=QUESTION).status_code == 201
-    assert client.put(f"/products/{product.id}/recipe", headers=auth(org), json=RECIPE).status_code == 200
+    # ... but not its recipe while that survey is collecting feedback.
+    assert client.put(f"/products/{product.id}/recipe", headers=auth(org), json=RECIPE).status_code == 409
     # Survey persons who aren't assigned are still kept out.
     assert client.get(f"/products/{product.id}/questions", headers=auth(alice)).status_code == 403
 

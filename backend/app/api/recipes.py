@@ -81,24 +81,73 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    from app.services.rounds import live_survey_lock
+
+    locked = live_survey_lock(db, [product.id])
+    if locked:  # no recipe change (and no new version) while consumers test the current one
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
     recipe = body.model_dump()
     recipe["ingredients"] = [i for i in recipe["ingredients"] if i["name"]]
+    # Batch weight: the ingredients must add up to exactly the batch size
+    from app.services.recipe_tools import batch_check
+
+    check = batch_check(recipe)
+    if not check["ok"]:
+        raise HTTPException(status_code=400, detail=check["message"])
     recipe["steps"] = []  # no Steps in new versions; earlier versions keep theirs (read-only)
+    # Recipe standards: a recipe is saved only if it meets every standard that applies to the
+    # product (this product's, its category's, all products'). Clearing a recipe stays possible.
+    if recipe["ingredients"]:
+        from app.services.rounds import recipe_failures
+
+        failures = recipe_failures(db, product, recipe)
+        if failures:
+            n = len(failures)
+            raise HTTPException(status_code=409, detail={
+                "code": "recipe_standards_not_met",
+                "message": f"Recipe not saved: it doesn't meet {n} recipe standard{'s' if n != 1 else ''}. "
+                           "Change the recipe so every standard is met (or change the standard), then save.",
+                "failed_standards": failures})
     recipe["updated_at"] = datetime.utcnow().isoformat()
     old = product.recipe or None
     product.recipe = recipe if (recipe["ingredients"] or recipe.get("notes") or recipe.get("batch_size")) else None
     db.commit()
     who = account(request)
     version = save_version(db, product, old, product.recipe, who)
+    in_place = bool(getattr(version, "edited_in_place", False))
     if version is not None:
-        audit.note(request, details={"version": version.version, "changes": version.changes},
-                   summary=f"Changed the recipe of product #{product.id} ({product.name}) to version {version.version}")
+        audit.note(request, details={"version": version.version, "changes": version.changes, "updated_in_place": in_place},
+                   summary=(f"Updated version {version.version} of the recipe of product #{product.id} ({product.name}); "
+                            "no consumer had tasted it yet") if in_place else
+                           f"Changed the recipe of product #{product.id} ({product.name}) to version {version.version}")
         if who.get("role") == "client":
             notify_admins_of_client_change(db, product, version)
     from app.api.recipe_master import recipe_extras
 
     return {"product_id": product.id, "recipe": product.recipe, "version": version.version if version else None,
-            **recipe_extras(db, product)}
+            "version_updated_in_place": in_place, **recipe_extras(db, product)}
+
+
+@router.delete("/products/{product_id}/recipe/versions/{number}")
+def delete_recipe_version(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
+    """A recipe version saved by mistake: the latest one, while no survey uses it."""
+    from app.services.recipe_versions import VersionError, delete_latest_version
+
+    check_product_access(db, request, product_id)
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    from app.services.rounds import live_survey_lock
+
+    locked = live_survey_lock(db, [product.id])
+    if locked:
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
+    try:
+        current = delete_latest_version(db, product, number)
+    except VersionError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    audit.note(request, summary=f"Deleted recipe version {number} of product #{product.id} ({product.name})")
+    return {"deleted": number, "current_version": current.version if current else None, "recipe": product.recipe}
 
 
 @router.get("/products/{product_id}/recipe/versions")
@@ -124,5 +173,11 @@ def recipe_versions(product_id: int, request: Request, db: Session = Depends(get
         .all()
     ):
         used.setdefault(version, []).append({"number": number, "status": status})
+    # The project of each version (one project per product version, api/projects.py).
+    from app.database.models import Project
+
+    projects = {p.product_version: {"id": p.id, "project_code": p.project_code, "project_name": p.project_name}
+                for p in db.query(Project).filter(Project.product_id == product_id)}
     return {"product_id": product_id,
-            "versions": [{**version_out(v, role), "rounds": used.get(v.version, [])} for v in rows]}
+            "versions": [{**version_out(v, role), "rounds": used.get(v.version, []), "project": projects.get(v.version)}
+                         for v in rows]}
