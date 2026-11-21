@@ -104,6 +104,15 @@ class LocalStorage(Storage):
         except (ValueError, OSError):
             return False
 
+    @staticmethod
+    def _is_file(path: Path) -> bool:
+        """is_file() that never raises: a folder this process may not read (e.g. another user's
+        home on a CI runner) simply means "not here"."""
+        try:
+            return path.is_file()
+        except OSError:
+            return False
+
     def _safe(self, path: Path) -> Optional[Path]:
         return path if any(self._inside(path, r) for r in self._allowed()) else None
 
@@ -142,14 +151,15 @@ class LocalStorage(Storage):
         text = str(stored).strip()
         keyed = self.path_for(text)
         if keyed is not None:
-            return keyed if keyed.is_file() else None
+            return keyed if self._is_file(keyed) else None
         # Older rows: an absolute path from any computer (Windows or POSIX separators).
         normalised = text.replace("\\", "/")
         is_windows = bool(re.match(r"^[A-Za-z]:/", normalised)) or text.startswith("\\\\")
         name = (PureWindowsPath(text) if is_windows else PurePosixPath(normalised)).name
         direct = Path(text)
         if not is_windows or os.name == "nt":
-            if direct.is_absolute() and direct.is_file() and self._safe(direct):
+            # Only inside the storage folders, and checked before touching the disk.
+            if direct.is_absolute() and self._safe(direct) and self._is_file(direct):
                 return direct
         marker = normalised.lower().rfind("/uploads/")
         relative = normalised[marker + len("/uploads/"):] if marker >= 0 else ""
@@ -163,7 +173,7 @@ class LocalStorage(Storage):
             candidates += [self.areas["videos"] / name, self.areas["audio"] / name]
             candidates += [root / sub / name for root in self.legacy_roots for sub in ("videos", "audio", "")]
         for c in candidates:
-            if c.is_file() and self._safe(c):
+            if self._safe(c) and self._is_file(c):
                 return c
         return None
 

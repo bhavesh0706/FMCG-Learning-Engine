@@ -185,3 +185,19 @@ def test_the_conversion_tool_is_safe(client, db, alice, product, store, tmp_path
     assert any(r["id"] == str(found.id) and r["old_value"] == before[0] for r in rows)
     assert storage_keys.plan(db)["feedback_records"]["convert"] == [] or all(
         i != found.id for i, _, _ in storage_keys.plan(db)["feedback_records"]["convert"]), "running again changes nothing"
+
+
+def test_an_unreadable_old_path_is_skipped_not_an_error(store, monkeypatch):
+    """CI runners have /home/ubuntu but may not read it: the old path is looked up by name instead."""
+    from pathlib import Path
+
+    path = _put(store, "videos", "2_b.mp4")
+    real = Path.is_file
+
+    def is_file(self):
+        if str(self).startswith("/home/ubuntu"):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_file", is_file)
+    assert store.resolve("/home/ubuntu/app/uploads/videos/2_b.mp4") == path
