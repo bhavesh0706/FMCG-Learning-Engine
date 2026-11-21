@@ -391,6 +391,16 @@ class _RecipeTab extends StatelessWidget {
               // Costing (Cost per KG x Usage %), standards, attachments, earlier steps (read-only)
               RecipeExtrasView(productId: productId, canEdit: true),
               const SizedBox(height: 8),
+              if (str(recipe['process']).isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Panel(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Production process', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+                    const SizedBox(height: 4),
+                    Text(str(recipe['process']), style: TextStyle(color: AppColors.ink2, height: 1.45)),
+                  ]),
+                ),
+              ],
               if (str(recipe['notes']).isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Panel(
@@ -412,9 +422,11 @@ class _RecipeTab extends StatelessWidget {
 }
 
 /// Full-screen recipe editor; saving creates a new recipe version on the server.
-// ---------------------------------------------------------------- batch weight
-// The weighed ingredients must add up to exactly the batch size, to the gram
-// (the server checks the same: services/recipe_tools.batch_check).
+// ---------------------------------------------------------------- batch tolerance
+// The ingredients weigh at least the batch size and at most a little more: each 100 kg band has
+// its own % (the server checks the same: services/recipe_tools.batch_check).
+const _toleranceBands = [(100, 2.0), (200, 1.8), (300, 1.6), (400, 1.5), (500, 1.4), (600, 1.3), (700, 1.2), (800, 1.1), (900, 1.0), (1000, 0.9)];
+const _toleranceAbove = 0.8;
 const _weightToKg = {'kg': 1.0, 'kgs': 1.0, 'g': 0.001, 'gm': 0.001, 'gms': 0.001, 'gram': 0.001, 'grams': 0.001, 'mg': 0.000001,
   'l': 1.0, 'ltr': 1.0, 'litre': 1.0, 'liter': 1.0, 'ml': 0.001};
 const _batchUnits = {..._weightToKg, 'kilo': 1.0, 'kilos': 1.0, 'kilogram': 1.0, 'kilograms': 1.0, 't': 1000.0, 'ton': 1000.0,
@@ -446,17 +458,30 @@ String _kg(double v) => (v * 1000).round() % 1000 == 0 ? '${v.round()}' : '${(v 
   final size = batch;
   if (size == null || size <= 0 || !weighed) return (checked: false, ok: true, message: '');
   final grams = (total * 1000).round(); // whole grams: no floating-point dust (0.1 + 0.2)
-  final diff = (grams - (size * 1000).round()) / 1000;
   final kg = grams / 1000;
-  if (diff == 0) return (checked: true, ok: true, message: 'Ingredients total ${_kg(kg)} kg: exactly the ${_kg(size)} kg batch.');
+  (int, double)? band;
+  for (final b in _toleranceBands) {
+    if (size <= b.$1) {
+      band = b;
+      break;
+    }
+  }
+  final pct = band?.$2 ?? _toleranceAbove;
+  final allowed = (size * (1 + pct / 100) * 1000).round() / 1000;
+  final short = ((size - kg) * 1000).round() / 1000;
+  final over = ((kg - allowed) * 1000).round() / 1000;
+  final bandText = band != null ? 'batches up to ${band.$1} kg' : 'batches over ${_toleranceBands.last.$1} kg';
+  if (short <= 0 && over <= 0) {
+    return (checked: true, ok: true, message: 'Ingredients total ${_kg(kg)} kg: within the ${_kg(size)} kg batch (up to ${_kg(allowed)} kg allowed, +$pct%).');
+  }
   return (
     checked: true,
     ok: false,
-    message: diff < 0
-        ? 'Ingredients total ${_kg(kg)} kg, ${_kg(-diff)} kg less than the ${_kg(size)} kg batch. The ingredients must add up to '
-            'exactly ${_kg(size)} kg: add ${_kg(-diff)} kg, or change the batch size.'
-        : 'Ingredients total ${_kg(kg)} kg, ${_kg(diff)} kg more than the ${_kg(size)} kg batch. The ingredients must add up to '
-            'exactly ${_kg(size)} kg: remove ${_kg(diff)} kg, or change the batch size.',
+    message: short > 0
+        ? 'Ingredients total ${_kg(kg)} kg, ${_kg(short)} kg less than the ${_kg(size)} kg batch. '
+            'Add ${_kg(short)} kg (up to ${_kg(allowed)} kg is allowed), or change the batch size.'
+        : 'Ingredients total ${_kg(kg)} kg, more than the ${_kg(size)} kg batch allows: up to ${_kg(allowed)} kg '
+            '(+$pct% tolerance for $bandText). Reduce the quantities or change the batch size.',
   );
 }
 
@@ -473,6 +498,7 @@ class RecipeEditorPage extends StatefulWidget {
 class _RecipeEditorPageState extends State<RecipeEditorPage> {
   late final TextEditingController _batch = TextEditingController(text: str(widget.recipe['batch_size']));
   late final TextEditingController _notes = TextEditingController(text: str(widget.recipe['notes']));
+  late final TextEditingController _process = TextEditingController(text: str(widget.recipe['process']));
   final List<List<TextEditingController>> _ingredients = []; // name, quantity, unit, notes, cost per kg
   // Rows removed while editing: disposed when the editor closes (their fields may
   // still be on screen during the frame that removes them).
@@ -491,7 +517,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
 
   @override
   void dispose() {
-    for (final c in [_batch, _notes, ..._ingredients.expand((r) => r), ..._removed]) {
+    for (final c in [_batch, _notes, _process, ..._ingredients.expand((r) => r), ..._removed]) {
       c.dispose();
     }
     super.dispose();
@@ -513,6 +539,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     final body = <String, dynamic>{
       'batch_size': t(_batch),
       'notes': t(_notes),
+      'process': t(_process),
       'ingredients': [
         for (final r in _ingredients)
           if (r[0].text.trim().isNotEmpty)
@@ -594,6 +621,8 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               ]),
             ),
           TextButton.icon(onPressed: _addIngredient, icon: const Icon(Icons.add), label: const Text('Add ingredient')),
+          _section('Production process'),
+          _field(_process, 'Write the process step by step (optional; files can be attached too)', lines: 6),
           _section('Notes'),
           _field(_notes, 'Storage, shelf life, packaging (optional)', lines: 3),
           if (_error != null) Text(_error!, style: TextStyle(color: AppColors.neg)),

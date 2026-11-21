@@ -12713,3 +12713,5 @@ details.team-help > summary:hover {
 .org-passkey-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .org-passkey-head p { margin: 4px 0 0; max-width: 80ch; }
 .rec-passkey-note { margin: 0 0 14px; }
+.recipe-process { min-height: 140px; line-height: 1.55; }
+.recipe-process-text { white-space: pre-wrap; }

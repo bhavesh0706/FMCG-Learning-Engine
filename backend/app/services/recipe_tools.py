@@ -29,9 +29,30 @@ def _number(value) -> Optional[float]:
     return float(m.group()) if m else None
 
 
-# ---------------------------------------------------------------- batch weight
-# The weighed ingredients must add up to exactly the batch size (to the gram): a 100 kg
-# batch is 100 kg of ingredients, not 99.5 kg and not 100.1 kg.
+# ---------------------------------------------------------------- batch weight and tolerance
+# The weighed ingredients must weigh at least the batch size, and may weigh a little more, up
+# to a tolerance: each 100 kg band has its own %, a bigger batch a smaller % (but more kg).
+TOLERANCE_BANDS = [  # (batch up to kg, allowed % over the batch size)
+    (100, 2.0), (200, 1.8), (300, 1.6), (400, 1.5), (500, 1.4),
+    (600, 1.3), (700, 1.2), (800, 1.1), (900, 1.0), (1000, 0.9),
+]
+TOLERANCE_ABOVE = 0.8  # batches above 1000 kg
+
+
+def tolerance_pct(batch_kg: float) -> float:
+    for limit, pct in TOLERANCE_BANDS:
+        if batch_kg <= limit:
+            return pct
+    return TOLERANCE_ABOVE
+
+
+def _band_limit(batch_kg: float) -> str:
+    for limit, _ in TOLERANCE_BANDS:
+        if batch_kg <= limit:
+            return f"batches up to {limit} kg"
+    return f"batches over {TOLERANCE_BANDS[-1][0]} kg"
+
+
 _BATCH_UNITS = {"kg": 1.0, "kgs": 1.0, "kilo": 1.0, "kilos": 1.0, "kilogram": 1.0, "kilograms": 1.0,
                 "g": 0.001, "gm": 0.001, "gms": 0.001, "gram": 0.001, "grams": 0.001,
                 "t": 1000.0, "ton": 1000.0, "tons": 1000.0, "tonne": 1000.0, "tonnes": 1000.0,
@@ -49,7 +70,7 @@ def batch_weight_kg(batch_size) -> Optional[float]:
 
 
 def batch_check(recipe: Optional[dict]) -> dict:
-    """Do the weighed ingredients add up to exactly the batch size (to the gram)?"""
+    """Do the weighed ingredients fit the batch: at least the batch size, at most its tolerance over?"""
     recipe = recipe or {}
     batch = batch_weight_kg(recipe.get("batch_size"))
     grams = 0
@@ -64,18 +85,21 @@ def batch_check(recipe: Optional[dict]) -> dict:
     total = round(grams) / 1000  # whole grams: no floating-point dust (0.1 + 0.2)
     if batch is None or not weighed:
         return {"checked": False, "batch_kg": batch, "total_kg": total if weighed else None, "ok": True, "message": ""}
-    diff = round(total - batch, 3)
-    ok = diff == 0
+    pct = tolerance_pct(batch)
+    allowed = round(batch * (1 + pct / 100), 3)
+    short = round(max(0.0, batch - total), 3)
+    over = round(max(0.0, total - allowed), 3)
+    ok = short == 0 and over == 0
     if ok:
-        message = f"Ingredients total {total:g} kg: exactly the {batch:g} kg batch."
-    elif diff < 0:
-        message = (f"Ingredients total {total:g} kg, {-diff:g} kg less than the {batch:g} kg batch. "
-                   f"The ingredients must add up to exactly {batch:g} kg: add {-diff:g} kg, or change the batch size.")
+        message = f"Ingredients total {total:g} kg: within the {batch:g} kg batch (up to {allowed:g} kg allowed, +{pct:g}%)."
+    elif short:
+        message = (f"Ingredients total {total:g} kg, {short:g} kg less than the {batch:g} kg batch. "
+                   f"Add {short:g} kg (up to {allowed:g} kg is allowed), or change the batch size.")
     else:
-        message = (f"Ingredients total {total:g} kg, {diff:g} kg more than the {batch:g} kg batch. "
-                   f"The ingredients must add up to exactly {batch:g} kg: remove {diff:g} kg, or change the batch size.")
-    return {"checked": True, "batch_kg": batch, "total_kg": total, "difference_kg": diff,
-            "short_kg": max(0.0, -diff), "over_kg": max(0.0, diff), "ok": ok, "message": message}
+        message = (f"Ingredients total {total:g} kg, more than the {batch:g} kg batch allows: up to {allowed:g} kg "
+                   f"(+{pct:g}% tolerance for {_band_limit(batch)}). Reduce the quantities or change the batch size.")
+    return {"checked": True, "batch_kg": batch, "total_kg": total, "tolerance_pct": pct, "max_kg": allowed,
+            "short_kg": short, "over_kg": over, "ok": ok, "message": message}
 
 
 def costing(recipe: Optional[dict]) -> dict:

@@ -1250,8 +1250,11 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 
 const blankIngredient = () => ({ name: "", quantity: "", unit: "", cost_per_kg: "", notes: "" });
 
-/* Batch weight (the server checks the same: services/recipe_tools.batch_check).
-   The weighed ingredients must add up to exactly the batch size, to the gram. */
+/* Batch tolerance (the server checks the same: services/recipe_tools.batch_check).
+   The ingredients weigh at least the batch size and at most a little more: each 100 kg band
+   has its own %, a bigger batch a smaller % (but more kg). */
+const TOLERANCE_BANDS = [[100, 2.0], [200, 1.8], [300, 1.6], [400, 1.5], [500, 1.4], [600, 1.3], [700, 1.2], [800, 1.1], [900, 1.0], [1000, 0.9]];
+const TOLERANCE_ABOVE = 0.8;
 const WEIGHT_TO_KG = { kg: 1, kgs: 1, g: 0.001, gm: 0.001, gms: 0.001, gram: 0.001, grams: 0.001, mg: 0.000001, l: 1, ltr: 1, litre: 1, liter: 1, ml: 0.001 };
 const BATCH_UNITS = { ...WEIGHT_TO_KG, kilo: 1, kilos: 1, kilogram: 1, kilograms: 1, t: 1000, ton: 1000, tons: 1000, tonne: 1000, tonnes: 1000, quintal: 100, quintals: 100 };
 const kgText = (v) => String(Math.round(v * 1000) / 1000);
@@ -1270,15 +1273,20 @@ export function batchCheck(recipe) {
   }
   if (!batch || !weighed) return { checked: false, ok: true, message: "" };
   total = Math.round(total * 1000) / 1000; // whole grams: no floating-point dust (0.1 + 0.2)
-  const diff = Math.round((total - batch) * 1000) / 1000;
-  const ok = diff === 0;
+  const band = TOLERANCE_BANDS.find(([limit]) => batch <= limit);
+  const pct = band ? band[1] : TOLERANCE_ABOVE;
+  const allowed = Math.round(batch * (1 + pct / 100) * 1000) / 1000;
+  const short = Math.round(Math.max(0, batch - total) * 1000) / 1000;
+  const over = Math.round(Math.max(0, total - allowed) * 1000) / 1000;
+  const ok = !short && !over;
+  const bandText = band ? `batches up to ${band[0]} kg` : `batches over ${TOLERANCE_BANDS[TOLERANCE_BANDS.length - 1][0]} kg`;
   return {
-    checked: true, ok, batch, total, diff,
+    checked: true, ok, pct, batch, total, allowed,
     message: ok
-      ? `Ingredients total ${kgText(total)} kg: exactly the ${kgText(batch)} kg batch.`
-      : diff < 0
-        ? `Ingredients total ${kgText(total)} kg, ${kgText(-diff)} kg less than the ${kgText(batch)} kg batch. The ingredients must add up to exactly ${kgText(batch)} kg: add ${kgText(-diff)} kg, or change the batch size.`
-        : `Ingredients total ${kgText(total)} kg, ${kgText(diff)} kg more than the ${kgText(batch)} kg batch. The ingredients must add up to exactly ${kgText(batch)} kg: remove ${kgText(diff)} kg, or change the batch size.`,
+      ? `Ingredients total ${kgText(total)} kg: within the ${kgText(batch)} kg batch (up to ${kgText(allowed)} kg allowed, +${pct}%).`
+      : short
+        ? `Ingredients total ${kgText(total)} kg, ${kgText(short)} kg less than the ${kgText(batch)} kg batch. Add ${kgText(short)} kg (up to ${kgText(allowed)} kg is allowed), or change the batch size.`
+        : `Ingredients total ${kgText(total)} kg, more than the ${kgText(batch)} kg batch allows: up to ${kgText(allowed)} kg (+${pct}% tolerance for ${bandText}). Reduce the quantities or change the batch size.`,
   };
 }
 const blankStep = () => ({ title: "", details: "", temperature: "", duration: "" });
@@ -1320,6 +1328,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
           ingredients: (r.ingredients || []).map((i) => ({ ...blankIngredient(), ...i })),
           steps: (r.steps || []).map((x) => ({ ...blankStep(), ...x })),
           notes: r.notes || "",
+          process: r.process || "",
         };
         setRecipe(loaded);
         setSaved(JSON.stringify(loaded));
@@ -1355,6 +1364,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         })),
         steps: [], // no Steps in new versions (earlier versions keep theirs, read-only)
         notes: recipe.notes.trim() || null,
+        process: (recipe.process || "").trim() || null,
       };
       const res = await saveRecipe(product.id, clean);
       setStdError(null);
@@ -1553,6 +1563,22 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
       {/* ---- production process ---- */}
       {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
       {readOnly && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
+      {/* The process: typed in here, attached as files below, or both */}
+      <section className="recipe-card">
+        <header className="recipe-card-head">
+          <div>
+            <h3>Production process</h3>
+            <p className="muted">Write the process step by step here, attach process files below, or both.</p>
+          </div>
+        </header>
+        {readOnly ? (
+          <p className={recipe.process ? "recipe-notes-text recipe-process-text" : "muted"}>{recipe.process || "No process written yet."}</p>
+        ) : (
+          <textarea className="input recipe-process" rows={6} value={recipe.process || ""} maxLength={10000}
+            placeholder={"e.g.\n1. Roast peanuts at 160 °C for 12 minutes.\n2. Mix besan, rice flour and spices into a batter.\n3. Coat the peanuts and fry at 180 °C for 4 minutes.\n4. Cool, then pack in nitrogen-flushed pouches."}
+            onChange={(e) => setRecipe({ ...recipe, process: e.target.value })} />
+        )}
+      </section>
       <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />
       <LegacyStepsCard legacy={extras?.legacy_steps} />
 
@@ -1591,7 +1617,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
 
       {dirty && !readOnly && (
         <div className="recipe-savebar" role="status">
-          <span>{!batchCheck(recipe).ok ? "Fix the batch weight to save: the ingredients must add up to exactly the batch size."
+          <span>{!batchCheck(recipe).ok ? "Fix the batch weight to save: the ingredients must weigh at least the batch, and no more than its tolerance."
             : stdError ? "Not saved: change the recipe so it meets the standards listed above, then save again."
             : "You have unsaved changes to the recipe."}</span>
           <span className="recipe-savebar-actions">

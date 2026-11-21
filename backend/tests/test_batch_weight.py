@@ -4,7 +4,7 @@ gram (services/recipe_tools.batch_check)."""
 import pytest
 from conftest import _unique, auth, make_user
 
-from app.services.recipe_tools import batch_check, batch_weight_kg
+from app.services.recipe_tools import TOLERANCE_BANDS, batch_check, batch_weight_kg, tolerance_pct
 
 
 def _recipe(batch, *kgs, unit="kg"):
@@ -17,13 +17,23 @@ def test_the_batch_weight_is_read_from_the_text(text, kg):
     assert batch_weight_kg(text) == kg
 
 
-def test_the_ingredients_must_weigh_exactly_the_batch():
+def test_every_100_kg_band_has_its_own_percentage():
+    pcts = [pct for _, pct in TOLERANCE_BANDS]
+    assert len(set(pcts)) == len(pcts) == 10 and pcts == sorted(pcts, reverse=True)
+    assert [tolerance_pct(b) for b in (50, 100, 101, 200, 1000, 1001)] == [2.0, 2.0, 1.8, 1.8, 0.9, 0.8]
+
+
+def test_the_ingredients_may_weigh_up_to_the_tolerance_over_the_batch_never_less():
     assert batch_check(_recipe("100 kg batch", 80, 20))["ok"]
+    assert batch_check(_recipe("100 kg batch", 82, 20))["ok"], "102 kg: at the limit"
+    over = batch_check(_recipe("100 kg batch", 84.5, 20))  # 104.5 kg
+    assert not over["ok"] and over["max_kg"] == 102 and over["over_kg"] == 2.5
+    assert "up to 102 kg" in over["message"] and "+2% tolerance for batches up to 100 kg" in over["message"]
     short = batch_check(_recipe("100 kg batch", 80, 19.5))
     assert not short["ok"] and short["short_kg"] == 0.5 and "0.5 kg less than the 100 kg batch" in short["message"]
-    over = batch_check(_recipe("100 kg batch", 80, 20.1))
-    assert not over["ok"] and over["over_kg"] == 0.1 and "0.1 kg more than the 100 kg batch" in over["message"]
-    assert not batch_check(_recipe("100 kg", 99.999))["ok"], "one gram short is refused"
+    assert batch_check(_recipe("300 kg", 300, 4.8))["ok"] and not batch_check(_recipe("300 kg", 300, 5))["ok"]
+    assert batch_check(_recipe("1000 kg", 1009))["ok"] and not batch_check(_recipe("1000 kg", 1009.5))["ok"]
+    assert batch_check(_recipe("1500 kg", 1512))["ok"] and not batch_check(_recipe("1500 kg", 1512.1))["ok"]
 
 
 def test_many_small_quantities_add_up_without_rounding_errors():
@@ -38,9 +48,11 @@ def test_saving_a_recipe_that_doesnt_match_the_batch_is_refused(client, db):
     org = make_user(db, role="client")
     cid = client.post("/categories", headers=auth(org), json={"name": _unique("Dairy ")}).json()["id"]
     pid = client.post("/products", headers=auth(org), json={"category_id": cid, "name": _unique("Lassi ")}).json()["id"]
-    for kgs in ((80, 19.5), (80, 22)):
-        r = client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe("100 kg batch = 500 bottles", *kgs))
-        assert r.status_code == 400 and "must add up to exactly 100 kg" in r.json()["detail"]
+    short = client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe("100 kg batch = 500 bottles", 80, 19.5))
+    assert short.status_code == 400 and "less than the 100 kg batch" in short.json()["detail"]
+    over = client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe("100 kg batch = 500 bottles", 84.5, 20))
+    assert over.status_code == 400 and "more than the 100 kg batch allows" in over.json()["detail"]
+    assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe("100 kg batch = 500 bottles", 82, 20)).status_code == 200
     ok = client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe("100 kg batch = 500 bottles", 80, 20))
     assert ok.status_code == 200
     check = ok.json()["costing"]["batch_check"]

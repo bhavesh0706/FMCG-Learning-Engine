@@ -93,6 +93,8 @@ def changes_between(old: Optional[dict], new: Optional[dict]) -> list[str]:
     if kept_old != kept_new:
         out.append("Steps reordered")
 
+    if _norm(old.get("process")) != _norm(new.get("process")):
+        out.append("Process added" if not _norm(old.get("process")) else "Process removed" if not _norm(new.get("process")) else "Process changed")
     if _norm(old.get("notes")) != _norm(new.get("notes")):
         out.append("Notes changed")
     if len(out) > MAX_CHANGES:

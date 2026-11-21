@@ -62,6 +62,8 @@ class RecipeIn(BaseModel):
     # attachments). Sent steps are ignored; earlier versions keep theirs, read-only.
     steps: List[Step] = Field(default_factory=list, max_length=60)
     notes: Optional[str] = Field(default=None, max_length=3000)
+    # The production process typed in (alongside, or instead of, the process attachments)
+    process: Optional[str] = Field(default=None, max_length=10000)
 
 
 @router.get("/products/{product_id}/recipe")
@@ -110,7 +112,8 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
                 "failed_standards": failures})
     recipe["updated_at"] = datetime.utcnow().isoformat()
     old = product.recipe or None
-    product.recipe = recipe if (recipe["ingredients"] or recipe.get("notes") or recipe.get("batch_size")) else None
+    recipe["process"] = (recipe.get("process") or "").strip() or None
+    product.recipe = recipe if (recipe["ingredients"] or recipe.get("notes") or recipe.get("process") or recipe.get("batch_size")) else None
     db.commit()
     who = account(request)
     version = save_version(db, product, old, product.recipe, who)
