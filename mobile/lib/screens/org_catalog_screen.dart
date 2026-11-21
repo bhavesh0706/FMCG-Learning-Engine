@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../main.dart';
 import 'package:flutter/services.dart';
 
-import '../services/api_service.dart';
 import '../services/org_api.dart';
 import '../services/recording_vault.dart';
 import 'org_product_screens.dart';
@@ -371,9 +370,7 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
   void initState() {
     super.initState();
     if (widget.product == null) {
-      ApiService().orgPasskeySet().then((set) {
-        if (mounted) setState(() => _orgPasskey = set ?? true);
-      });
+      _orgPasskey = true; // recordings need no passkey any more: never asked
     }
   }
   late int? _categoryId = widget.product != null
@@ -503,12 +500,6 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
               ),
             ),
             const SizedBox(height: 10),
-            if (_orgPasskey == true)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text('Recordings of this product open with your organization\'s recording passkey (the same for every product).',
-                    style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
-              ),
             if (_askPasskey)
             TextField(
               controller: _passkey,

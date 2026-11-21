@@ -59,6 +59,7 @@ import { keepFix } from "./services/gps";
 import { startAnalysis, waitForAnalysis, announceDataChanged, DATA_CHANGED } from "./services/analysisApi";
 import Select from "./components/Select";
 import ProtectedRecording from "./components/ProtectedRecording";
+import { AdminPasskeyPanel } from "./components/PasskeyPanels";
 import { canSeal, sealRecording } from "./services/recordingCrypto";
 
 
@@ -2807,6 +2808,7 @@ function TeamPage() {
         </details>
       </section>
 
+      {tab === "members" && <AdminPasskeyPanel />}
       {tab === "members" && !data.loading && (
         <AdminsPanel users={data.users} meId={getSession()?.user?.id} onChanged={load} onNotice={setNotice}
           onCredentials={(member, password) => setDialog({ type: "credentials", member, password, reset: true })} />
@@ -3288,8 +3290,12 @@ function MySurveyDetail({ responseId, onBack }) {
       <h2 className="my-card-title" id="rec-title">Recording</h2>
       {fb ? (
         <>
-          {/* Encrypted: the survey person who recorded it can't play it (only an authorised admin can) */}
-          <ProtectedRecording feedbackId={fb.id} isVideo={Boolean(fb.is_video)}>{() => null}</ProtectedRecording>
+          {/* Encrypted: the survey person plays it only with the passkey their Admin sent them */}
+          <ProtectedRecording feedbackId={fb.id} isVideo={Boolean(fb.is_video)}>
+            {(src) => (fb.is_video
+              ? <video className="my-media" src={src} controls autoPlay controlsList="nodownload" onContextMenu={(e) => e.preventDefault()} />
+              : <audio className="my-media" src={src} controls autoPlay controlsList="nodownload" onContextMenu={(e) => e.preventDefault()} />)}
+          </ProtectedRecording>
           <p className="muted my-media-meta">
             {fb.duration_seconds ? formatDuration(fb.duration_seconds) : ""}
             {fb.language ? ` · spoken in ${fb.language}` : ""}

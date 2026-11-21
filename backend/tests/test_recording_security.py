@@ -163,7 +163,7 @@ def _upload_encrypted(client, db, person, response_id, sealed, key_id, wrapped):
     return db.get(AnalysisJob, job_id)
 
 
-def test_offline_encrypted_recording_is_analysed_stored_encrypted_and_played_only_with_the_passkey(client, db, setup):
+def test_offline_encrypted_recording_is_analysed_stored_encrypted_and_played_by_admins_only(client, db, setup):
     s = setup
     rid = _survey(client, s["surveyor"], s["product"])
     sealed, key_id, wrapped = device_encrypt(client, s["surveyor"], PLAIN)  # done on the phone, offline
@@ -187,20 +187,15 @@ def test_offline_encrypted_recording_is_analysed_stored_encrypted_and_played_onl
         r = client.get(f"/feedback/{rec.id}/video", headers=auth(who))
         assert r.status_code in (403, 404)
 
-    # The survey person can't authorise playback, even with the right passkey.
-    r = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["surveyor"]), json={"passkey": "K7QM-9XPD-2RTF-H4WB"})
+    # The survey person can't get a playback link without the passkey.
+    r = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["surveyor"]), json={})
     assert r.status_code == 403
-    # An Admin without access to this product can't either.
-    r = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["other"]), json={"passkey": "K7QM-9XPD-2RTF-H4WB"})
-    assert r.status_code == 403 and "haven't been given access" in r.json()["detail"]
-    # The allowed Admin with a wrong passkey: refused.
-    r = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]), json={"passkey": "WRONG-PASS-KEY0"})
-    assert r.status_code == 403 and "Wrong passkey" in r.json()["detail"]
-    # With the right passkey (spaces / lower case are fine): a playback token.
-    ok = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]), json={"passkey": " k7qm-9xpd-2rtf-h4wb "})
-    assert ok.status_code == 200, ok.text
+    # Admins (any of them) and the Super Admin play it straight away: no passkey.
+    for who in (s["other"], s["allowed"], s["org"]):
+        ok = client.post(f"/recordings/{rec.id}/authorise", headers=auth(who))
+        assert ok.status_code == 200, ok.text
     token = ok.json()["token"]
-    assert "key" not in str(ok.json()).lower().replace("passkey", ""), "no key material in the answer"
+    assert "key" not in str(ok.json()).lower(), "no key material in the answer"
 
     full = client.get(f"/recordings/{rec.id}/stream?pt={token}")
     assert full.status_code == 200 and full.content == PLAIN
@@ -214,39 +209,11 @@ def test_offline_encrypted_recording_is_analysed_stored_encrypted_and_played_onl
 
     # Every attempt is in the log.
     outcomes = [(x.user_id, x.outcome) for x in db.query(RecordingAccessLog).order_by(RecordingAccessLog.id)]
-    assert (s["surveyor"].id, "not_authorised") in outcomes and (s["other"].id, "not_authorised") in outcomes
-    assert (s["allowed"].id, "wrong_passkey") in outcomes and (s["allowed"].id, "granted") in outcomes
-    assert (s["allowed"].id, "played") in outcomes
+    assert (s["surveyor"].id, "wrong_passkey") in outcomes and (s["allowed"].id, "granted") in outcomes
+    assert (s["org"].id, "played") in outcomes
     hist = client.get(f"/recordings/{rec.id}/history", headers=auth(s["allowed"])).json()["history"]
-    assert {h["outcome"] for h in hist} >= {"granted", "played", "wrong_passkey"}
+    assert {h["outcome"] for h in hist} >= {"granted", "played"}
     assert client.get(f"/recordings/{rec.id}/history", headers=auth(s["surveyor"])).status_code == 403
-
-    # Rotating the passkey keeps the recording playable (the passkey isn't the encryption key).
-    assert client.put(f"/org/products/{s['product'].id}/recording-access/passkey", headers=auth(s["org"]),
-                      json={"passkey": "NEW-PASS-2026-ZZ"}).json()["version"] == 2
-    assert client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]),
-                       json={"passkey": "K7QM-9XPD-2RTF-H4WB"}).status_code == 403, "the old passkey stops working"
-    again = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]), json={"passkey": "NEW-PASS-2026-ZZ"}).json()
-    assert client.get(f"/recordings/{rec.id}/stream?pt={again['token']}").content == PLAIN
-
-    # The Super Admin (who controls the passkey) can play too; never without it.
-    assert client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["org"]), json={"passkey": "nope-nope"}).status_code == 403
-    assert client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["org"]), json={"passkey": "NEW-PASS-2026-ZZ"}).status_code == 200
-
-
-def test_wrong_passkeys_lock_and_the_passkey_is_only_hashed(client, db, setup):
-    s = setup
-    row = db.query(ProductPasskey).filter_by(product_id=0).one()  # one passkey for the organization
-    assert row.passkey_hash.startswith("scrypt$") and "K7QM" not in row.passkey_hash and row.hint == "WB"
-    rid = _survey(client, s["surveyor"], s["product"])
-    sealed, key_id, wrapped = device_encrypt(client, s["surveyor"], b"short clip")
-    _upload_encrypted(client, db, s["surveyor"], rid, sealed, key_id, wrapped)
-    rec = db.query(FeedbackRecord).filter(FeedbackRecord.response_id == rid).one()
-    for _ in range(5):
-        client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]), json={"passkey": "guess-guess"})
-    locked = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["allowed"]), json={"passkey": "K7QM-9XPD-2RTF-H4WB"})
-    assert locked.status_code == 429 and "Too many wrong passkeys" in locked.json()["detail"]
-    assert db.query(RecordingAccessLog).filter_by(user_id=s["allowed"].id, outcome="locked").count() == 1
 
 
 def test_damaged_or_foreign_encrypted_uploads_are_refused(client, db, setup):
@@ -288,14 +255,12 @@ def test_passkey_sharing_inside_the_app_is_one_time(client, db, setup):
     org, allowed, product = s["org"], s["allowed"], s["product"]
     assert client.post(f"/org/products/{product.id}/recording-access/share", headers=auth(org),
                        json={"passkey": "wrong-passkey", "user_ids": [allowed.id]}).status_code == 400
-    assert client.post(f"/org/products/{product.id}/recording-access/share", headers=auth(org),
-                       json={"passkey": "K7QM-9XPD-2RTF-H4WB", "user_ids": [s["other"].id]}).status_code == 400, "not allowed yet"
     sent = client.post(f"/org/products/{product.id}/recording-access/share", headers=auth(org),
                        json={"passkey": "K7QM-9XPD-2RTF-H4WB", "user_ids": [allowed.id]})
     assert sent.status_code == 200 and sent.json()["admins"][0]["share_pending"] is True
     mine = client.get("/admin/recording-access", headers=auth(allowed)).json()["products"]
     assert mine == [{"product_id": product.id, "name": product.name, "passkey_waiting": True}]
-    assert client.post(f"/admin/recording-access/{product.id}/reveal", headers=auth(s["other"])).status_code == 403
+    assert client.post(f"/admin/recording-access/{product.id}/reveal", headers=auth(s["other"])).status_code == 404, "nothing sent to them"
     shown = client.post(f"/admin/recording-access/{product.id}/reveal", headers=auth(allowed))
     assert shown.status_code == 200 and shown.json()["passkey"] == "K7QM-9XPD-2RTF-H4WB"
     assert client.post(f"/admin/recording-access/{product.id}/reveal", headers=auth(allowed)).status_code == 404, "only once"
@@ -386,3 +351,43 @@ def test_one_passkey_opens_the_recordings_of_every_product(client, db, setup):
     assert client.get("/admin/recording-access", headers=auth(allowed)).json()["passkey_waiting"] is False
     for who in (allowed, s["surveyor"]):
         assert client.put("/org/recording-passkey", headers=auth(who), json={"passkey": "mine-mine-mine"}).status_code == 403
+
+
+def test_survey_person_plays_their_own_recording_only_with_the_passkey_passed_on_by_the_admin(client, db, setup):
+    """Super Admin -> Admin -> survey person: the survey person plays recordings of their own surveys
+    only after entering the passkey; Admins and the Super Admin never need it."""
+    s = setup
+    rid = _survey(client, s["surveyor"], s["product"])
+    sealed, key_id, wrapped = device_encrypt(client, s["surveyor"], PLAIN)
+    _upload_encrypted(client, db, s["surveyor"], rid, sealed, key_id, wrapped)
+    rec = db.query(FeedbackRecord).filter(FeedbackRecord.response_id == rid).one()
+
+    # Without the passkey: refused. With a wrong one: refused.
+    assert client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["surveyor"]), json={}).status_code == 403
+    wrong = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["surveyor"]), json={"passkey": "NOPE-NOPE-NOPE"})
+    assert wrong.status_code == 403 and "Wrong passkey" in wrong.json()["detail"]
+
+    # The Super Admin sends it to the Admin; the Admin reveals it once and passes it on.
+    assert client.post("/org/recording-passkey/share", headers=auth(s["org"]),
+                       json={"passkey": "K7QM-9XPD-2RTF-H4WB", "user_ids": [s["allowed"].id]}).status_code == 200
+    assert client.get("/recordings/passkey", headers=auth(s["allowed"])).json()["passkey_waiting"] is True
+    key = client.post("/recordings/passkey/reveal", headers=auth(s["allowed"])).json()["passkey"]
+    assert key == "K7QM-9XPD-2RTF-H4WB"
+    people = client.get("/admin/recording-passkey/people", headers=auth(s["allowed"])).json()["people"]
+    assert s["surveyor"].id in [p["user_id"] for p in people]
+    assert client.post("/admin/recording-passkey/share", headers=auth(s["allowed"]),
+                       json={"passkey": "WRONG-WRONG-1", "user_ids": [s["surveyor"].id]}).status_code == 400
+    assert client.post("/admin/recording-passkey/share", headers=auth(s["allowed"]),
+                       json={"passkey": key, "user_ids": [s["surveyor"].id]}).json()["sent"] == 1
+    assert client.post("/admin/recording-passkey/share", headers=auth(s["surveyor"]),
+                       json={"passkey": key, "user_ids": [s["surveyor"].id]}).status_code == 403
+
+    # The survey person reveals it once and plays their own recording with it.
+    got = client.post("/recordings/passkey/reveal", headers=auth(s["surveyor"])).json()["passkey"]
+    assert client.post("/recordings/passkey/reveal", headers=auth(s["surveyor"])).status_code == 404, "only once"
+    ok = client.post(f"/recordings/{rec.id}/authorise", headers=auth(s["surveyor"]), json={"passkey": got})
+    assert ok.status_code == 200
+    assert client.get(f"/recordings/{rec.id}/stream?pt={ok.json()['token']}").content == PLAIN
+    # ... but not another survey person's recording, even with the passkey.
+    other = make_user(db, name=_unique("Suresh "))
+    assert client.post(f"/recordings/{rec.id}/authorise", headers=auth(other), json={"passkey": got}).status_code == 403

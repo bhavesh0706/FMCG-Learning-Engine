@@ -84,14 +84,14 @@ def public_key(db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------- playback
 class PasskeyIn(BaseModel):
-    passkey: str = Field(min_length=1, max_length=128)
+    passkey: Optional[str] = Field(default=None, max_length=128)  # no longer needed (older apps still send it)
 
 
 @router.post("/recordings/{feedback_id}/authorise")
-def authorise(feedback_id: int, body: PasskeyIn, request: Request, db: Session = Depends(get_db)):
+def authorise(feedback_id: int, request: Request, body: Optional[PasskeyIn] = None, db: Session = Depends(get_db)):
     me = account(request)
     try:
-        out = A.authorise_playback(db, me, feedback_id, body.passkey, _ip(request))
+        out = A.authorise_playback(db, me, feedback_id, body.passkey if body else None, _ip(request))
     except A.AccessError as e:
         _fail(e)
     return {**out, "stream_url": f"/recordings/{feedback_id}/stream?pt={out['token']}"}
@@ -161,8 +161,9 @@ def stream(feedback_id: int, request: Request, pt: str = "", db: Session = Depen
 def recording_history(feedback_id: int, request: Request, db: Session = Depends(get_db)):
     me = account(request)
     try:
-        _, product_id, _ = A.recording_of(db, feedback_id)
-        A.may_play(db, me, product_id)
+        _, product_id, response_id = A.recording_of(db, feedback_id)
+        if me.get("role") not in ("client", "admin"):
+            raise A.AccessError("Only the Super Admin or an Admin can see who played a recording.", 403, "not_authorised")
     except A.AccessError as e:
         _fail(e)
     return {"feedback_id": feedback_id, "history": A.access_history(db, feedback_id=feedback_id)}
@@ -264,7 +265,7 @@ class ShareIn(BaseModel):
 def _share(db: Session, request: Request, body) -> int:
     _client(request)
     try:
-        made = A.share_passkey(db, body.passkey, body.user_ids)
+        made = A.share_passkey(db, body.passkey, body.user_ids, "admin")
     except A.AccessError as e:
         _fail(e)
     db.commit()
@@ -312,13 +313,8 @@ def my_access(request: Request, db: Session = Depends(get_db)):
 def _reveal(db: Session, request: Request, product_id: Optional[int]) -> dict:
     me = account(request)
     try:
-        if me.get("role") != "admin":
-            raise A.AccessError("Only an Admin can be sent the recording passkey.", 403, "not_authorised")
-        if product_id is not None:
-            A.may_play(db, me, product_id)
-        elif not db.query(RecordingAccessGrant.id).filter(RecordingAccessGrant.user_id == me.get("id")).first():
-            raise A.AccessError("You haven't been given access to any product's recordings. Ask the Super Admin.", 403,
-                                "not_authorised")
+        if me.get("role") not in ("admin", "executive"):
+            raise A.AccessError("Only an Admin or a survey person can be sent the recording passkey.", 403, "not_authorised")
         passkey = A.reveal_share(db, me)
     except A.AccessError as e:
         db.commit()
@@ -338,3 +334,49 @@ def reveal_mine(request: Request, db: Session = Depends(get_db)):
 @router.post("/admin/recording-access/{product_id}/reveal")
 def reveal(product_id: int, request: Request, db: Session = Depends(get_db)):
     return {**_reveal(db, request, product_id), "product_id": product_id}
+
+
+# ---------------------------------------------------------------- passing the passkey on
+@router.get("/recordings/passkey")
+def my_passkey(request: Request, db: Session = Depends(get_db)):
+    """Admin or survey person: is a passkey waiting for me (sent inside the app)?"""
+    me = account(request)
+    return {"passkey_waiting": A.passkey_waiting(db, me.get("id")), "has_passkey": A.org_passkey(db) is not None}
+
+
+@router.post("/recordings/passkey/reveal")
+def reveal_my_passkey(request: Request, db: Session = Depends(get_db)):
+    """The passkey sent to me (by the Super Admin to an Admin, or by an Admin to a survey person), shown once."""
+    return _reveal(db, request, None)
+
+
+@router.get("/admin/recording-passkey/people")
+def survey_persons_to_send(request: Request, db: Session = Depends(get_db)):
+    me = account(request)
+    if me.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only an Admin passes the passkey on to survey persons.")
+    pending = A._pending(db)
+    people = db.query(User).filter(User.role == "executive", User.is_active == 1).order_by(User.name).all()
+    return {"has_passkey": A.org_passkey(db) is not None, "passkey_waiting_for_me": me.get("id") in pending,
+            "people": [{"user_id": u.id, "name": u.name, "share_pending": u.id in pending} for u in people]}
+
+
+@router.post("/admin/recording-passkey/share")
+def admin_share(body: ShareIn, request: Request, db: Session = Depends(get_db)):
+    """Admin: sends the passkey (typed again, checked against the current one) to survey persons, so they
+    can play the recordings of their own surveys. Each one sees it once."""
+    me = account(request)
+    if me.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Only an Admin passes the passkey on to survey persons.")
+    try:
+        made = A.share_passkey(db, body.passkey, body.user_ids, "executive")
+    except A.AccessError as e:
+        _fail(e)
+    db.commit()
+    from app.services.notifications import notify
+
+    notify(db, body.user_ids, "recording_passkey", title="Recording passkey",
+           message="Your Admin sent you the recording passkey. Open a recording in My surveys to see it (shown once, within 7 days).",
+           data={})
+    audit.note(request, summary=f"{me.get('name')} sent the recording passkey to {made} survey person(s)", details={"user_ids": body.user_ids})
+    return {"sent": made}

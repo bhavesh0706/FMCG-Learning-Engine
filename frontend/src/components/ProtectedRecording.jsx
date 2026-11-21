@@ -25,11 +25,43 @@ const reason = (err, fallback) => {
 
 export default function ProtectedRecording({ feedbackId, isVideo, children }) {
   const role = getSession()?.user?.role;
-  const mayPlay = role === "admin" || role === "client";
+  const isAdmin = role === "admin" || role === "client"; // no passkey
+  const isSurveyPerson = role === "executive"; // own surveys, with the passkey from the Admin
   const [src, setSrc] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const [asking, setAsking] = useState(false);
 
-  useEffect(() => { setSrc(""); }, [feedbackId]);
+  useEffect(() => {
+    setSrc("");
+    setError("");
+    if (!isAdmin) return undefined;
+    // Super Admin and Admins: the player appears straight away (no button, no passkey).
+    let alive = true;
+    setBusy(true);
+    api.post(`/recordings/${feedbackId}/authorise`, {})
+      .then(({ data }) => alive && setSrc(`${API_BASE_URL}${data.stream_url}`))
+      .catch((err) => alive && setError(reason(err, "The recording couldn't be loaded. Check the connection and refresh.")))
+      .finally(() => alive && setBusy(false));
+    return () => { alive = false; };
+  }, [feedbackId, isAdmin]);
+
+  const open = async (passkey) => {
+    const { data } = await api.post(`/recordings/${feedbackId}/authorise`, passkey ? { passkey } : {});
+    setSrc(`${API_BASE_URL}${data.stream_url}`);
+  };
+  const play = async () => {
+    if (isSurveyPerson) return setAsking(true);
+    setBusy(true);
+    setError("");
+    try {
+      await open();
+    } catch (err) {
+      setError(reason(err, "The recording couldn't be opened. Check the connection and try again."));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (src) return children(src);
   return (
@@ -38,20 +70,22 @@ export default function ProtectedRecording({ feedbackId, isVideo, children }) {
         <svg viewBox="0 0 24 24" width="22" height="22"><rect x="5" y="10.5" width="14" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" /><path d="M8 10.5V7.5a4 4 0 018 0v3" fill="none" stroke="currentColor" strokeWidth="1.8" /></svg>
       </span>
       <div className="protected-rec-text">
-        <strong>Encrypted {isVideo ? "video" : "audio"} recording</strong>
-        <span>{mayPlay ? "Enter the recording passkey to play it. Every attempt is logged."
-          : "Protected for the customer's privacy: only an authorised admin can play it."}</span>
+        <strong>{isVideo ? "Video" : "Audio"} recording</strong>
+        <span>{isAdmin ? (busy ? "Loading the recording…" : "Stored encrypted. Every play is logged.")
+          : isSurveyPerson ? "Enter the recording passkey from your Admin to play it. Every attempt is logged."
+            : "Protected for the customer's privacy."}</span>
+        {error && <span className="form-error" role="alert">{error}</span>}
       </div>
-      {mayPlay && <button type="button" className="btn btn-primary btn-sm" onClick={() => setAsking(true)}>Play recording</button>}
-      {asking && (
-        <PasskeyDialog feedbackId={feedbackId} role={role} onClose={() => setAsking(false)}
-          onGranted={(url) => { setAsking(false); setSrc(url); }} />
+      {(isSurveyPerson || (isAdmin && error)) && (
+        <button type="button" className="btn btn-primary btn-sm" onClick={play} disabled={busy}>{busy ? "Opening…" : "Play recording"}</button>
       )}
+      {asking && <PasskeyDialog onClose={() => setAsking(false)} onSubmit={async (k) => { await open(k); setAsking(false); }} />}
     </div>
   );
 }
 
-function PasskeyDialog({ feedbackId, role, onClose, onGranted }) {
+/* Survey person: the passkey their Admin sent (shown once inside the app) or typed in. */
+function PasskeyDialog({ onClose, onSubmit }) {
   const [passkey, setPasskey] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -60,27 +94,24 @@ function PasskeyDialog({ feedbackId, role, onClose, onGranted }) {
   const [revealed, setRevealed] = useState(false);
 
   useEffect(() => {
-    if (role !== "admin") return;
-    api.get("/admin/recording-access").then((r) => setWaiting(Boolean(r.data.passkey_waiting))).catch(() => {});
-  }, [role]);
+    api.get("/recordings/passkey").then((r) => setWaiting(Boolean(r.data.passkey_waiting))).catch(() => {});
+  }, []);
 
   const submit = async () => {
     if (!passkey.trim() || busy) return;
     setBusy(true);
     setError("");
     try {
-      const { data } = await api.post(`/recordings/${feedbackId}/authorise`, { passkey });
-      onGranted(`${API_BASE_URL}${data.stream_url}`);
+      await onSubmit(passkey.trim());
     } catch (err) {
       setError(reason(err, "The recording couldn't be opened. Check the connection and try again."));
       setBusy(false);
     }
   };
-
   const reveal = async () => {
     setError("");
     try {
-      const { data } = await api.post("/admin/recording-access/reveal");
+      const { data } = await api.post("/recordings/passkey/reveal");
       setPasskey(data.passkey);
       setShow(true);
       setRevealed(true);
@@ -91,25 +122,21 @@ function PasskeyDialog({ feedbackId, role, onClose, onGranted }) {
   };
 
   return (
-    <Modal title="Recording passkey" subtitle="Recordings are encrypted. Enter the recording passkey from the Super Admin (the same for every product)." onClose={onClose}
+    <Modal title="Recording passkey" subtitle="Enter the recording passkey your Admin gave you." onClose={onClose}
       footer={<>
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" onClick={submit} disabled={busy || !passkey.trim()}>{busy ? "Checking…" : "Play"}</button>
       </>}>
       {waiting && (
-        <button type="button" className="btn btn-secondary passkey-reveal" onClick={reveal}>
-          Show the passkey sent to me
-        </button>
+        <button type="button" className="btn btn-secondary passkey-reveal" onClick={reveal}>Show the passkey sent to me</button>
       )}
-      {revealed && (
-        <p className="alert alert-warn" role="note">Shown once and deleted from the server: keep it somewhere safe. Never share it with survey persons.</p>
-      )}
+      {revealed && <p className="alert alert-warn" role="note">Shown once and deleted from the server: keep it somewhere safe.</p>}
       <label className="field">
         <span className="field-label">Passkey</span>
         <span className="login-password">
           <input className="input" type={show ? "text" : "password"} value={passkey} autoComplete="off" spellCheck={false} autoFocus
             onChange={(e) => setPasskey(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} placeholder="e.g. K7QM-9XPD-2RTF-H4WB" />
-          <button type="button" className="login-eye" onClick={() => setShow((s) => !s)} aria-label={show ? "Hide passkey" : "Show passkey"}>
+          <button type="button" className="login-eye" onClick={() => setShow((v) => !v)} aria-label={show ? "Hide passkey" : "Show passkey"}>
             {show ? "Hide" : "Show"}
           </button>
         </span>

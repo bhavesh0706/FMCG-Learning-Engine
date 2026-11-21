@@ -1,5 +1,5 @@
 import { ActionPlansSection, PlanFields, planBody, planForm, planProblem } from "./ActionPlans";
-import { getOrgPasskey, saveProjectPlan } from "../services/orgApi";
+import { saveProjectPlan } from "../services/orgApi";
 import MastersDialog from "./MastersDialog";
 import KpiIcon from "./KpiIcon";
 import { onLovLoaded, patchMap } from "../services/lov";
@@ -34,7 +34,6 @@ import {
   updateQuestion,
 } from "../services/catalogAdminApi";
 import Select from "./Select";
-import { generatePasskey, passkeyProblem } from "../services/recordingCrypto";
 
 /*
   Catalog (admin)
@@ -222,15 +221,7 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
     sku: "",
     description: "",
     start_version: "1", // the first recipe version number (higher if versions existed before the app)
-    recording_passkey: "", // only its hash is stored (backend services/recording_access.py)
   });
-  const [passkeyCopied, setPasskeyCopied] = useState(false);
-  // One recording passkey for the whole organization: asked here only while none is set yet.
-  const [orgPasskey, setOrgPasskey] = useState(null); // null = loading, true = set, false = not set
-  useEffect(() => {
-    getOrgPasskey().then((s) => setOrgPasskey(Boolean(s.has_passkey))).catch(() => setOrgPasskey(true));
-  }, []);
-  const askPasskey = orgPasskey === false;
   // Recipe plan: starts from the project's default plan until the Super Admin edits it
   const projectPlan = (cid) => planForm(categories.find((c) => String(c.id) === String(cid))?.default_plan);
   const [plan, setPlan] = useState(() => projectPlan(form.category_id));
@@ -243,8 +234,7 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const startVersion = Number(form.start_version);
   const versionOk = Number.isInteger(startVersion) && startVersion >= 1 && startVersion <= 999;
-  const valid = form.name.trim().length >= 2 && form.category_id && versionOk && !planProblem(plan)
-    && (!askPasskey || !passkeyProblem(form.recording_passkey));
+  const valid = form.name.trim().length >= 2 && form.category_id && versionOk && !planProblem(plan);
 
   // Survey questions and the recipe are added by the organization in its portal,
   // so a new product starts without them (the server refuses starting questions).
@@ -270,7 +260,6 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
         description: form.description.trim() || null,
         start_version: startVersion,
         recipe_plan: planBody(plan),
-        ...(askPasskey ? { recording_passkey: form.recording_passkey.trim() } : {}),
       });
       onCreated(p);
     } catch (err) {
@@ -324,33 +313,6 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={form.description} placeholder="Pack size, variant… (optional)" onChange={set("description")} />
       </label>
-      {orgPasskey === true && (
-        <p className="field-hint passkey-note">
-          Recordings of this product open with your organization's recording passkey (the same for every product).
-          Choose who may play them on the product's Recording access tab.
-        </p>
-      )}
-      {askPasskey && (
-      <fieldset className="passkey-field">
-        <legend>Recording passkey (for all products) *</legend>
-        <p className="muted small">
-          Consumer recordings are encrypted. One passkey opens the recordings of every product, for the Admins you allow on each
-          product's Recording access tab. It's stored only as a hash and shown just now: copy it.
-        </p>
-        <div className="passkey-row">
-          <input className="input passkey-input" value={form.recording_passkey} autoComplete="off" spellCheck={false}
-            placeholder="Generate one, or type at least 8 characters" aria-label="Recording passkey"
-            onChange={(e) => { setPasskeyCopied(false); set("recording_passkey")(e); }} />
-          <button type="button" className="btn btn-secondary btn-sm"
-            onClick={() => { setPasskeyCopied(false); setForm((f) => ({ ...f, recording_passkey: generatePasskey() })); }}>Generate</button>
-          <button type="button" className="btn btn-secondary btn-sm" disabled={!form.recording_passkey}
-            onClick={() => navigator.clipboard?.writeText(form.recording_passkey).then(() => setPasskeyCopied(true)).catch(() => {})}>
-            {passkeyCopied ? "Copied" : "Copy"}
-          </button>
-        </div>
-        {form.recording_passkey && passkeyProblem(form.recording_passkey) && <p className="form-error small">{passkeyProblem(form.recording_passkey)}</p>}
-      </fieldset>
-      )}
       <details className="ap-details" open>
         <summary>Recipe plan: responses, team, dates, cities</summary>
         <p className="muted small">The defaults of this product's action plans; you can add more plans per survey later.</p>

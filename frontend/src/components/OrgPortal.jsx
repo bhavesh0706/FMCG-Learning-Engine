@@ -1,5 +1,6 @@
 import { PlanCard, PlanDialog, wholeNumberProblem } from "./ActionPlans";
 import DateField from "./DateField";
+import { OrgPasskeyCard } from "./PasskeyPanels";
 import SuperAdminsCard from "./SuperAdminsCard";
 import { getRecipe } from "../services/catalogAdminApi";
 import { removeStandard } from "../services/nextApi";
@@ -37,15 +38,8 @@ import {
   setProjectTarget,
   startProjectSurvey,
   standardsFailures,
-  getRecordingAccess,
-  recordingAdmins,
-  getOrgPasskey,
-  setOrgPasskey,
-  setRecordingAdmins,
-  shareOrgPasskey,
   recordingAccessHistory,
 } from "../services/orgApi";
-import { generatePasskey, passkeyProblem } from "../services/recordingCrypto";
 import { downloadComparisonPdf } from "../services/comparisonPdf";
 import CatalogPage, { QuestionsTab, RecipeTab } from "./CatalogPage";
 import { ConfirmHost, confirmDialog } from "./ConfirmDialog";
@@ -730,7 +724,7 @@ const TABS = [
   ["recipe", "Recipe"],
   ["questions", "Survey questions"],
   ["rounds", "Surveys"],
-  ["recording", "Recording access"],
+  ["recording", "Recording log"],
   ["compare", "Compare surveys"],
 ];
 
@@ -1450,155 +1444,21 @@ async function openProjectOf(productId, version) {
    The passkey can be sent to them inside the app (each Admin sees it once). Changing it never makes
    recordings unplayable. */
 
-const OUTCOME = { granted: "Passkey accepted", played: "Played", wrong_passkey: "Wrong passkey", not_authorised: "Not allowed",
+const OUTCOME = { granted: "Opened", played: "Played", wrong_passkey: "Wrong passkey", not_authorised: "Not allowed",
   locked: "Locked (too many tries)", no_passkey: "No passkey set", expired: "Link expired" };
 
-/* The organization's ONE recording passkey (the same for every product): set, change, and send
-   to the Admins allowed to play recordings. Shown once when set; only its hash is stored. */
-function OrgPasskeyCard() {
-  const [state, reload] = useData(getOrgPasskey, []);
-  const [draft, setDraft] = useState("");
-  const [fresh, setFresh] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null);
-  const [open, setOpen] = useState(false);
-  if (state.loading && !state.data) return null;
-  if (state.error) return null;
-  const status = state.data;
-  const admins = status.admins || [];
-  const run = async (work, ok) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      await work();
-      setNote({ tone: "ok", text: ok });
-      reload({ silent: true });
-    } catch (e) {
-      setNote({ tone: "error", text: orgError(e, "That didn't work. Try again.") });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const save = () => run(async () => {
-    await setOrgPasskey(draft.trim());
-    setFresh(draft.trim());
-    setDraft("");
-    setOpen(false);
-  }, status.has_passkey ? "Passkey changed for every product. Recordings still play with the new one; the old one stops working."
-    : "Passkey set. It opens the recordings of every product.");
-  const send = () => run(() => shareOrgPasskey(fresh, admins.map((a) => a.user_id)),
-    "Passkey sent. Each Admin sees it once when they open a recording, then it's deleted.");
-  return (
-    <section className="panel org-passkey" aria-labelledby="org-passkey-title">
-      <div className="org-passkey-head">
-        <div>
-          <h2 id="org-passkey-title" className="org-panel-title">Recording passkey <span className="status-chip is-neutral">All products</span></h2>
-          <p className="muted">
-            {status.has_passkey
-              ? `Set · ends in “…${status.hint}” · v${status.version}, ${fmtDate(status.set_at)}. One passkey opens the recordings of every product, for the Admins allowed on each product's Recording access tab.`
-              : "Not set: nobody can play recordings yet. One passkey opens the recordings of every product."}
-          </p>
-        </div>
-        {!open && (
-          <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>
-            {status.has_passkey ? "Change passkey" : "Set passkey"}
-          </button>
-        )}
-      </div>
-      <Notice notice={note} onClose={() => setNote(null)} />
-      {open && (
-        <>
-          <div className="passkey-row">
-            <input className="input passkey-input" value={draft} autoComplete="off" spellCheck={false} autoFocus onChange={(e) => setDraft(e.target.value)}
-              placeholder="Generate one, or type at least 8 characters" aria-label="Recording passkey" />
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDraft(generatePasskey())}>Generate</button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={save} disabled={busy || Boolean(passkeyProblem(draft))}>Save</button>
-            <button type="button" className="link-btn" onClick={() => { setOpen(false); setDraft(""); }}>Cancel</button>
-          </div>
-          {draft && passkeyProblem(draft) && <p className="form-error small">{passkeyProblem(draft)}</p>}
-        </>
-      )}
-      {fresh && (
-        <div className="passkey-once" role="status">
-          <span>New passkey (shown only now): <code>{fresh}</code></span>
-          <span className="org-tl-actions">
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard?.writeText(fresh).catch(() => {})}>Copy</button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={send} disabled={busy || !admins.length}
-              title={admins.length ? admins.map((a) => a.name).join(", ") : "Allow Admins on a product's Recording access tab first"}>
-              Send to {plural(admins.length, "Admin")}
-            </button>
-            <button type="button" className="link-btn" onClick={() => setFresh("")}>Hide</button>
-          </span>
-        </div>
-      )}
-    </section>
-  );
-}
-
 function RecordingAccessTab({ product }) {
-  const [state, reload] = useData(() => Promise.all([getRecordingAccess(product.id), recordingAdmins(), recordingAccessHistory(product.id)]), [product.id]);
-  const [chosen, setChosen] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null);
+  const [state, reload] = useData(() => recordingAccessHistory(product.id), [product.id]);
   if (state.loading && !state.data) return <Loading />;
   if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
-  const [status, { admins }, { history }] = state.data;
-  const allowed = new Set(status.admins.map((a) => a.user_id));
-  const picked = chosen ?? allowed;
-  const run = async (work, ok) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      await work();
-      setNote({ tone: "ok", text: ok });
-      reload({ silent: true });
-    } catch (e) {
-      setNote({ tone: "error", text: orgError(e, "That didn't work. Try again.") });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const saveAdmins = () => run(async () => {
-    await setRecordingAdmins(product.id, [...picked]);
-    setChosen(null);
-  }, "Recording access saved. Added Admins were told.");
+  const { history } = state.data;
 
   return (
     <div className="rec-access">
-      <Notice notice={note} onClose={() => setNote(null)} />
-      <p className="alert alert-info rec-passkey-note" role="note">
-        Recordings of every product open with your organization's one recording passkey
-        {status.has_passkey ? ` (set, ends in “…${status.hint}”)` : " (not set yet)"}. Set, change or send it on the Products page.
-      </p>
+      <p className="field-hint">Consumer recordings are stored encrypted. You and every Admin play them from the analysis page; a survey person plays their own only with the recording passkey. Each attempt is listed here.</p>
       <section className="panel">
-        <h2 className="org-panel-title">Admins who may play the recordings of {product.name}</h2>
-        {!admins.length ? <p className="muted">No active Admins yet.</p> : (
-          <ul className="rec-admins">
-            {admins.map((a) => {
-              const s = status.admins.find((x) => x.user_id === a.user_id);
-              return (
-                <li key={a.user_id}>
-                  <label className="member-check">
-                    <input type="checkbox" checked={picked.has(a.user_id)} onChange={(e) => {
-                      const next = new Set(picked);
-                      if (e.target.checked) next.add(a.user_id); else next.delete(a.user_id);
-                      setChosen(next);
-                    }} />
-                    <span>{a.name}<span className="muted">{a.email ? ` · ${a.email}` : ""}</span>
-                      {s?.share_pending && <span className="status-chip is-warn">passkey waiting</span>}</span>
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-        <button type="button" className="btn btn-primary btn-sm" onClick={saveAdmins} disabled={busy || chosen === null}>Save access</button>
-        <p className="field-hint">Send these Admins the passkey from the Recording passkey card on the Products page.</p>
-      </section>
-
-      <section className="panel">
-        <h2 className="org-panel-title">Access history</h2>
-        {!history.length ? <p className="muted">Nobody has tried to play a recording of this product yet.</p> : (
+        <h2 className="org-panel-title">Who played the recordings of {product.name}</h2>
+        {!history.length ? <p className="muted">Nobody has played a recording of this product yet.</p> : (
           <div className="table-wrap">
             <table className="data-table">
               <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Recording</th><th scope="col">Result</th></tr></thead>

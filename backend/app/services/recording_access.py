@@ -130,13 +130,10 @@ def passkey_status(db: Session, product_id: Optional[int] = None) -> dict:
         "set_by": row.set_by_name if row else None,
     }
     if product_id is None:
-        # The Admins allowed for at least one product: they can be sent the passkey.
+        # Every active Admin can be sent the passkey (they pass it on to survey persons).
         pending = _pending(db)
-        counts = {}
-        for (uid,) in db.query(RecordingAccessGrant.user_id):
-            counts[uid] = counts.get(uid, 0) + 1
-        users = db.query(User).filter(User.id.in_(list(counts) or [-1]), User.is_active == 1).order_by(User.name).all()
-        out["admins"] = [{"user_id": u.id, "name": u.name, "products": counts[u.id], "share_pending": u.id in pending} for u in users]
+        users = db.query(User).filter(User.role == "admin", User.is_active == 1).order_by(User.name).all()
+        out["admins"] = [{"user_id": u.id, "name": u.name, "share_pending": u.id in pending} for u in users]
     if product_id is not None:
         pending = _pending(db)
         grants = (db.query(RecordingAccessGrant, User).join(User, User.id == RecordingAccessGrant.user_id)
@@ -169,20 +166,23 @@ def set_admins(db: Session, product: Product, user_ids: list, who: dict) -> list
     return sorted(wanted - set(current))
 
 
-def share_passkey(db: Session, passkey: str, user_ids: list) -> int:
-    """Sends the organization's passkey to Admins inside the app: encrypted with the master key,
-    revealed once by that Admin, gone after 7 days. The passkey must be the current one, and each
-    Admin must be allowed to play the recordings of at least one product."""
+def share_passkey(db: Session, passkey: str, user_ids: list, to_role: str = "admin") -> int:
+    """Sends the organization's passkey inside the app: encrypted with the master key, revealed once
+    by the recipient, gone after 7 days. The Super Admin sends it to Admins (to_role "admin"); an
+    Admin passes it on to survey persons (to_role "executive"). It must be the current passkey."""
     from app.services.recording_crypto import seal_secret
 
     row = org_passkey(db)
-    if row is None or not passkey_matches(row.passkey_hash, passkey):
+    if row is None:
+        raise AccessError("No recording passkey has been set yet. The Super Admin sets it on the Products page.", 409, "no_passkey")
+    if not passkey_matches(row.passkey_hash, passkey):
         raise AccessError("That isn't the current recording passkey.", 400, "wrong_passkey")
-    allowed = {uid for (uid,) in db.query(RecordingAccessGrant.user_id)}
+    allowed = {uid for (uid,) in db.query(User.id).filter(User.role == to_role, User.is_active == 1)}
     made = 0
     for uid in {int(u) for u in user_ids or []}:
         if uid not in allowed:
-            raise AccessError("Give the Admin access to a product's recordings first.", 400, "invalid")
+            who = "an active Admin" if to_role == "admin" else "an active survey person"
+            raise AccessError(f"#{uid} is not {who}.", 400, "invalid")
         db.query(PasskeyShare).filter(PasskeyShare.user_id == uid).delete(synchronize_session=False)
         db.add(PasskeyShare(product_id=ORG, user_id=uid, sealed=seal_secret(_normal(passkey)), passkey_version=row.version,
                             expires_at=datetime.utcnow() + timedelta(days=SHARE_DAYS)))
@@ -227,17 +227,18 @@ def recording_of(db: Session, feedback_id: int):
     return rec, product_id, rec.response_id
 
 
-def may_play(db: Session, user: dict, product_id: Optional[int]) -> None:
-    """Role rule: an Admin given access to the product, or the Super Admin. Never a survey person."""
+def may_play(db: Session, user: dict, product_id: Optional[int], response_id: Optional[int] = None) -> None:
+    """Role rule: the Super Admin and Admins play any recording (no passkey); a survey person plays
+    only the recordings of their own surveys, and only with the passkey (checked in authorise_playback)."""
     role = user.get("role")
-    if role == "client":
-        return  # the Super Admin controls the passkey of their products
-    if role != "admin":
-        raise AccessError("Only an Admin given access to this product can play its recordings.", 403, "not_authorised")
-    if product_id is None or not db.query(RecordingAccessGrant.id).filter(
-            RecordingAccessGrant.product_id == product_id, RecordingAccessGrant.user_id == user.get("id")).first():
-        raise AccessError("You haven't been given access to this product's recordings. Ask the Super Admin.", 403,
-                          "not_authorised")
+    if role in ("client", "admin"):
+        return
+    if role == "executive":
+        response = db.get(SurveyResponse, response_id) if response_id else None
+        if response is not None and response.user_id == user.get("id"):
+            return
+        raise AccessError("You can play only the recordings of your own surveys.", 403, "not_authorised")
+    raise AccessError("You can't play consumer recordings.", 403, "not_authorised")
 
 
 def _failures(db: Session, user_id: int) -> int:
@@ -253,20 +254,22 @@ def log(db: Session, user: dict, outcome: str, product_id=None, feedback_id=None
     db.commit()
 
 
-def authorise_playback(db: Session, user: dict, feedback_id: int, passkey: str, ip: Optional[str] = None) -> dict:
-    """Checks role, product access, lockout and the passkey; returns a playback token. Logs every attempt."""
+def authorise_playback(db: Session, user: dict, feedback_id: int, passkey: Optional[str] = None, ip: Optional[str] = None) -> dict:
+    """Super Admin and Admins get a playback token straight away (no passkey); survey persons never.
+    Every attempt is logged."""
     rec, product_id, response_id = recording_of(db, feedback_id)
     try:
-        may_play(db, user, product_id)
-        if _failures(db, user.get("id")) >= MAX_FAILURES:
-            raise AccessError(f"Too many wrong passkeys. Try again in {LOCK_MINUTES} minutes.", 429, "locked")
-        row = org_passkey(db)
-        if row is None:
-            raise AccessError("No recording passkey has been set yet. The Super Admin sets it in Recording access.", 409, "no_passkey")
-        if not passkey_matches(row.passkey_hash, passkey):
-            left = MAX_FAILURES - _failures(db, user.get("id")) - 1
-            raise AccessError("Wrong passkey." + (f" {left} tries left before a {LOCK_MINUTES}-minute lock." if left > 0 else
-                                                  f" Locked for {LOCK_MINUTES} minutes."), 403, "wrong_passkey")
+        may_play(db, user, product_id, response_id)
+        if user.get("role") == "executive":  # survey persons: only with the passkey from their Admin
+            if _failures(db, user.get("id")) >= MAX_FAILURES:
+                raise AccessError(f"Too many wrong passkeys. Try again in {LOCK_MINUTES} minutes.", 429, "locked")
+            row = org_passkey(db)
+            if row is None:
+                raise AccessError("No recording passkey has been set yet. Ask your Admin.", 409, "no_passkey")
+            if not passkey or not passkey_matches(row.passkey_hash, passkey):
+                left = MAX_FAILURES - _failures(db, user.get("id")) - 1
+                raise AccessError("Wrong passkey." + (f" {left} tries left before a {LOCK_MINUTES}-minute lock." if left > 0 else
+                                                      f" Locked for {LOCK_MINUTES} minutes."), 403, "wrong_passkey")
     except AccessError as e:
         log(db, user, e.outcome, product_id, feedback_id, response_id, ip)
         raise

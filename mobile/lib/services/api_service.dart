@@ -131,7 +131,7 @@ class ApiService {
   /// for this recording only (backend api/recordings.py). Throws ApiException with the reason.
   Future<({String url, bool isVideo})> authoriseRecording(int feedbackId, String passkey) async {
     try {
-      final r = await _dio.post('/recordings/$feedbackId/authorise', data: {'passkey': passkey});
+      final r = await _dio.post('/recordings/$feedbackId/authorise', data: passkey.isEmpty ? <String, dynamic>{} : {'passkey': passkey});
       final d = r.data is Map ? Map<String, dynamic>.from(r.data as Map) : <String, dynamic>{};
       return (url: '${ApiConfig.baseUrl}${d['stream_url']}', isVideo: d['kind'] == 'video');
     } on DioException catch (e) {
@@ -143,7 +143,7 @@ class ApiService {
   /// Admin: whether the Super Admin sent me the recording passkey (one for all products).
   Future<bool> recordingPasskeyWaiting() async {
     try {
-      final d = await _getJson('/admin/recording-access');
+      final d = await _getJson('/recordings/passkey');
       return d is Map && d['passkey_waiting'] == true;
     } catch (_) {
       return false;
@@ -164,7 +164,7 @@ class ApiService {
   /// Admin: the recording passkey the Super Admin sent me, shown once (deleted on the server).
   Future<String> revealPasskey() async {
     try {
-      final r = await _dio.post('/admin/recording-access/reveal');
+      final r = await _dio.post('/recordings/passkey/reveal');
       return '${(r.data as Map)['passkey']}';
     } on DioException catch (e) {
       final detail = e.response?.data is Map ? (e.response!.data as Map)['detail'] : null;
