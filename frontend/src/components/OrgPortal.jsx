@@ -16,6 +16,7 @@ import {
   compareRounds,
   createProject,
   deleteProject,
+  endProject,
   endRound,
   deleteRound,
   getProject,
@@ -26,7 +27,7 @@ import {
   getOrgProduct,
   getOrgProducts,
   getOverview,
-  getRoundReport,
+  getRoundReport, getRoundSnapshot,
   getUnreadUpdates,
   getUpdates,
   markUpdatesSeen,
@@ -336,6 +337,7 @@ function PortalShell({ user, ReportView }) {
   } else if (page === "products") body = <ProductsPage />;
   // Projects: one product each, showing its latest catalog setup; surveys start here
   else if (page === "projects" && parts[1] === "new") body = <AddProjectPage />;
+  else if (page === "projects" && parts[1] && parts[2] === "edit") body = <EditProjectPage key={parts[1]} projectId={Number(parts[1])} />;
   else if (page === "projects" && parts[1]) {
     body = <ProjectPage key={parts[1]} projectId={Number(parts[1])} />;
   } else if (page === "projects") body = <ProjectsPage />;
@@ -528,9 +530,14 @@ function RatingCell({ product }) {
   if (!r || r.rating == null) return <span className="muted">—</span>;
   if (product.previous_rating == null) return <strong>{one(r.rating)}</strong>;
   const up = r.rating >= product.previous_rating;
+  const prev = product.previous_round;
+  const label = (n, v) => `Survey ${n}${v ? ` (v${v})` : ""}`;
+  // The survey just before the current one -> the current survey.
+  const caption = prev ? `${label(prev.number, prev.recipe_version)} → ${label(r.number, r.recipe_version)}` : "";
   return (
-    <span className="org-rating-change">
+    <span className="org-rating-change" title={caption}>
       {one(product.previous_rating)} → <strong className={up ? "delta-up" : "delta-down"}>{one(r.rating)}</strong>
+      {caption && <span className="rating-caption">{caption}</span>}
     </span>
   );
 }
@@ -728,6 +735,93 @@ const TABS = [
   ["compare", "Compare surveys"],
 ];
 
+const SNAPSHOT_TABS = ["recipe", "standards", "questions"];
+
+// The survey box (as on the Consumer report): which survey, its recipe version and responses.
+function SurveyBox({ survey, rounds, latest }) {
+  if (!survey) {
+    const users = rounds.filter((r) => r.recipe_version === latest);
+    return (
+      <div className="report-bar">
+        <div>
+          <strong>Current setup · Recipe v{latest || 1}</strong>
+          <span>
+            {users.length ? `Used by ${users.map((r) => `Survey ${r.number}`).join(", ")}. ` : "Not surveyed yet. "}
+            Changes here apply to the next survey. Choose a survey above to see exactly what it used.
+          </span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="report-bar">
+      <div>
+        <strong>
+          Survey {survey.number}
+          <span className={`status-chip ${survey.status === "live" ? "is-ok" : "is-neutral"} report-updating-chip`}>{survey.status === "live" ? "Collecting" : "Completed"}</span>
+        </strong>
+        <span>
+          Recipe v{survey.recipe_version ?? "—"} · {survey.done} of {survey.target} consumers
+          {survey.started_at ? ` · started ${fmtDate(survey.started_at)}` : ""}{survey.closed_at ? ` · ended ${fmtDate(survey.closed_at)}` : ""}.
+          {" "}This is what Survey {survey.number} used (read-only).
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const noNotice = () => {};
+
+// Read-only: the recipe, standards or questions one survey used.
+function SurveySnapshot({ product, survey, tab }) {
+  const [state, reload] = useData(() => getRoundSnapshot(product.id, survey.number), [product.id, survey.number]);
+  if (state.loading && !state.data) return <Loading />;
+  if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
+  const { recipe, standards } = state.data;
+  // Recipe and Survey questions: the same view as the current version, without any edit option.
+  if (tab === "recipe") {
+    return (
+      <div className="org-recipe">
+        <section className="panel product-panel">
+          <RecipeTab key={`snap-${survey.number}`} product={product} snapshot={state.data} onNotice={noNotice} />
+        </section>
+      </div>
+    );
+  }
+  if (tab === "questions") {
+    return (
+      <div className="org-questions">
+        <section className="panel product-panel">
+          <QuestionsTab key={`snapq-${survey.number}`} product={product} snapshot={state.data.questions} onNotice={noNotice} />
+        </section>
+      </div>
+    );
+  }
+  if (tab === "standards") {
+    const results = standards.results || [];
+    return (
+      <section className="panel product-panel snap-panel" aria-label={`Recipe standards for Survey ${survey.number}`}>
+        <header className="snap-head">
+          <h2 className="report-h">Recipe standards · Recipe v{recipe.version ?? "—"}</h2>
+          <span className={standards.failed_count ? "po-warn" : "po-ok"}>
+            {results.length ? (standards.failed_count ? `${standards.failed_count} of ${results.length} not met` : `${plural(results.length, "standard")}, all met`) : "No standards apply"}
+          </span>
+        </header>
+        <p className="muted small">The standards in place today, checked against the recipe this survey used.</p>
+        <ul className="std-results">
+          {results.map((r) => (
+            <li key={r.rule_id}>
+              <span><strong>{r.name}</strong><span className="muted"> · expected {r.expected}{r.actual != null ? ` · actual ${r.actual}` : ""}</span></span>
+              <span className={`status-chip ${r.passed ? "is-ok" : "is-warn"}`}>{r.passed ? "Met" : "Not met"}</span>
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
+  return null;
+}
+
 function ProductPage({ productId, tab, round, ReportView, project = null, onProjectChanged }) {
   const [state, reload] = useData(() => getOrgProduct(productId), [productId]);
   // Inside a project the tabs stay in the project's address (#/projects/3/recipe)
@@ -750,6 +844,9 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
   const { product, rounds, live_round: live } = detail;
   const failedStandards = detail.standards_failed || [];
   const shownRound = tab === "report" ? round || rounds[rounds.length - 1]?.number : null;
+  // Recipe, Recipe standards and Survey questions: the current setup, or what an earlier survey used.
+  const snapTab = SNAPSHOT_TABS.includes(tab);
+  const snapRound = snapTab && round ? rounds.find((r) => r.number === round) || null : null;
 
   return (
     <section className="org-product" aria-labelledby="org-product-title">
@@ -771,6 +868,15 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
               onChange={(e) => go(`${base}/report/${e.target.value}`)}>
               {[...rounds].reverse().map((r) => (
                 <option key={r.number} value={r.number}>Survey {r.number} ({r.status === "live" ? "collecting" : "completed"})</option>
+              ))}
+            </Select>
+          )}
+          {snapTab && rounds.length > 0 && (
+            <Select className="select" value={snapRound ? String(snapRound.number) : ""} aria-label="Survey"
+              onChange={(e) => go(`${base}/${tab}${e.target.value ? `/${e.target.value}` : ""}`)}>
+              <option value="">Current (Recipe v{detail.latest_version || 1})</option>
+              {[...rounds].reverse().map((r) => (
+                <option key={r.number} value={String(r.number)}>Survey {r.number} · v{r.recipe_version ?? "—"} ({r.status === "live" ? "collecting" : "completed"})</option>
               ))}
             </Select>
           )}
@@ -798,12 +904,14 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
       )}
 
       {tab === "report" && <ReportTab product={product} rounds={rounds} round={shownRound} ReportView={ReportView} />}
-      {tab === "recipe" && (
+      {snapTab && <SurveyBox survey={snapRound} rounds={rounds} latest={detail.latest_version} />}
+      {snapTab && snapRound && <SurveySnapshot product={product} survey={snapRound} tab={tab} />}
+      {tab === "recipe" && !snapRound && (
         <RecipeSection product={product} detail={detail} onNotice={onNotice} onSaved={() => reload({ silent: true })}
           onStart={() => openProjectOf(product.id, detail.latest_version)} />
       )}
-      {tab === "standards" && <StandardsSection product={product} onChanged={() => reload({ silent: true })} />}
-      {tab === "questions" && <QuestionsSection product={product} onNotice={onNotice} />}
+      {tab === "standards" && !snapRound && <StandardsSection product={product} onChanged={() => reload({ silent: true })} />}
+      {tab === "questions" && !snapRound && <QuestionsSection product={product} onNotice={onNotice} />}
       {tab === "rounds" && (
         <RoundsSection product={product} detail={detail} base={base} onStart={() => openProjectOf(product.id, detail.latest_version)}
           onChanged={() => { reload({ silent: true }); onProjectChanged?.(); }} onNotice={onNotice} />
@@ -991,7 +1099,7 @@ function AddProjectPage() {
       <div className="add-project-grid">
         <section className="panel add-project-form" aria-label="Project details">
           <label className="field">
-            <span className="field-label">Project name *</span>
+            <span className="field-label">Project name <span className="req" aria-hidden="true">*</span></span>
             <input className="input" maxLength={200} value={form.project_name} onChange={set("project_name")} placeholder="e.g. VitaBoost Lemon Mint launch study" autoFocus />
           </label>
           <label className="field">
@@ -1000,7 +1108,7 @@ function AddProjectPage() {
           </label>
           <div className="field-row is-three">
           <div className="field">
-            <span className="field-label" id="ap-cat">Category *</span>
+            <span className="field-label" id="ap-cat">Category <span className="req" aria-hidden="true">*</span></span>
             <Select className="select" value={form.category_id} onChange={set("category_id")} disabled={!options} aria-labelledby="ap-cat">
               <option value="">{options ? "Choose a category" : "Loading…"}</option>
               {(options || []).map((c) => (
@@ -1011,14 +1119,14 @@ function AddProjectPage() {
             </Select>
           </div>
             <div className="field">
-              <span className="field-label" id="ap-prod">Product *</span>
+              <span className="field-label" id="ap-prod">Product <span className="req" aria-hidden="true">*</span></span>
               <Select className="select" value={form.product_id} onChange={set("product_id")} disabled={!category} aria-labelledby="ap-prod">
                 <option value="">{category ? "Choose a product" : "Choose a category first"}</option>
                 {(category?.products || []).map((p) => <option key={p.id} value={p.id}>{p.name}{p.sku ? ` · ${p.sku}` : ""}</option>)}
               </Select>
             </div>
             <div className="field">
-              <span className="field-label" id="ap-recipe">Recipe *</span>
+              <span className="field-label" id="ap-recipe">Recipe <span className="req" aria-hidden="true">*</span></span>
               <Select className="select" value={form.product_version} onChange={set("product_version")} disabled={!product} aria-labelledby="ap-recipe">
                 <option value="">{product ? "Choose a recipe" : "Choose a product first"}</option>
                 {(product?.versions || []).map((v) => <option key={v} value={v}>Recipe v{v}</option>)}
@@ -1027,7 +1135,7 @@ function AddProjectPage() {
           </div>
           <p className="field-hint">Only recipes without a project are listed: each product recipe has one project.</p>
           <label className="field add-project-target">
-            <span className="field-label">Total consumer responses *</span>
+            <span className="field-label">Total consumer responses <span className="req" aria-hidden="true">*</span></span>
             <input className={`input${targetProblem ? " is-invalid" : ""}`} type="text" inputMode="numeric" autoComplete="off" value={form.total_target}
               placeholder="e.g. 100" aria-invalid={Boolean(targetProblem)}
               onKeyDown={(e) => { if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault(); }}
@@ -1047,15 +1155,32 @@ function AddProjectPage() {
   );
 }
 
-const AUDIENCE_LABEL = { internal: "Internal only", external: "External only" };
 
 /* "About this product": a few short bullets per part, enough to understand the product. */
+// A short list ("+9 more" opens the rest, "Show less" folds it again).
+function MoreList({ items, show = 4, render = (x) => x, keyOf = (x) => String(x) }) {
+  const [open, setOpen] = useState(false);
+  const visible = open ? items : items.slice(0, show);
+  return (
+    <ul>
+      {visible.map((x) => <li key={keyOf(x)}>{render(x)}</li>)}
+      {items.length > show && (
+        <li className="po-more-item">
+          <button type="button" className="link-btn po-more" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {open ? "Show less" : `+${items.length - show} more`}
+          </button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
 function ProductOverview({ summary, chosen }) {
   if (!chosen) {
     return (
       <aside className="panel product-overview is-empty" aria-label="About this product">
         <h2 className="report-h">About this product</h2>
-        <p className="muted">Choose a category, product and recipe: a short overview appears here, with what's in the recipe, its standards, survey questions and plan.</p>
+        <p className="muted">Choose a category, product and recipe: a short overview appears here, with what's in the recipe, its standards and survey questions.</p>
       </aside>
     );
   }
@@ -1063,12 +1188,15 @@ function ProductOverview({ summary, chosen }) {
   if (summary.error) return <aside className="panel product-overview" aria-label="About this product"><p className="form-error">{summary.error}</p></aside>;
   const d = summary.data;
   if (!d) return null;
-  const { product, recipe: r, standards: st, questions: q, plan: p, surveys } = d;
-  const dates = p.start_date || p.end_date ? `${fmtDate(p.start_date) || "…"} – ${fmtDate(p.end_date) || "…"}` : null;
+  const { product, recipe: r, standards: st, questions: q } = d;
+  const made = fmtDateTime(r.created_at || r.saved_at);
   return (
     <aside className="panel product-overview" aria-label={`About ${product.name}`}>
       <p className="eyebrow">{product.category}{product.sku ? ` · ${product.sku}` : ""}</p>
-      <h2 className="report-h">{product.name} · Recipe v{r.version}</h2>
+      <h2 className="report-h">
+        {product.name} · Recipe v{r.version}
+        {made && <span className="po-made">Created {made}</span>}
+      </h2>
       {product.description && <p className="po-desc">{product.description}</p>}
       <dl className="po-list">
         <div>
@@ -1077,10 +1205,8 @@ function ProductOverview({ summary, chosen }) {
             {r.has_recipe ? (
               <>
                 <span>{plural(r.ingredient_count, "ingredient")} · {plural(r.steps, "step")}{r.batch_size ? ` · batch ${r.batch_size}` : ""}</span>
-                <ul>
-                  {r.ingredients.map((i) => <li key={i.name}>{i.name}{i.amount ? <span className="muted"> · {i.amount}</span> : null}</li>)}
-                  {r.ingredient_count > r.ingredients.length && <li className="muted">+{r.ingredient_count - r.ingredients.length} more</li>}
-                </ul>
+                <MoreList items={r.ingredients} show={6} keyOf={(i) => i.name}
+                  render={(i) => <>{i.name}{i.amount ? <span className="muted"> · {i.amount}</span> : null}</>} />
                 {r.saved_at && <span className="muted small">Saved {fmtDate(r.saved_at)}{r.saved_by ? ` by ${r.saved_by}` : ""}{r.changes.length ? ` · ${r.changes[0]}` : ""}</span>}
               </>
             ) : <span className="muted">No recipe yet: add it before the survey starts.</span>}
@@ -1092,7 +1218,7 @@ function ProductOverview({ summary, chosen }) {
             {st.count ? (
               <>
                 <span className={st.failed ? "po-warn" : "po-ok"}>{st.failed ? `${st.failed} of ${st.count} not met` : `${plural(st.count, "standard")}, all met`}</span>
-                <ul>{st.names.map((n) => <li key={n}>{n}</li>)}{st.count > st.names.length && <li className="muted">+{st.count - st.names.length} more</li>}</ul>
+                <MoreList items={st.names} show={4} />
               </>
             ) : <span className="muted">None set</span>}
           </dd>
@@ -1103,74 +1229,110 @@ function ProductOverview({ summary, chosen }) {
             {q.count ? (
               <>
                 <span className={q.count < 5 ? "po-warn" : ""}>{plural(q.count, "question")}{q.count < 5 ? " · surveys need at least 5" : ""}</span>
-                <ul>{q.sample.map((t) => <li key={t}>{t}</li>)}{q.count > q.sample.length && <li className="muted">+{q.count - q.sample.length} more</li>}</ul>
+                <MoreList items={q.sample} show={3} />
               </>
             ) : <span className="po-warn">No questions yet: surveys need at least 5.</span>}
           </dd>
         </div>
-        <div>
-          <dt>Plan</dt>
-          <dd>
-            {p.target ? (
-              <ul>
-                <li><strong>{p.target}</strong> consumer responses in total</li>
-                {dates && <li>{dates}</li>}
-                <li>{p.cities.length ? p.cities.join(", ") : "Any city"}{p.audience ? ` · ${AUDIENCE_LABEL[p.audience] || p.audience}` : ""}</li>
-                {p.notes && <li className="muted">{p.notes.length > 140 ? `${p.notes.slice(0, 139)}…` : p.notes}</li>}
-              </ul>
-            ) : <span className="muted">No total set yet (set it on the project page: Edit total).</span>}
-          </dd>
-        </div>
-        {surveys.length > 0 && (
-          <div>
-            <dt>Earlier surveys</dt>
-            <dd>
-              <ul>
-                {surveys.map((s) => (
-                  <li key={s.number}>Survey {s.number}{s.recipe_version ? ` · recipe v${s.recipe_version}` : ""} · {s.done} of {s.target}{s.status === "live" ? " · collecting now" : ""}</li>
-                ))}
-              </ul>
-            </dd>
-          </div>
-        )}
       </dl>
     </aside>
   );
 }
 
-function EditProjectDialog({ project, onClose, onSaved }) {
-  const [form, setForm] = useState({ project_name: project.project_name, description: project.description || "" });
+/* Edit project: the same page and layout as Add project. Only the name and description change;
+   the project code, category, product and recipe are shown but fixed (a new recipe gets its own project). */
+function EditProjectPage({ projectId }) {
+  const [project, setProject] = useState(null);
+  const [form, setForm] = useState({ project_name: "", description: "", total: "" });
+  const [summary, setSummary] = useState({ loading: true, data: null, error: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    getProject(projectId).then((p) => {
+      setProject(p);
+      setForm({ project_name: p.project_name, description: p.description || "", total: p.total_target != null ? String(p.total_target) : "" });
+      getProductSummary(p.product.id, p.product_version)
+        .then((d) => setSummary({ loading: false, data: d, error: "" }))
+        .catch((e) => setSummary({ loading: false, data: null, error: orgError(e, "The product overview couldn't be loaded.") }));
+    }).catch((e) => setError(orgError(e, "The project couldn't be loaded.")));
+  }, [projectId]);
+  if (!project) return error ? <ErrorPanel text={error} /> : <Loading />;
   const submit = async () => {
+    if (form.project_name.trim().length < 2) return setError("Enter the project name (at least 2 characters).");
+    const totalChanged = !project.closed && form.total.trim() !== (project.total_target != null ? String(project.total_target) : "");
+    if (totalChanged) {
+      const p = wholeNumberProblem(form.total, "Total consumer responses");
+      if (p) return setError(p);
+    }
     setBusy(true);
     setError("");
     try {
-      onSaved(await updateProject(project.id, form));
+      // The total first: the server refuses it below what's collected or planned (nothing else is saved then).
+      if (totalChanged) await setProjectTarget(project.id, Number(form.total.trim()));
+      await updateProject(project.id, { project_name: form.project_name.trim(), description: form.description.trim() || null });
+      go(`projects/${project.id}`);
     } catch (e) {
       setError(orgError(e, "The project couldn't be saved."));
       setBusy(false);
     }
   };
+  const fixed = (label, value) => (
+    <div className="field">
+      <span className="field-label">{label}</span>
+      <input className="input" value={value} readOnly disabled aria-readonly="true" />
+    </div>
+  );
   return (
-    <Modal title={`Edit ${project.project_code}`} onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={busy || form.project_name.trim().length < 2}>{busy ? "Saving…" : "Save"}</button>
-        </>
-      }>
-      <label className="field">
-        <span className="field-label">Project name *</span>
-        <input className="input" maxLength={200} value={form.project_name} onChange={(e) => setForm({ ...form, project_name: e.target.value })} />
-      </label>
-      <label className="field">
-        <span className="field-label">Description</span>
-        <textarea className="input" rows={4} maxLength={4000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-      </label>
-      <p className="field-hint">The category, product and recipe can't be changed: to study a new recipe, add a project for it.</p>
-      {error && <p className="form-error" role="alert">{error}</p>}
-    </Modal>
+    <section className="add-project" aria-labelledby="edit-project-title">
+      <button type="button" className="back-link" onClick={() => go(`projects/${project.id}`)}><Icon name="back" /> {project.project_code}</button>
+      <header className="home-head">
+        <div className="page-heading">
+          <h1 id="edit-project-title">Edit project</h1>
+          <p className="home-sub">Change the name, description and total consumer responses. The code, category, product and recipe stay as they are.</p>
+        </div>
+      </header>
+      <div className="add-project-grid">
+        <section className="panel add-project-form" aria-label="Project details">
+          <div className="field-row">
+            {fixed("Project code", project.project_code)}
+            {fixed("Category code", project.category.code || "—")}
+          </div>
+          <label className="field">
+            <span className="field-label">Project name <span className="req">*</span></span>
+            <input className="input" maxLength={200} value={form.project_name} autoFocus onChange={(e) => setForm({ ...form, project_name: e.target.value })} />
+          </label>
+          <label className="field">
+            <span className="field-label">Description</span>
+            <textarea className="input" rows={3} maxLength={4000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          </label>
+          <div className="field-row is-three">
+            {fixed("Category", project.category.name)}
+            {fixed("Product", project.product.name)}
+            {fixed("Recipe", project.version_label)}
+          </div>
+          <label className="field add-project-target">
+            <span className="field-label">Total consumer responses <span className="req">*</span></span>
+            {project.closed ? (
+              <input className="input" value={project.total_target ?? "Not set"} readOnly disabled />
+            ) : (
+              <input className="input" type="text" inputMode="numeric" autoComplete="off" value={form.total} placeholder="e.g. 30"
+                onKeyDown={(e) => { if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault(); }}
+                onChange={(e) => setForm({ ...form, total: e.target.value })} />
+            )}
+            <span className="field-hint">
+              {project.closed ? "This project has ended: its total can't change."
+                : "Not below the responses already collected or planned. Raised after a completed survey, that survey reopens for the extra responses."}
+            </span>
+          </label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <div className="add-project-actions">
+            <button type="button" className="btn btn-secondary" onClick={() => go(`projects/${project.id}`)}>Cancel</button>
+            <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? "Saving…" : "Save changes"}</button>
+          </div>
+        </section>
+        <ProductOverview summary={summary} chosen />
+      </div>
+    </section>
   );
 }
 
@@ -1219,6 +1381,23 @@ function ProjectPage({ projectId }) {
     confirmLabel: "OK",
     cancelLabel: null,
   });
+  const endThisProject = async () => {
+    const ok = await confirmDialog({
+      title: `End ${project.project_code}?`,
+      message: "Its collecting survey ends now and no more responses are accepted. Nothing more can be planned or started in this project. "
+        + "Every response already collected is kept for review.",
+      confirmLabel: "End project",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await endProject(project.id);
+      setNotice({ tone: "ok", text: `${project.project_code} has ended. Its responses are kept.` });
+      refresh();
+    } catch (e) {
+      setError(orgError(e, "The project couldn't be ended."));
+    }
+  };
   const removeProject = async () => {
     if (plan.plans.length) {
       await plansFirst(plan.plans.map((p) => p.name));
@@ -1258,7 +1437,10 @@ function ProjectPage({ projectId }) {
         </div>
         <div className="org-head-actions">
           <button type="button" className="btn btn-secondary" onClick={() => go(`products/${project.product.id}`)}>Open product</button>
-          <button type="button" className="btn btn-secondary" onClick={() => setDialog({ type: "edit" })}>Edit</button>
+          <button type="button" className="btn btn-secondary" onClick={() => go(`projects/${project.id}/edit`)}>Edit</button>
+          {plan.can_end && !project.closed && (
+            <button type="button" className="btn btn-secondary acct-danger" onClick={endThisProject}>End project</button>
+          )}
           {/* No Delete at all once consumer feedback has come in (the server refuses it too). */}
           {project.can_delete && (
             <button type="button" className="btn btn-secondary acct-danger" onClick={removeProject}>Delete project</button>
@@ -1278,7 +1460,7 @@ function ProjectPage({ projectId }) {
             <dt>Product version</dt>
             <dd>{project.version_label}{project.version?.saved_at ? ` · saved ${fmtDate(project.version.saved_at)}${project.version.saved_by ? ` by ${project.version.saved_by}` : ""}` : ""}</dd>
           </div>
-          <div><dt>Created</dt><dd>{fmtDate(project.created_at)}{project.created_by ? ` · ${project.created_by}` : ""}</dd></div>
+          <div><dt>Total consumer responses</dt><dd>{total ?? "Not set"}</dd></div>
         </dl>
       </section>
 
@@ -1312,21 +1494,18 @@ function ProjectPage({ projectId }) {
             </span>
           )}
         </div>
-        <div className={`plan-total${over ? " is-over" : ""}`} role="status">
-          {total == null ? (
-            <span>{closed ? `No response target set yet. Survey ${plan.round?.number} collected ${used}.`
-              : "No response target set for this project yet. Set it with Edit response target, so plans can't exceed it."}</span>
-          ) : (
-            <>
-              <span>Response target: <strong>{total}</strong> consumer responses</span>
-              {used > 0 && <span>Survey {plan.round?.number} collected: <strong>{used}</strong></span>}
-              {!closed && <span>Planned: <strong>{plan.planned}</strong>{over ? " · more than the target: lower a plan" : ` · ${room - plan.planned} left`}</span>}
-            </>
-          )}
-        </div>
+        {(total == null || over || plan.stage === "closed") && (
+          <div className={`plan-total${over ? " is-over" : ""}`} role="status">
+            <span>
+              {plan.stage === "closed" ? "This project has ended. Its surveys and responses are kept for review."
+                : over ? "The plans are above the response target: lower a plan."
+                  : "No response target set for this project yet. Set it with Edit response target, so plans can't exceed it."}
+            </span>
+          </div>
+        )}
         <div className="ap-grid">
           {plan.plans.map((p) => (
-            <PlanCard key={p.id} p={p} canEdit={plan.can_edit} canAllocate={false}
+            <PlanCard key={p.id} p={p} canEdit={plan.can_edit && (live || !p.round_id)} canAllocate={false}
               onEdit={() => setDialog({ type: "plan", plan: p })} onDelete={() => removePlan(p)} />
           ))}
           {!plan.plans.length && !closed && <p className="muted">No survey plan yet.</p>}
@@ -1334,11 +1513,11 @@ function ProjectPage({ projectId }) {
         {/* A completed survey: the line under the heading already says how to reopen it. */}
         {!live && !closed && (
           <div className="org-callout project-start">
-            <span>{plan.start_problem || `Ready: ${plan.target} consumers across ${plural(plan.plans.length, "plan")}. Starting tells the research team; field executives see it once the Admin allocates them.`}</span>
+            <span>{plan.start_problem || `Ready: ${plan.target}${total ? ` of ${total}` : ""} consumers planned across ${plural(plan.plans.length, "plan")}. You can add plans for the rest while the survey collects.`}</span>
             {/* A completed survey reopens by raising the response target, so no Start button then. */}
             {!closed && (
               <button type="button" className="btn btn-primary btn-sm" disabled={!plan.can_start} onClick={() => setDialog({ type: "start" })}>
-                {`Start Survey ${plan.next_number || (plan.round?.number || 0) + 1}`}
+                Start survey
               </button>
             )}
           </div>
@@ -1366,9 +1545,6 @@ function ProjectPage({ projectId }) {
             }
             refresh();
           }} />
-      )}
-      {dialog?.type === "edit" && (
-        <EditProjectDialog project={project} onClose={() => setDialog(null)} onSaved={() => { setDialog(null); refresh(); }} />
       )}
       {dialog?.type === "start" && (
         <StartSurveyDialog project={project} plan={plan} onClose={() => setDialog(null)}
@@ -1718,6 +1894,10 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice, base = `
                   {r.status === "live" ? "collecting" : r.closed_reason === "ended" ? "ended early" : "completed"}
                 </span>
                 <span className="status-chip is-neutral">Recipe v{r.recipe_version ?? "—"}</span>
+                {r.project && (
+                  <button type="button" className="status-chip is-neutral chip-link" onClick={() => go(`projects/${r.project.id}`)}
+                    title={r.project.name}>{r.project.code}</button>
+                )}
               </div>
               <p className="muted small">
                 {fmtDate(r.started_at)} – {r.closed_at ? fmtDate(r.closed_at) : "now"}
@@ -1725,7 +1905,7 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice, base = `
               </p>
               <Progress done={r.done} target={r.target} />
               <p className="muted small">
-                {r.done} of {r.target} consumers{r.rating != null ? ` · rating ${one(r.rating)}★` : ""}
+                {r.done} submitted of {r.target} target · {Math.max((r.target || 0) - (r.done || 0), 0)} remaining{r.rating != null ? ` · rating ${one(r.rating)}★` : ""}
                 {r.note ? ` · “${r.note}”` : ""}
               </p>
               <div className="org-tl-actions">
@@ -1817,13 +1997,13 @@ function StartSurveyDialog({ project, plan, onClose, onStarted }) {
   };
   return (
     <Modal
-      title={`Start Survey ${number} of ${project.product.name}`}
-      subtitle={`Recipe v${project.product_version} · ${plan.target} consumers from ${plural(plan.plans.length, "survey plan")}.`}
+      title={`Start survey · ${project.project_code}`}
+      subtitle={`${project.product.name} · Recipe v${project.product_version} · ${plan.target}${plan.total_target ? ` of ${plan.total_target}` : ""} consumers from ${plural(plan.plans.length, "survey plan")}.`}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? "Starting…" : `Start Survey ${number}`}</button>
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? "Starting…" : "Start survey"}</button>
         </>
       }
     >
@@ -1866,8 +2046,13 @@ const pct = (v) => (v == null ? "—" : `${v}%`);
 // Also used by the admin dashboard's product report ("Compare rounds").
 export function CompareSection({ product, rounds, base = `products/${product.id}` }) {
   const numbers = rounds.map((r) => r.number);
-  const [pair, setPair] = useState(() => [numbers[numbers.length - 2], numbers[numbers.length - 1]]);
-  const [state, reload] = useData(() => compareRounds(product.id, pair[0], pair[1]), [product.id, pair[0], pair[1]]);
+  // Surveys are compared as separate surveys (Survey 1 and Survey 2 may test the same recipe);
+  // a survey is never compared with itself. Two chosen: the detailed comparison; more: side by side.
+  const [picked, setPicked] = useState(() => numbers.slice(-2));
+  const pair = [picked[0], picked[1]];
+  const many = picked.length > 2 ? picked : null;
+  const [state, reload] = useData(() => (picked.length < 2 ? Promise.resolve(null) : compareRounds(product.id, pair[0], pair[1], many)),
+    [product.id, picked.join(",")]);
 
   if (rounds.length < 2) {
     return (
@@ -1877,21 +2062,61 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
       </Empty>
     );
   }
+  const toggle = (n) => setPicked((p) => (p.includes(n) ? p.filter((x) => x !== n) : [...p, n].sort((x, y) => x - y)));
   const picker = (
-    <div className="org-compare-pick">
-      <strong>Compare</strong>
-      <Select className="select" value={pair[0]} aria-label="First survey" onChange={(e) => setPair([Number(e.target.value), pair[1]])}>
-        {numbers.map((n) => <option key={n} value={n}>Survey {n}</option>)}
-      </Select>
-      <span aria-hidden="true">→</span>
-      <Select className="select" value={pair[1]} aria-label="Second survey" onChange={(e) => setPair([pair[0], Number(e.target.value)])}>
-        {numbers.map((n) => <option key={n} value={n}>Survey {n}</option>)}
-      </Select>
+    <div className="org-compare-pick compare-chips" role="group" aria-label="Surveys to compare">
+      <strong>Compare surveys</strong>
+      {rounds.map((r) => (
+        <button key={r.number} type="button" className={`compare-chip${picked.includes(r.number) ? " is-on" : ""}`}
+          aria-pressed={picked.includes(r.number)} onClick={() => toggle(r.number)}>
+          Survey {r.number}
+          <span className="muted small"> · Recipe v{r.recipe_version ?? "—"}{r.project?.code ? ` · ${r.project.code}` : ""}</span>
+        </button>
+      ))}
+      <span className="muted small">{picked.length < 2 ? "Choose at least two different surveys." : `${picked.length} chosen`}</span>
     </div>
   );
+  if (picked.length < 2) return picker;
   if (state.loading && !state.data) return <>{picker}<Loading /></>;
   if (state.error) return <>{picker}<ErrorPanel text={state.error} onRetry={reload} /></>;
   const c = state.data;
+  if (!c) return picker;
+  if (many && c.surveys) {
+    const rows = [
+      ["Consumers (submitted responses)", (s) => s.numbers.consumers],
+      ["Average rating", (s) => one(s.numbers.rating)],
+      ["Positive consumers", (s) => pct(s.numbers.positive_pct)],
+      ["Negative consumers", (s) => pct(s.numbers.negative_pct)],
+      ["Would buy", (s) => pct(s.numbers.would_buy_pct)],
+      ["Prefer this product", (s) => pct(s.numbers.preferred_pct)],
+    ];
+    return (
+      <>
+        {picker}
+        <section className="panel org-panel">
+          <h3 className="org-panel-title">Surveys side by side</h3>
+          <div className="table-wrap">
+            <table className="data-table org-num-table">
+              <thead>
+                <tr><th scope="col" />{c.surveys.map((s) => (
+                  <th key={s.number} scope="col">Survey {s.number}<br /><span className="muted small">Recipe v{s.recipe_version ?? "—"} · {s.status === "live" ? "collecting" : "completed"}</span></th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {rows.map(([label, get]) => (
+                  <tr key={label}><td>{label}</td>{c.surveys.map((s) => <td key={s.number}>{s.has_report ? get(s) : "—"}</td>)}</tr>
+                ))}
+                <tr><td>Top concerns</td>{c.surveys.map((s) => (
+                  <td key={s.number}>{(s.aspects || []).filter((x) => x.concern_pct).slice(0, 3).map((x) => `${x.name} ${x.concern_pct}%`).join(", ") || "—"}</td>
+                ))}</tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="field-hint">Each column is one survey's own responses; surveys of the same recipe are never merged.</p>
+        </section>
+      </>
+    );
+  }
   const { a, b } = c;
   const na = a.numbers;
   const nb = b.numbers;

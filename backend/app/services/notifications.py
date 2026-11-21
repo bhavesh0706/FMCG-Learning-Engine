@@ -329,11 +329,13 @@ def notification_out(n: Notification) -> dict:
 
 
 def unread_count(db: Session, user: User) -> int:
-    return db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == 0).count()
+    return db.query(Notification).filter(Notification.user_id == user.id, Notification.is_read == 0,
+                                         Notification.dismissed_at.is_(None)).count()
 
 
 def latest_id(db: Session, user: User) -> int:
-    row = db.query(Notification.id).filter(Notification.user_id == user.id).order_by(Notification.id.desc()).first()
+    row = (db.query(Notification.id).filter(Notification.user_id == user.id, Notification.dismissed_at.is_(None))
+           .order_by(Notification.id.desc()).first())
     return row[0] if row else 0
 
 
@@ -344,7 +346,7 @@ def refresh_for(db: Session, user: User) -> None:
 
 
 def list_for(db: Session, user: User, limit: int = 30, unread_only: bool = False, before_id: Optional[int] = None) -> list:
-    query = db.query(Notification).filter(Notification.user_id == user.id)
+    query = db.query(Notification).filter(Notification.user_id == user.id, Notification.dismissed_at.is_(None))
     if unread_only:
         query = query.filter(Notification.is_read == 0)
     if before_id:
@@ -359,6 +361,30 @@ def mark_read(db: Session, user: User, notification_id: int) -> Optional[Notific
         n.read_at = datetime.utcnow()
         db.commit()
     return n
+
+
+def dismiss(db: Session, user: User, notification_id: int) -> bool:
+    """Removes one notification from this person's bell (hidden, kept so it isn't sent again)."""
+    n = db.query(Notification).filter(Notification.id == notification_id, Notification.user_id == user.id,
+                                      Notification.dismissed_at.is_(None)).first()
+    if n is None:
+        return False
+    now = datetime.utcnow()
+    n.dismissed_at = now
+    if not n.is_read:
+        n.is_read, n.read_at = 1, now
+    db.commit()
+    return True
+
+
+def dismiss_all(db: Session, user: User) -> int:
+    """Clears this person's whole bell."""
+    now = datetime.utcnow()
+    count = (db.query(Notification).filter(Notification.user_id == user.id, Notification.dismissed_at.is_(None))
+             .update({Notification.dismissed_at: now, Notification.is_read: 1, Notification.read_at: now},
+                     synchronize_session=False))
+    db.commit()
+    return count
 
 
 def mark_all_read(db: Session, user: User) -> int:

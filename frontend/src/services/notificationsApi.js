@@ -28,3 +28,15 @@ export async function markAllNotificationsRead() {
   const res = await api.post("/notifications/read-all");
   return res.data;
 }
+
+// DELETE /notifications/{id} -> { unread_count }  (removed from the bell for good)
+export async function deleteNotification(id) {
+  const res = await api.delete(`/notifications/${id}`);
+  return res.data;
+}
+
+// DELETE /notifications -> { cleared, unread_count }  (clears the whole bell)
+export async function clearNotifications() {
+  const res = await api.delete("/notifications");
+  return res.data;
+}

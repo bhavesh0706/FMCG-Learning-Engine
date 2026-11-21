@@ -201,7 +201,7 @@ def test_survey_plans_never_add_up_to_more_than_the_projects_target(client, db):
         r = client.post(f"/org/projects/{proj}/plans", headers=auth(org), json={"name": "Bad", "target": bad})
         assert r.status_code == 400 and "whole number" in r.json()["detail"], (bad, r.text)
     over = client.post(f"/org/projects/{proj}/plans", headers=auth(org), json={"name": "Hyd team", "target": 90})
-    assert over.status_code == 409 and "at most 10" in over.json()["detail"] and "raise the response target" in over.json()["detail"]
+    assert over.status_code == 409 and "at most 10" in over.json()["detail"] and "raise the target first" in over.json()["detail"]
     ok = client.post(f"/org/projects/{proj}/plans", headers=auth(org), json={"name": "Hyd team", "target": 10}).json()
     hyd = next(p["id"] for p in ok["plans"] if p["name"] == "Hyd team")
     assert client.put(f"/action-plans/{hyd}", headers=auth(org), json={"name": "Hyd team", "target": 11}).status_code == 409

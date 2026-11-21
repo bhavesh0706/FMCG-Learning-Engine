@@ -1,4 +1,5 @@
 import 'dart:io';
+import '../widgets/design.dart';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -135,6 +136,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
   GpsFix? _fix; // lat/lng, accuracy, capture time and platform (services/gps_service.dart)
   GpsException? _gpsError;
   String? _place; // readable address from GPS (GET /geo/reverse)
+  Map<String, dynamic>? _placeInfo; // country, state, city of the survey's GPS
+  bool _fixOffline = false; // the fix was taken without a connection
   String? _placeError;
   // Survey location text that came from GPS or the previous survey: a new GPS
   // address may replace it, but text the survey person typed is never replaced.
@@ -216,8 +219,10 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       if (!mounted) return;
       setState(() {
         _fix = fix;
+        _fixOffline = !ConnectivityService.online.value;
         _gps = 'ok';
         _place = null;
+        _placeInfo = null;
         _placeError = null;
       });
     } on GpsException catch (e) {
@@ -253,6 +258,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       setState(() {
         _gps = 'ok';
         _place = label.isEmpty ? null : label;
+        _placeInfo = Map<String, dynamic>.from(place);
         _placeError = null;
         final current = _surveyLocation.text.trim();
         if (label.isNotEmpty && (current.isEmpty || current == (_autoLocationText ?? '').trim())) {
@@ -413,10 +419,12 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
       final a = int.tryParse(_age.text.trim());
       if (a == null || a < 1 || a > 120) return 'Enter an age between 1 and 120.';
     }
-    if (_country.text.trim().isEmpty) return "Choose the customer's country.";
-    if (_state.text.trim().isEmpty) return "Choose the customer's state.";
+    // Offline with a GPS position: the place is filled in from it when back online, so it isn't asked now.
+    final placeFromGps = GpsFix.isPlaceholder(_city.text.trim()) && _customerFixToResolve != null;
+    if (!placeFromGps && _country.text.trim().isEmpty) return "Choose the customer's country.";
+    if (!placeFromGps && _state.text.trim().isEmpty) return "Choose the customer's state.";
     final city = _cityName.text.trim();
-    if (city.isEmpty) {
+    if (city.isEmpty && !placeFromGps) {
       return _myCities.isEmpty
           ? "Choose the customer's city."
           : "Choose the customer's city: you survey in ${_myCities.join(', ')} only.";
@@ -978,10 +986,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             for (final p in list)
               _ChoiceCard(
                 title: p.name,
-                subtitle: p.surveyReady
-                    ? '${p.questionCount} questions · ${p.responsesCollected} ${p.responsesCollected == 1 ? 'survey' : 'surveys'} so far'
-                        '${p.surveyVersions.length > 1 ? ' · ${p.surveyVersions.length} versions' : ''}'
-                    : 'Not ready: needs 5–10 questions',
+                // Only a problem is worth a line here.
+                subtitle: p.surveyReady ? '' : 'Not ready: needs 5–10 questions',
                 icon: Icons.shopping_bag_rounded,
                 enabled: p.surveyReady,
                 onTap: () => _chooseProduct(p),
@@ -1037,11 +1043,13 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             ),
             child: Text.rich(
               TextSpan(children: [
-                const TextSpan(text: 'Your share: '),
-                TextSpan(text: '${intOf(_myPlan?['my_done'])} of ${intOf(_myPlan?['my_target'])}', style: const TextStyle(fontWeight: FontWeight.w800)),
-                TextSpan(text: intOf(_myPlan?['my_done']) >= intOf(_myPlan?['my_target'])
-                    ? ' responses · all done (ask your Admin if more are needed)'
-                    : ' responses · ${intOf(_myPlan?['my_target']) - intOf(_myPlan?['my_done'])} to go'),
+                const TextSpan(text: 'Assigned responses '),
+                TextSpan(text: '${intOf(_myPlan?['my_target'])}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                const TextSpan(text: ' · Submitted '),
+                TextSpan(text: '${intOf(_myPlan?['my_done'])}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                const TextSpan(text: ' · Remaining '),
+                TextSpan(text: '${(intOf(_myPlan?['my_target']) - intOf(_myPlan?['my_done'])).clamp(0, 1 << 30)}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (intOf(_myPlan?['my_done']) >= intOf(_myPlan?['my_target'])) const TextSpan(text: ' · all done (ask your Admin if more are needed)'),
               ]),
               style: TextStyle(fontSize: 13.5, color: AppColors.ink, height: 1.35),
             ),
@@ -1117,7 +1125,6 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           _field(_executive, 'Your name (executive) *', capitalization: TextCapitalization.words),
         _field(_surveyLocation, 'Survey location *', capitalization: TextCapitalization.words, hint: 'e.g. D-Mart, Andheri West',
             action: TextInputAction.done),
-        _locationRow(),
         const SizedBox(height: 12),
         Text('How long have you been ${_usageVerb()} ${_product?.name ?? 'the product'}? *',
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -1212,8 +1219,44 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     );
   }
 
+  bool _placeManual = false; // Change: the country / state / city lists
+  bool _placeAutoTried = false;
+
   List<Widget> _customerPlace() {
     final busy = _placeGps == 'locating' || _placeGps == 'resolving';
+    // Captured automatically from the phone's location when the step opens.
+    if (!_placeAutoTried && _cityName.text.trim().isEmpty && _city.text.trim().isEmpty) {
+      _placeAutoTried = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _locateCustomer();
+      });
+    }
+    final captured = (_country.text.trim().isNotEmpty && _state.text.trim().isNotEmpty && _cityName.text.trim().isNotEmpty) ||
+        GpsFix.isPlaceholder(_city.text.trim());
+    if (captured && !_placeManual) {
+      final where = [_cityName.text.trim(), _state.text.trim(), _country.text.trim()].where((x) => x.isNotEmpty).join(', ');
+      final area = GpsFix.isPlaceholder(_city.text.trim()) ? '' : _city.text.trim();
+      return [
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: AppColors.brandSoft, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.line)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text("Customer's place (from this phone's location)", style: TextStyle(fontSize: 12, color: AppColors.muted, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text(
+              where.isEmpty ? 'GPS position kept: the address is added when you are back online.' : [area, where].where((x) => x.isNotEmpty).join(', '),
+              style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink),
+            ),
+            if (_placeMsg != null) ...[const SizedBox(height: 4), Text(_placeMsg!, style: TextStyle(fontSize: 12.5, color: AppColors.muted))],
+            Row(children: [
+              TextButton.icon(onPressed: busy ? null : _locateCustomer, icon: const Icon(Icons.my_location_rounded, size: 18), label: Text(busy ? 'Finding…' : 'Update')),
+              TextButton(onPressed: () => setState(() => _placeManual = true), child: const Text('Change')),
+            ]),
+          ]),
+        ),
+      ];
+    }
     return [
       if (_countries.isNotEmpty)
         _pick('Country *', _countries, _countryValue, (v) => setState(() {
@@ -1432,6 +1475,33 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
     if (d.inMinutes < 60) return '${d.inMinutes} min ago';
     final local = t.toLocal();
     return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// The Location step: this survey's GPS (latitude, longitude, accuracy, when, online or offline)
+  /// and the place it resolves to (country, state, city), with the usual update / settings row.
+  /// "Current location" on the feedback step: the place found from the survey's GPS, then the GPS row.
+  Widget _locationCard() {
+    final info = _placeInfo ?? const <String, dynamic>{};
+    final parts = [info['city'], info['state'], info['country']].where((x) => x != null && '$x'.trim().isNotEmpty).join(', ');
+    final place = parts.isNotEmpty
+        ? parts
+        : (_fix == null ? 'Not captured' : (_fixOffline ? 'Address added when back online' : (_place ?? 'Finding the address…')));
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(14), border: Border.all(color: AppColors.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Current location', style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+        const SizedBox(height: 2),
+        Text(place, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink)),
+        const SizedBox(height: 8),
+        _locationRow(),
+        if (_fix == null && _gps == 'error')
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('The survey can still be submitted without it.', style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+          ),
+      ]),
+    );
   }
 
   /// GPS of this survey: coordinates, accuracy and capture time, or what to do.
@@ -1661,6 +1731,8 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
         ),
         const SizedBox(height: 6),
         Text('30 seconds to 35 minutes.', style: TextStyle(fontSize: 13.5, color: AppColors.muted)),
+        const SizedBox(height: 18),
+        _locationCard(),
         const SizedBox(height: 18),
         if (_sealing) ...[
           Container(
@@ -1957,7 +2029,7 @@ class SurveySubmittedScreen extends StatelessWidget {
    ================================================================ */
 
 InputDecoration _inputDecoration(String label) => InputDecoration(
-      labelText: label,
+      label: fieldLabel(label), // "Full name *": the asterisk in red
       filled: true,
       fillColor: AppColors.surface,
       contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
@@ -2184,8 +2256,10 @@ class _ChoiceCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 2),
-                        Text(subtitle, style: TextStyle(fontSize: 13, color: AppColors.muted)),
+                        if (subtitle.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(subtitle, style: TextStyle(fontSize: 13, color: AppColors.muted)),
+                        ],
                       ],
                     ),
                   ),

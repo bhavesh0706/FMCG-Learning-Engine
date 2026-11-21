@@ -321,8 +321,10 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
   String _query = '';
 
   Future<_CatalogData> _load() async {
-    final r = await Future.wait([AdminApi.categories(), AdminApi.products()]);
-    return _CatalogData(r[0], r[1]);
+    // Every category, inactive ones too (marked); products: active ones.
+    final r = await Future.wait([AdminApi.categories(includeInactive: true), AdminApi.products()]);
+    final cats = [...r[0]]..sort((x, y) => (x['is_active'] == false ? 1 : 0) - (y['is_active'] == false ? 1 : 0));
+    return _CatalogData(cats, r[1]);
   }
 
   @override
@@ -361,7 +363,8 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: ChoiceChip(
-                      label: Text('${str(c['name'])} · ${intOf(c['product_count'])}'),
+                      label: Text(c['is_active'] == false ? '${str(c['name'])} · Inactive' : '${str(c['name'])} · ${intOf(c['product_count'])}',
+                          style: c['is_active'] == false ? TextStyle(color: AppColors.muted, fontStyle: FontStyle.italic) : null),
                       selected: _category == intOf(c['id']),
                       onSelected: (_) => setState(() => _category = intOf(c['id'])),
                     ),
@@ -993,7 +996,7 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
             onSelectionChanged: (v) => setState(() => _role = v.first),
           ),
           const SizedBox(height: 14),
-          TextField(controller: _name, decoration: const InputDecoration(labelText: 'Full name', hintText: 'e.g. Riya Kapoor')),
+          TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Full name'), hintText: 'e.g. Riya Kapoor')),
           const SizedBox(height: 10),
           TextField(controller: _mobile, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Mobile number')),
           const SizedBox(height: 10),
@@ -1002,7 +1005,7 @@ class _AddMemberSheetState extends State<_AddMemberSheet> {
           TextField(
             controller: _password,
             decoration: InputDecoration(
-              labelText: 'Password',
+              label: requiredLabel('Password'),
               suffixIcon: IconButton(
                 tooltip: 'Generate',
                 icon: const Icon(Icons.autorenew),
@@ -1053,7 +1056,7 @@ class _ResetPasswordDialogState extends State<_ResetPasswordDialog> {
       content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('They are signed out everywhere and sign in with this new password.'),
         const SizedBox(height: 12),
-        TextField(controller: _pw, decoration: const InputDecoration(labelText: 'New password')),
+        TextField(controller: _pw, decoration: InputDecoration(label: requiredLabel('New password'))),
         if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
       ]),
       actions: [

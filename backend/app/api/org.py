@@ -111,7 +111,9 @@ def _product_rows(db: Session, products: list[Product], viewer: str) -> list[dic
     for p in products:
         rs = by_product.get(p.id, [])
         current = rs[-1] if rs else None
-        previous = rs[-2] if len(rs) > 1 else None
+        # The rating before the current one: the newest EARLIER survey that has a rating (with 3 versions,
+        # v2's survey -> v3's survey, never the first one).
+        previous = next((r for r in reversed(rs[:-1]) if r.id in reports and reports[r.id].overall_rating is not None), None)
         rows.append({
             "id": p.id,
             "name": p.name,
@@ -122,7 +124,8 @@ def _product_rows(db: Session, products: list[Product], viewer: str) -> list[dic
             "rounds": len(rs),
             "responses": sum(done.get(r.id, 0) for r in rs),
             "current_round": R.round_out(current, done.get(current.id, 0), viewer, reports.get(current.id)) if current else None,
-            "previous_rating": reports[previous.id].overall_rating if previous and previous.id in reports else None,
+            "previous_rating": reports[previous.id].overall_rating if previous else None,
+            "previous_round": {"number": previous.number, "recipe_version": previous.recipe_version} if previous else None,
             "created_at": _iso(p.created_at),
         })
     return rows
@@ -280,7 +283,19 @@ def _rounds_out(db: Session, product_id: int, viewer: str) -> list[dict]:
     rs = R.rounds_of(db, product_id)
     done = R.done_counts(db, [r.id for r in rs])
     reports = round_reports(db, [r.id for r in rs])
-    return [R.round_out(r, done.get(r.id, 0), viewer, reports.get(r.id)) for r in rs]
+    # Each survey's project (the project of its recipe version): surveys of different versions stay apart.
+    from app.database.models import Project, product_first_version
+
+    product = db.get(Product, product_id)
+    first = product_first_version(product) if product else 1
+    projects = {p.product_version: p for p in db.query(Project).filter(Project.product_id == product_id)}
+    out = []
+    for r in rs:
+        row = R.round_out(r, done.get(r.id, 0), viewer, reports.get(r.id))
+        proj = projects.get(r.recipe_version or first)
+        row["project"] = {"id": proj.id, "code": proj.project_code, "name": proj.project_name} if proj else None
+        out.append(row)
+    return out
 
 
 @router.get("/products/{product_id}")
@@ -344,6 +359,68 @@ def product_report(
     }
 
 
+@router.get("/products/{product_id}/rounds/{number}/snapshot")
+def round_snapshot(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
+    """What one survey used: its recipe version (as saved then), the recipe standards checked
+    against that recipe, and the questions its consumers were asked (as asked, from the answers).
+    Lets the Recipe, Recipe standards and Survey questions tabs show an earlier survey after the
+    recipe or questions changed."""
+    from collections import OrderedDict
+
+    from app.database.models import RecipeStandard, SurveyAnswer, SurveyQuestion
+    from app.services.recipe_tools import costing, validate
+
+    viewer = _role(request)
+    product = _product_or_404(db, request, product_id)
+    rounds = _rounds_out(db, product_id, viewer)
+    survey = next((r for r in rounds if r["number"] == number), None)
+    if survey is None:
+        raise HTTPException(status_code=404, detail=f"Survey {number} not found.")
+    version = survey.get("recipe_version")
+    saved = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first()
+             if version else None)
+    recipe = (saved.recipe if saved is not None else None) or (product.recipe if not version else None) or {}
+    rules = db.query(RecipeStandard).filter(RecipeStandard.is_active == 1).all()
+    standards = (validate(recipe, rules, product.category_id, product.id) if recipe
+                 else {"passed": None, "failed_count": 0, "checked": 0, "results": []})
+
+    # The questions as this survey asked them (answers keep a copy of each question).
+    asked: "OrderedDict[int, dict]" = OrderedDict()
+    rows = (db.query(SurveyAnswer.question_id, SurveyAnswer.question_text, SurveyAnswer.question_type)
+            .join(SurveyResponse, SurveyResponse.id == SurveyAnswer.response_id)
+            .filter(SurveyResponse.round_id == survey["id"]).order_by(SurveyAnswer.id).all())
+    for qid, text_, kind in rows:
+        asked.setdefault(qid, {"id": qid, "text": text_, "question_type": kind})
+    current = {q.id: q for q in db.query(SurveyQuestion).filter(SurveyQuestion.product_id == product.id)}
+    if asked:
+        questions = sorted(asked.values(), key=lambda q: (getattr(current.get(q["id"]), "position", 999), q["id"]))
+        for q in questions:
+            cur = current.get(q["id"])
+            q["options"] = (cur.options if cur is not None else None) or []
+            q["required"] = bool(cur.required) if cur is not None else True
+            q["still_asked"] = bool(cur is not None and cur.is_active)
+            q["report_role"] = cur.report_role if cur is not None else None
+        source = "answers"
+    else:  # nothing answered yet: the questions it asks now
+        questions = [{"id": q.id, "text": q.text, "question_type": q.question_type, "options": q.options or [],
+                      "required": bool(q.required), "still_asked": True, "report_role": q.report_role}
+                     for q in sorted(current.values(), key=lambda q: q.position) if q.is_active]
+        source = "current"
+    return {
+        "round": survey,
+        "recipe": {"version": version, "saved_at": _iso(saved.created_at) if saved is not None else None,
+                   "saved_by": saved.changed_by_name if saved is not None else None,
+                   "batch_size": recipe.get("batch_size"), "ingredients": recipe.get("ingredients") or [],
+                   "steps": recipe.get("steps") or [], "process": recipe.get("process"), "notes": recipe.get("notes"),
+                   "has_recipe": bool(recipe)},
+        "standards": standards,
+        # Cost per KG and Cost in Use of that version's ingredients (as on the current recipe).
+        "costing": costing(recipe) if recipe else None,
+        "questions": questions,
+        "questions_source": source,
+    }
+
+
 # ============================================================
 # Comparing two rounds
 # ============================================================
@@ -392,16 +469,41 @@ def compare_rounds(
     request: Request,
     a: Optional[int] = Query(default=None, ge=1),
     b: Optional[int] = Query(default=None, ge=1),
+    surveys: Optional[str] = Query(default=None, max_length=200),  # "1,2,3": several surveys side by side
     db: Session = Depends(get_db),
 ):
+    """Compares separate surveys (survey instances), including surveys of the same recipe version.
+    A survey is never compared with itself."""
     viewer = _role(request)
     _product_or_404(db, request, product_id)
     rounds = _rounds_out(db, product_id, viewer)
     if len(rounds) < 2:
         return {"enough_rounds": False, "rounds": rounds}
     numbers = [r["number"] for r in rounds]
+    side_by_side = None
+    if surveys:
+        try:
+            picked = [int(x) for x in surveys.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose surveys by number, e.g. 1,2,3.")
+        if len(set(picked)) != len(picked):
+            raise HTTPException(status_code=400, detail="A survey can't be compared with itself: choose different surveys.")
+        if len(picked) < 2:
+            raise HTTPException(status_code=400, detail="Choose at least two different surveys to compare.")
+        unknown = [n for n in picked if n not in numbers]
+        if unknown:
+            raise HTTPException(status_code=404, detail=f"Survey {unknown[0]} not found.")
+        side_by_side = []
+        for n in picked:
+            r = next(x for x in rounds if x["number"] == n)
+            rep = round_report(db, r["id"])
+            side_by_side.append({**r, "numbers": _numbers(rep), "has_report": rep is not None,
+                                 "aspects": sorted(_aspects(rep).values(), key=lambda x: -max(x.get("concern_pct") or 0, x.get("praise_pct") or 0))[:8]})
+        a, b = picked[0], picked[1]
     a = a or numbers[-2]
     b = b or numbers[-1]
+    if a == b:
+        raise HTTPException(status_code=400, detail="A survey can't be compared with itself: choose two different surveys.")
     ra = next((r for r in rounds if r["number"] == a), None)
     rb = next((r for r in rounds if r["number"] == b), None)
     if ra is None or rb is None:
@@ -444,6 +546,7 @@ def compare_rounds(
         "recipe_changes": recipe_changes,
         "same_recipe": ra["recipe_version"] == rb["recipe_version"],
         "headline": headline,
+        "surveys": side_by_side,  # with ?surveys=1,2,3: each survey's own results
     }
 
 

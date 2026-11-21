@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/design.dart';
 
 import '../main.dart';
 import 'package:flutter/services.dart';
@@ -46,7 +47,8 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
     return Loaded<_CatalogData>(
       load: _load,
       builder: (context, data, reload) {
-        final cats = data.categories.where((c) => _showInactive || c['is_active'] != false).toList();
+        // Every category is listed (inactive last, marked); the switch below only hides inactive products.
+        final cats = [...data.categories]..sort((x, y) => (x['is_active'] == false ? 1 : 0) - (y['is_active'] == false ? 1 : 0));
         final q = _query.toLowerCase();
         final products = data.products
             .where((p) => _showInactive || p['is_active'] != false)
@@ -108,7 +110,8 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: ChoiceChip(
-                      label: Text('${str(c['name'])}${c['is_active'] == false ? ' (inactive)' : ''} · ${intOf(c['product_count'])}'),
+                      label: Text(c['is_active'] == false ? '${str(c['name'])} · Inactive' : '${str(c['name'])} · ${intOf(c['product_count'])}',
+                          style: c['is_active'] == false ? TextStyle(color: AppColors.muted, fontStyle: FontStyle.italic) : null),
                       selected: _category == intOf(c['id']),
                       onSelected: (_) => setState(() => _category = intOf(c['id'])),
                     ),
@@ -120,7 +123,7 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
               dense: true,
               value: _showInactive,
               onChanged: (v) => setState(() => _showInactive = v),
-              title: const Text('Show inactive'),
+              title: const Text('Show inactive products'),
             ),
             if (selected != null) _CategoryHeader(category: selected, onChanged: reload),
             TextField(
@@ -329,7 +332,7 @@ class _CategorySheetState extends State<_CategorySheet> {
         Text(widget.category == null ? 'Add a category' : 'Rename category',
             style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
         const SizedBox(height: 14),
-        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Name', hintText: 'Breakfast Cereals')),
+        TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Name'), hintText: 'Breakfast Cereals')),
         const SizedBox(height: 12),
         TextField(controller: _description, decoration: const InputDecoration(labelText: 'Description (optional)')),
         if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
@@ -480,12 +483,12 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
           SearchDropdownField<int>(
                 isExpanded: true,
             value: hasSelected ? _categoryId : null,
-            decoration: const InputDecoration(labelText: 'Category'),
+            decoration: InputDecoration(label: requiredLabel('Category')),
             items: [for (final c in cats) DropdownMenuItem(value: intOf(c['id']), child: Text(str(c['name'])))],
             onChanged: (v) => setState(() => _categoryId = v),
           ),
           const SizedBox(height: 12),
-          TextField(controller: _name, decoration: const InputDecoration(labelText: 'Product name', hintText: 'Aam (Mango) Jelly')),
+          TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Product name'), hintText: 'Aam (Mango) Jelly')),
           const SizedBox(height: 12),
           TextField(controller: _sku, decoration: const InputDecoration(labelText: 'SKU (optional)', hintText: 'FOOD-AAM-JELLY')),
           const SizedBox(height: 12),
@@ -493,8 +496,7 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
             TextField(
               controller: _startVersion,
               keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                labelText: 'Recipe version',
+              decoration: InputDecoration(label: requiredLabel('Recipe version'),
                 prefixText: 'v',
                 helperText: 'The first recipe saved gets this number; keep 1 for a new product.',
               ),

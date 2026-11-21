@@ -25,7 +25,7 @@ export default function Modal({ title, subtitle, onClose, children, footer }) {
             <h2 id="modal-title">{title}</h2>
             {subtitle && <p className="muted">{subtitle}</p>}
           </div>
-          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>×</button>
+          <button type="button" className="icon-btn modal-x" aria-label="Close" onClick={onClose}>×</button>
         </div>
         <div className="modal-body">{children}</div>
         <div className="modal-foot">{footer}</div>

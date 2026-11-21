@@ -599,6 +599,8 @@ class Notification(AuditMixin, Base):
     read_at = Column(DateTime, nullable=True)
     # Set when the reason went away (e.g. the missing video was uploaded later).
     resolved_at = Column(DateTime, nullable=True)
+    # Cleared from the bell by its owner: hidden, but kept so it is never sent again (dedupe, syncs).
+    dismissed_at = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 # ============================================================
@@ -987,6 +989,10 @@ class Project(AuditMixin, Base):
     # Total consumer responses this project (product version) needs, set when the project is
     # created; its survey plans can't add up to more. Raised with "Edit response target".
     total_target = Column(Integer, nullable=True)
+    # Set when the Super Admin ends the project: its collecting survey ends with it, and nothing
+    # more is planned, started or reopened (responses already collected are kept).
+    closed_at = Column(DateTime, nullable=True)
+    closed_by_name = Column(String(150), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

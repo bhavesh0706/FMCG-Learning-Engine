@@ -6,7 +6,7 @@ import { myActionPlans } from "../services/orgApi";
 import { getMasters } from "../services/nextApi";
 import { fillArray, lovChildren, lovMatch, lovValues, onLovLoaded } from "../services/lov";
 import { API_BASE_URL } from "../config";
-import { captureFix, describeFix, fixFields, isPlaceholder, isPoor, keepFix, keptFix, placeholderFor } from "../services/gps";
+import { captureFix, describeFix, fixFields, isPlaceholder, keepFix, keptFix, placeholderFor } from "../services/gps";
 import Select from "./Select";
 
 /*
@@ -24,7 +24,7 @@ import Select from "./Select";
                      to start the next respondent for the same product
 */
 
-const STEPS = ["Product", "Respondent", "Questions"];
+const STEPS = ["Product", "Respondent", "Questions"]; // the GPS is taken on its own and shown on the feedback step
 
 // "Recipe v2 · Round 2": the version of the product being tested right now.
 // Products with several versions in fieldwork: "2 versions" (the survey person picks one).
@@ -34,49 +34,6 @@ export function versionLabel(product) {
   const r = product?.live_round;
   if (!r) return "";
   return [r.recipe_version ? `Recipe v${r.recipe_version}` : null, `Survey ${r.number}`].filter(Boolean).join(" · ");
-}
-
-// Under the chosen product: which recipe version this survey tests, the round's
-// progress and the organization's short note. The recipe itself is never shown.
-function VersionCard({ round, version = null }) {
-  if (!round && version) {
-    const last = version.rounds[version.rounds.length - 1];
-    return (
-      <div className="version-card" aria-label="Product version">
-        <div className="version-chips">
-          <span className="version-chip">Recipe v{version.version}</span>
-          <span className="round-chip">Survey {last} · complete</span>
-        </div>
-        <p className="muted version-card-note">
-          This version's survey has ended. The response is added to Survey {last}, so it counts in that version's report.
-        </p>
-      </div>
-    );
-  }
-  if (!round) {
-    return (
-      <p className="version-card is-none">
-        No survey is collecting for this product right now. This response joins its latest survey.
-      </p>
-    );
-  }
-  const pct = Math.min(100, Math.round((100 * (round.done || 0)) / Math.max(1, round.target || 1)));
-  return (
-    <div className="version-card" aria-label="Recipe version being tested">
-      <div className="version-chips">
-        {round.recipe_version && <span className="version-chip">Recipe v{round.recipe_version}</span>}
-        <span className="round-chip is-live">Survey {round.number} · {round.done} of {round.target}</span>
-        {round.new_version && <span className="status-chip is-act">New version</span>}
-      </div>
-      <div className="version-progress" aria-hidden="true"><span style={{ width: `${pct}%` }} /></div>
-      <p className="muted version-text">
-        {round.new_version
-          ? `The recipe has changed: consumers taste recipe v${round.recipe_version}. This response counts toward Survey ${round.number}.`
-          : `This response counts toward Survey ${round.number}.`}
-      </p>
-      {round.note && <p className="version-note">Note from the Super Admin: “{round.note}”</p>}
-    </div>
-  );
 }
 
 // "How long have you been consuming / using <product>?" (the stored codes are unchanged)
@@ -290,6 +247,35 @@ function CustomerPlace({ respondent, setRespondent, onLocated }) {
   );
   const busy = gps.status === "locating" || gps.status === "resolving";
 
+  // Captured automatically: the country, state and city come from the device's location; the
+  // survey person only checks them (Change opens the lists, also used when capture fails).
+  const [manual, setManual] = useState(false);
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (!autoTried.current && !(respondent.city || "").trim() && !(respondent.location || "").trim()) {
+      autoTried.current = true;
+      locate();
+    }
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+  const placed = (respondent.country && respondent.state && respondent.city) || isPlaceholder(respondent.location);
+  if (placed && !manual) {
+    return (
+      <div className="field is-wide">
+        <span className="field-label">Customer's place (from this device's location)</span>
+        <div className="place-summary">
+          <span className="place-pin" aria-hidden="true">📍</span>
+          <span className="place-text">
+            <strong>{respondent.location && !isPlaceholder(respondent.location) ? `${respondent.location}, ` : ""}{[respondent.city, respondent.state, respondent.country].filter(Boolean).join(", ")
+              || "GPS position kept: the address is added when you're back online"}</strong>
+          </span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={locate} disabled={busy}>{busy ? "Finding…" : "Update"}</button>
+          <button type="button" className="link-btn" onClick={() => setManual(true)}>Change</button>
+        </div>
+        {gps.message && <span className={`gps-status ${gps.status === "warn" ? "is-warn" : "muted"}`}>{gps.message}</span>}
+      </div>
+    );
+  }
+
   return (
     <>
       <Field label="Country" required>
@@ -424,9 +410,10 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     keepFix(fix);
   };
   const [gpsState, setGpsState] = useState("idle"); // idle | locating | resolving | error
-  const [gpsMessage, setGpsMessage] = useState("");
+  const [, setGpsMessage] = useState("");
   // The Survey location text came from GPS (so a new GPS reading may replace it, but typed text never is).
   const [autoFilled, setAutoFilled] = useState(false);
+  const [surveyPlace, setSurveyPlace] = useState(null); // the address looked up from the GPS (country, state, city)
 
   const [answers, setAnswers] = useState({});
   const [error, setError] = useState("");
@@ -590,9 +577,13 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
       const age = Number(respondent.age);
       if (!Number.isInteger(age) || age < 1 || age > 120) return "Enter an age between 1 and 120.";
     }
-    if (!(respondent.country || "").trim()) return "Choose the customer's country.";
-    if (!(respondent.state || "").trim()) return "Choose the customer's state.";
-    if (!(respondent.city || "").trim()) return "Choose the customer's city.";
+    // Offline with a GPS position: the place is filled in from it once back online, so it isn't asked.
+    const placeFromGps = isPlaceholder(respondent.location) && coords;
+    if (!placeFromGps) {
+      if (!(respondent.country || "").trim()) return "Choose the customer's country.";
+      if (!(respondent.state || "").trim()) return "Choose the customer's state.";
+      if (!(respondent.city || "").trim()) return "Choose the customer's city.";
+    }
     if (!respondent.location.trim()) return "Enter the customer's current location (area or locality), or use the location button.";
     if (!executiveName.trim()) return "Enter your name as the survey executive.";
     if (!usagePeriod) return `Choose how long the customer has been ${verb} the product.`;
@@ -629,6 +620,8 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
         ?? product?.live_round?.number ?? null,
       respondentName: respondent.name.trim(),
       questionCount: questions.length,
+      // Shown on the feedback step as "Current location".
+      place: { label: surveyLocation.trim(), city: surveyPlace?.city || "", state: surveyPlace?.state || "", country: surveyPlace?.country || "", coords },
       respondent: {
         name: respondent.name.trim(),
         mobile: respondent.mobile.trim() || null,
@@ -706,6 +699,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     setGpsState("resolving");
     try {
       const place = await reverseGeocode(fix.latitude, fix.longitude);
+      setSurveyPlace(place || null);
       if (place?.label && (!surveyLocation.trim() || autoFilled)) {
         setSurveyLocation(place.label);
         setAutoFilled(true);
@@ -722,7 +716,7 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
     setGpsMessage("");
     setGpsState("locating");
     try {
-      const fix = await captureFix();
+      const fix = { ...(await captureFix()), offline: navigator.onLine === false };
       setCoords(fix);
       await resolveSurveyPlace(fix);
     } catch (err) {
@@ -730,6 +724,15 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
       setGpsMessage(err.message);
     }
   }
+
+  // The survey's GPS is captured on its own as soon as the respondent step opens (no button needed).
+  const autoTried = useRef(false);
+  useEffect(() => {
+    if (step >= 1 && !coords && !locked && !autoTried.current && gpsState === "idle") {
+      autoTried.current = true;
+      captureLocation();
+    }
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Back online with a position taken offline and no address yet: look it up now.
   useEffect(() => {
@@ -879,20 +882,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
               <p className="field-hint catalog-hint">No active products in this category yet.</p>
             )}
 
-            {product && (
-              <div className="product-summary">
-                <div className="product-summary-top">
-                  <strong>{product.name}</strong>
-                  <span className={`status-chip ${product.survey_ready ? "is-ok" : "is-warn"}`}>
-                    {product.survey_ready ? "Ready for surveys" : "Needs 5–10 questions"}
-                  </span>
-                </div>
-                <p className="muted">
-                  {product.question_count} questions · {product.responses_collected}{" "}
-                  {Number(product.responses_collected) === 1 ? "survey" : "surveys"} so far
-                </p>
-                <VersionCard round={liveForChoice} version={liveForChoice ? null : chosenVersion} />
-              </div>
+            {/* Only a problem is worth showing here; the chosen product and survey are in the fields above. */}
+            {product && !product.survey_ready && (
+              <p className="field-hint catalog-hint">{product.name} needs 5–10 survey questions before it can be surveyed.</p>
             )}
           </>
         )}
@@ -937,8 +929,9 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                   </Field>
                   {myPlan?.my_target ? (
                     <p className={`ap-note${myPlan.my_done >= myPlan.my_target ? " is-full" : ""}`} role="note">
-                      Your share: <strong>{myPlan.my_done} of {myPlan.my_target}</strong> responses
-                      {myPlan.my_done >= myPlan.my_target ? " · all done (ask your Admin if more are needed)" : ` · ${myPlan.my_target - myPlan.my_done} to go`}
+                      Assigned responses <strong>{myPlan.my_target}</strong> · Submitted <strong>{myPlan.my_done}</strong> ·
+                      Remaining <strong>{Math.max(myPlan.my_target - myPlan.my_done, 0)}</strong>
+                      {myPlan.my_done >= myPlan.my_target ? " · all done (ask your Admin if more are needed)" : ""}
                     </p>
                   ) : null}
                   {myCities.length > 0 && (
@@ -1013,28 +1006,6 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                       How long have you been {verb} {product?.name || "the product"}?<span className="req" aria-hidden="true"> *</span>
                     </span>
                     <ChoiceGroup label={`How long ${verb}`} options={USAGE_PERIODS} value={usagePeriod} onChange={setUsagePeriod} compact />
-                  </div>
-                  <div className="field is-wide">
-                    <span className="field-label">GPS location (optional)</span>
-                    <div className="gps-row">
-                      <button type="button" className="btn btn-secondary btn-sm" onClick={captureLocation}
-                        disabled={gpsState === "locating" || gpsState === "resolving"}>
-                        {gpsState === "locating" ? "Finding location…" : gpsState === "resolving" ? "Finding the address…"
-                          : coords ? "Update location" : "Use my current location"}
-                      </button>
-                      <span className={`gps-status ${gpsState === "error" ? "is-error" : isPoor(coords) ? "is-warn" : "muted"}`} aria-live="polite">
-                        {gpsState === "error"
-                          ? gpsMessage
-                          : coords
-                          ? <>
-                              <strong className="gps-coords">{describeFix(coords)}</strong>
-                              {coords.recent ? " · last known position" : ""}
-                              {isPoor(coords) ? " · Low accuracy: move to an open area and update." : ""}
-                              {gpsMessage ? ` · ${gpsMessage}` : autoFilled ? " · Survey location filled in" : ""}
-                            </>
-                          : "Fills in the survey location for you. Works offline on devices with GPS."}
-                      </span>
-                    </div>
                   </div>
                 </div>
               </fieldset>

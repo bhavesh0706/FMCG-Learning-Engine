@@ -174,14 +174,9 @@ def check_total(total: Optional[int], name: str, others: int, old_target: int, n
     new_sum, old_sum = others + new_target, others + old_target
     if new_sum > available and new_sum > old_sum:
         room = max(0, available - others)
-        if used:
-            raise PlanError(
-                f"The project's response target is {total or 0} and the earlier survey covered {used}, so the next survey can "
-                f"plan {max(0, available)}; the other plans already have {others}. This plan can have at most {room}. "
-                "To plan more, raise the response target first.", 409)
-        raise PlanError(
-            f"{name} needs {total} consumer responses in total (the project's response target), and the other plans already "
-            f"have {others}. This plan can have at most {room}. To plan more, raise the response target first.", 409)
+        why = f"the project's response target is {total or 0}" + (f" and earlier surveys covered {used}" if used else "")
+        raise PlanError(f"This plan can have at most {room} consumers: {why}. "
+                        "To plan more, raise the target first (Edit response target).", 409)
 
 
 # ---------------------------------------------------------------- queries

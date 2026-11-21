@@ -408,6 +408,11 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
         if target > room:
             raise RoundError(f"The project's response target leaves {room} consumer responses after Survey {ended.number}: "
                              f"survey at most {room}, or raise the target.", 409)
+    from app.services.action_plans import project_of
+
+    owner = project_of(db, product.id, version)
+    if owner is not None and owner.closed_at is not None:
+        raise RoundError(f"Project {owner.project_code} has ended: no new survey can start for recipe v{version}.", 409)
     # Recipe Standards: checked here, immediately before the round is created, on every
     # path that starts a round. Nothing is written when one fails (no round, no notice).
     failures = standards_failures(db, product, version)

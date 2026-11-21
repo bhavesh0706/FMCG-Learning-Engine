@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -5,6 +7,7 @@ import '../main.dart';
 import '../services/api_service.dart' show ApiException;
 import '../services/org_api.dart';
 import '../services/recording_vault.dart';
+import '../widgets/design.dart';
 import '../widgets/search_dropdown.dart';
 import 'org_screens.dart' show EmptyNote, Panel, Pill, showMessage;
 
@@ -242,13 +245,13 @@ class _AddProjectPageState extends State<AddProjectPage> {
       body: _categories == null && _error == null
           ? const Center(child: CircularProgressIndicator())
           : ListView(padding: const EdgeInsets.all(16), children: [
-              TextField(controller: _name, decoration: const InputDecoration(labelText: 'Project name *', hintText: 'e.g. VitaBoost launch study')),
+              TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Project name'), hintText: 'e.g. VitaBoost launch study')),
               const SizedBox(height: 10),
               TextField(controller: _description, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Description (optional)')),
               const SizedBox(height: 10),
               SearchDropdownField<int>(
                 value: _category,
-                decoration: const InputDecoration(labelText: 'Category *'),
+                decoration: InputDecoration(label: requiredLabel('Category')),
                 items: [
                   for (final c in _categories ?? const <Json>[])
                     DropdownMenuItem(value: intOf(c['id']), enabled: asJsonList(c['products']).isNotEmpty, child: Text(str(c['name']))),
@@ -262,7 +265,7 @@ class _AddProjectPageState extends State<AddProjectPage> {
               const SizedBox(height: 10),
               SearchDropdownField<int>(
                 value: _product,
-                decoration: const InputDecoration(labelText: 'Product *'),
+                decoration: InputDecoration(label: requiredLabel('Product')),
                 items: [for (final p in _products) DropdownMenuItem(value: intOf(p['id']), child: Text(str(p['name'])))],
                 onChanged: (v) => setState(() {
                   _product = v;
@@ -273,7 +276,7 @@ class _AddProjectPageState extends State<AddProjectPage> {
               const SizedBox(height: 10),
               SearchDropdownField<int>(
                 value: _version,
-                decoration: const InputDecoration(labelText: 'Recipe *'),
+                decoration: InputDecoration(label: requiredLabel('Recipe')),
                 items: [for (final v in _versions) DropdownMenuItem(value: v, child: Text('Recipe v$v'))],
                 onChanged: (v) => setState(() => _version = v),
               ),
@@ -286,7 +289,7 @@ class _AddProjectPageState extends State<AddProjectPage> {
                   controller: _target,
                   keyboardType: TextInputType.number,
                   inputFormatters: _digitsOnly,
-                  decoration: const InputDecoration(labelText: 'Total consumer responses *', hintText: 'e.g. 100', helperText: 'The survey plans share this target.'),
+                  decoration: InputDecoration(label: requiredLabel('Total consumer responses'), hintText: 'e.g. 100', helperText: 'The survey plans share this target.'),
                 ),
               ),
               if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: TextStyle(color: AppColors.neg))],
@@ -352,7 +355,7 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
-      builder: (_) => _PlanEditorSheet(projectId: widget.projectId, plan: plan, limit: _limitFor(plan)),
+      builder: (_) => _PlanEditorSheet(projectId: widget.projectId, plan: plan, limit: _limitFor(plan), total: _plan?['total_target'] == null ? null : intOf(_plan?['total_target'])),
     );
     if (saved == true) _load();
   }
@@ -439,14 +442,14 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
   }
 
   Future<void> _start() async {
-    final number = intOf(_plan?['next_number'], intOf(asJson(_plan?['round'])['number']) + 1);
+    final total = _plan?['total_target'];
     final ok = await confirmAction(context,
-        title: 'Start Survey $number?',
-        message: '${intOf(_plan?['target'])} consumers across ${_plural(asJsonList(_plan?['plans']).length, 'plan')}. '
+        title: 'Start survey?',
+        message: '${intOf(_plan?['target'])}${total == null ? '' : ' of ${intOf(total)}'} consumers across ${_plural(asJsonList(_plan?['plans']).length, 'plan')}. '
             'The Admin allocates the team afterwards; only allocated survey persons collect.',
         confirmLabel: 'Start survey',
         cancelLabel: 'Not now');
-    if (ok) await _run(() => _api('POST', '/org/projects/${widget.projectId}/start', body: {}), 'Survey $number started.');
+    if (ok) await _run(() => _api('POST', '/org/projects/${widget.projectId}/start', body: {}), 'Survey started.');
   }
 
   Future<void> _allocate(Json p) async {
@@ -468,6 +471,17 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
       appBar: AppBar(
         title: Text(p == null ? 'Project' : str(p['project_code'])),
         actions: [
+          if (!widget.admin && p != null)
+            IconButton(
+              tooltip: 'Edit project',
+              icon: const Icon(Icons.edit_outlined),
+              onPressed: () async {
+                await Navigator.of(context).push(MaterialPageRoute(builder: (_) => EditProjectPage(project: p)));
+                _load();
+              },
+            ),
+          if (!widget.admin && p != null && _plan?['can_end'] == true && p['closed'] != true)
+            IconButton(tooltip: 'End project', onPressed: _endProject, icon: const Icon(Icons.stop_circle_outlined)),
           if (!widget.admin && p != null && p['can_delete'] == true)
             IconButton(tooltip: 'Delete project', onPressed: _deleteProject, icon: const Icon(Icons.delete_outline)),
         ],
@@ -479,6 +493,16 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
               child: ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 32), children: _body(p, plan)),
             ),
     );
+  }
+
+  Future<void> _endProject() async {
+    final ok = await confirmAction(context,
+        title: 'End ${str(_project?['project_code'])}?',
+        message: 'Its collecting survey ends now and no more responses are accepted. Nothing more can be planned or started. '
+            'Every response already collected is kept.',
+        confirmLabel: 'End project',
+        cancelLabel: 'Keep it open');
+    if (ok) await _run(() => _api('POST', '/org/projects/${widget.projectId}/end'), '${str(_project?['project_code'])} has ended.');
   }
 
   List<Widget> _body(Json p, Json plan) {
@@ -498,7 +522,6 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
       const SizedBox(height: 4),
       Text('${str(asJson(p['category'])['name'])} · ${str(asJson(p['product'])['name'])} · recipe v${intOf(p['product_version'])}',
           style: TextStyle(color: AppColors.muted)),
-      if (widget.admin) ...[const SizedBox(height: 6), const Pill('Read only', tone: 'muted')],
       if (str(p['description']).isNotEmpty) ...[const SizedBox(height: 10), Text(str(p['description']), style: TextStyle(color: AppColors.ink2))],
       const SizedBox(height: 16),
       Row(children: [
@@ -511,18 +534,20 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
         Text('Survey ${intOf(round['number'])} is completed. To survey again, set the response target above ${intOf(plan['reopen_above'], used)} '
             '(Edit response target): Survey ${intOf(round['number'])} reopens for the extra responses.', style: TextStyle(color: AppColors.ink2)),
       const SizedBox(height: 8),
+      // The total the Super Admin set when creating the project (no other count cards here).
       Panel(
-        color: AppColors.brandSoft,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Text(
-          total == null
-              ? 'No response target set yet.'
-              : 'Response target: ${intOf(total)}'
-                  '${used > 0 ? ' · Survey ${intOf(round['number'])} collected $used' : ''}'
-                  '${closed ? '' : ' · Planned ${intOf(plan['planned'])} · ${room == null ? '' : '${intOf(room) - intOf(plan['planned'])} left'}'}',
-          style: TextStyle(color: AppColors.ink, fontWeight: FontWeight.w600),
-        ),
+        child: Row(children: [
+          Icon(Icons.groups_2_outlined, size: 20, color: AppColors.brand),
+          const SizedBox(width: 10),
+          Expanded(child: Text('Total consumer responses', style: TextStyle(color: AppColors.ink2))),
+          Text(total == null ? 'Not set' : '${intOf(total)}',
+              style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
+        ]),
       ),
+      if (str(plan['stage']) == 'closed') ...[
+        const SizedBox(height: 8),
+        Text(str(plan['start_problem']), style: TextStyle(color: AppColors.ink2)),
+      ],
       if (canEdit) ...[
         const SizedBox(height: 10),
         Wrap(spacing: 8, runSpacing: 8, children: [
@@ -541,8 +566,8 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
           padding: const EdgeInsets.only(bottom: 10),
           child: PlanCardView(
             plan: pl,
-            onEdit: canEdit ? () => _editPlan(pl) : null,
-            onDelete: canEdit && intOf(pl['done']) == 0 ? () => _deletePlan(pl) : null,
+            onEdit: canEdit && (live || pl['round_id'] == null) ? () => _editPlan(pl) : null,
+            onDelete: canEdit && (live || pl['round_id'] == null) && intOf(pl['done']) == 0 ? () => _deletePlan(pl) : null,
             onAllocate: widget.admin && plan['can_allocate'] == true ? () => _allocate(pl) : null,
           ),
         ),
@@ -552,12 +577,12 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
         Panel(
           color: AppColors.brandSoft,
           child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            Text(str(plan['start_problem'], 'Ready: ${intOf(plan['target'])} consumers across ${_plural(plans.length, 'plan')}.'),
+            Text(str(plan['start_problem'], 'Ready: ${intOf(plan['target'])}${total == null ? '' : ' of ${intOf(total)}'} consumers planned across ${_plural(plans.length, 'plan')}. You can add plans for the rest while the survey collects.'),
                 style: TextStyle(color: AppColors.ink)),
             const SizedBox(height: 10),
             FilledButton(
               onPressed: plan['can_start'] == true ? _start : null,
-              child: Text('Start Survey ${intOf(plan['next_number'], intOf(round['number']) + 1)}'),
+              child: const Text('Start survey'),
             ),
           ]),
         ),
@@ -568,6 +593,138 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
       ],
     ];
   }
+}
+
+// ---------------------------------------------------------------- edit project (Super Admin)
+
+/// The same form as Add project: name and description change; code, category, product and recipe are fixed.
+class EditProjectPage extends StatefulWidget {
+  const EditProjectPage({super.key, required this.project});
+
+  final Json project;
+
+  @override
+  State<EditProjectPage> createState() => _EditProjectPageState();
+}
+
+class _EditProjectPageState extends State<EditProjectPage> {
+  late final _name = TextEditingController(text: str(widget.project['project_name']));
+  late final _description = TextEditingController(text: str(widget.project['description']));
+  late final _total = TextEditingController(text: widget.project['total_target'] == null ? '' : '${intOf(widget.project['total_target'])}');
+  bool get _closed => widget.project['closed'] == true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _description.dispose();
+    _total.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_name.text.trim().length < 2) return setState(() => _error = 'Enter the project name (at least 2 characters).');
+    final was = widget.project['total_target'] == null ? '' : '${intOf(widget.project['total_target'])}';
+    final totalChanged = !_closed && _total.text.trim() != was;
+    if (totalChanged) {
+      final problem = _wholeProblem(_total.text, 'Total consumer responses');
+      if (problem != null) return setState(() => _error = problem);
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      // The total first: the server refuses it below what's collected or planned (nothing else is saved then).
+      if (totalChanged) {
+        await _api('PUT', '/org/projects/${intOf(widget.project['id'])}/target', body: {'total_target': int.parse(_total.text.trim())});
+      }
+      await _api('PUT', '/org/projects/${intOf(widget.project['id'])}',
+          body: {'project_name': _name.text.trim(), 'description': _description.text.trim().isEmpty ? null : _description.text.trim()});
+      if (mounted) Navigator.of(context).pop(true);
+    } on ApiException catch (e) {
+      if (mounted) setState(() {
+        _busy = false;
+        _error = e.message;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = widget.project;
+    Widget fixed(String label, String value) => TextField(
+          controller: TextEditingController(text: value),
+          enabled: false,
+          decoration: InputDecoration(labelText: label),
+        );
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      appBar: AppBar(title: const Text('Edit project')),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Row(children: [
+          Expanded(child: fixed('Project code', str(p['project_code']))),
+          const SizedBox(width: 10),
+          Expanded(child: fixed('Category code', str(asJson(p['category'])['code'], '—'))),
+        ]),
+        const SizedBox(height: 10),
+        TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Project name'))),
+        const SizedBox(height: 10),
+        TextField(controller: _description, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Description (optional)')),
+        const SizedBox(height: 10),
+        fixed('Category', str(asJson(p['category'])['name'])),
+        const SizedBox(height: 10),
+        fixed('Product', str(asJson(p['product'])['name'])),
+        const SizedBox(height: 10),
+        fixed('Recipe', str(p['version_label'])),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: 220,
+          child: _closed
+              ? fixed('Total consumer responses', p['total_target'] == null ? 'Not set' : '${intOf(p['total_target'])}')
+              : TextField(
+                  controller: _total,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: _digitsOnly,
+                  decoration: InputDecoration(label: requiredLabel('Total consumer responses'), hintText: 'e.g. 30'),
+                ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _closed
+              ? 'This project has ended: its total can\'t change.'
+              : 'Not below the responses already collected or planned. Raised after a completed survey, that survey reopens for the extra responses.',
+          style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+        ),
+        if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: TextStyle(color: AppColors.neg))],
+      ]),
+      bottomNavigationBar: SafeArea(
+        minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+        child: FilledButton(onPressed: _busy ? null : _save, child: Text(_busy ? 'Saving…' : 'Save changes')),
+      ),
+    );
+  }
+}
+
+/// Close (X) for bottom sheets: a generous target, subtle at rest, red when pressed or hovered.
+class SheetCloseButton extends StatelessWidget {
+  const SheetCloseButton({super.key});
+
+  @override
+  Widget build(BuildContext context) => IconButton(
+        tooltip: 'Close',
+        iconSize: 24,
+        style: ButtonStyle(
+          minimumSize: const WidgetStatePropertyAll(Size(44, 44)),
+          foregroundColor: WidgetStateProperty.resolveWith((s) =>
+              s.contains(WidgetState.hovered) || s.contains(WidgetState.pressed) ? AppColors.neg : AppColors.muted),
+          backgroundColor: WidgetStateProperty.resolveWith((s) =>
+              s.contains(WidgetState.hovered) || s.contains(WidgetState.pressed) ? AppColors.negSoft : Colors.transparent),
+        ),
+        onPressed: () => Navigator.of(context).maybePop(),
+        icon: const Icon(Icons.close_rounded),
+      );
 }
 
 // ---------------------------------------------------------------- plan card
@@ -676,11 +833,12 @@ class PlanCardView extends StatelessWidget {
 // ---------------------------------------------------------------- plan editor (Super Admin)
 
 class _PlanEditorSheet extends StatefulWidget {
-  const _PlanEditorSheet({required this.projectId, this.plan, this.limit});
+  const _PlanEditorSheet({required this.projectId, this.plan, this.limit, this.total});
 
   final int projectId;
   final Json? plan;
   final int? limit;
+  final int? total;
 
   @override
   State<_PlanEditorSheet> createState() => _PlanEditorSheetState();
@@ -738,7 +896,8 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
     if (_city.text.trim().isNotEmpty) _addCity();
     String? problem = _name.text.trim().length < 2 ? 'Give the plan a name, e.g. “Delhi team”.' : _wholeProblem(_target.text, 'Consumer responses');
     if (problem == null && widget.limit != null && int.parse(_target.text.trim()) > widget.limit!) {
-      problem = 'This plan can have at most ${widget.limit} consumers: raise the response target first.';
+      problem = 'This plan can have at most ${widget.limit} consumers: the project\'s response target is ${widget.total ?? widget.limit}. '
+          'To plan more, raise the target first (Edit response target).';
     }
     if (problem != null) return setState(() => _error = problem);
     setState(() {
@@ -783,17 +942,33 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(16, 16, 16, 24), children: [
-        Text(widget.plan == null ? 'Add a survey plan' : 'Edit “${str(widget.plan!['name'])}”',
-            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+        Row(children: [
+          Expanded(
+            child: Text(widget.plan == null ? 'Add a survey plan' : 'Edit “${str(widget.plan!['name'])}”',
+                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+          ),
+          const SheetCloseButton(),
+        ]),
         if (widget.limit != null)
           Padding(padding: const EdgeInsets.only(top: 4), child: Text('Up to ${widget.limit} consumer responses for this plan.', style: TextStyle(color: AppColors.muted, fontSize: 13))),
         const SizedBox(height: 12),
-        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Plan name *', hintText: 'e.g. Delhi team')),
+        TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Plan name'), hintText: 'e.g. Delhi team')),
         const SizedBox(height: 10),
         Row(children: [
           Expanded(
-            child: TextField(controller: _target, keyboardType: TextInputType.number, inputFormatters: _digitsOnly,
-                decoration: const InputDecoration(labelText: 'Consumer responses *', hintText: 'e.g. 30')),
+            child: widget.limit == null
+                ? TextField(controller: _target, keyboardType: TextInputType.number, inputFormatters: _digitsOnly,
+                    decoration: InputDecoration(label: requiredLabel('Consumer responses'), hintText: 'e.g. 30'))
+                // Within the project's total: choose 1 up to what it leaves for this plan.
+                : SearchDropdownField<String>(
+                    value: _target.text.trim().isEmpty ? null : _target.text.trim(),
+                    decoration: InputDecoration(label: requiredLabel('Consumer responses')),
+                    items: [
+                      for (var n = 1; n <= math.max(widget.limit!, int.tryParse(_target.text.trim()) ?? 0); n++)
+                        DropdownMenuItem(value: '$n', child: Text('$n')),
+                    ],
+                    onChanged: (v) => setState(() => _target.text = v ?? ''),
+                  ),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -847,14 +1022,24 @@ class _AllocateSheet extends StatefulWidget {
   State<_AllocateSheet> createState() => _AllocateSheetState();
 }
 
+class _Row {
+  _Row({this.uid, List<String>? cities, this.share}) : cities = cities ?? [];
+  int? uid;
+  List<String> cities;
+  int? share;
+}
+
 class _AllocateSheetState extends State<_AllocateSheet> {
   List<Json>? _people;
-  late final Map<int, List<String>> _chosen = {
-    for (final m in asJsonList(widget.plan['members'])) intOf(m['user_id']): [...((m['cities'] as List?)?.map((c) => '$c') ?? const <String>[])],
-  };
-  late final Map<int, TextEditingController> _shares = {
-    for (final m in asJsonList(widget.plan['members'])) intOf(m['user_id']): TextEditingController(text: m['target'] == null ? '' : '${intOf(m['target'])}'),
-  };
+  // One row per survey person: who, which of the plan's cities and how many responses (all dropdowns).
+  late final List<_Row> _rows = [
+    for (final m in asJsonList(widget.plan['members']))
+      _Row(
+        uid: intOf(m['user_id']),
+        cities: [...((m['cities'] as List?)?.map((c) => '$c') ?? const <String>[])],
+        share: m['target'] == null ? null : intOf(m['target']),
+      ),
+  ];
   late final Map<int, int> _done = {for (final m in asJsonList(widget.plan['members'])) intOf(m['user_id']): intOf(m['done'])};
   List<Json>? _history;
   bool _busy = false;
@@ -862,6 +1047,7 @@ class _AllocateSheetState extends State<_AllocateSheet> {
 
   int get _target => intOf(widget.plan['target']);
   List<String> get _planCities => (widget.plan['cities'] as List?)?.map((c) => '$c').toList() ?? const [];
+  Iterable<_Row> get _chosen => _rows.where((r) => r.uid != null);
 
   @override
   void initState() {
@@ -873,48 +1059,34 @@ class _AllocateSheetState extends State<_AllocateSheet> {
     });
   }
 
-  @override
-  void dispose() {
-    for (final c in _shares.values) {
-      c.dispose();
-    }
-    super.dispose();
-  }
+  int get _allocated => _chosen.fold(0, (s, r) => s + (r.share ?? 0));
 
-  int get _allocated => _chosen.keys.fold(0, (s, id) => s + (int.tryParse(_shares[id]?.text.trim() ?? '') ?? 0));
-
-  void _toggle(int id) => setState(() {
-        if (_chosen.containsKey(id)) {
-          _chosen.remove(id);
-        } else {
-          _chosen[id] = [..._planCities];
-          _shares.putIfAbsent(id, TextEditingController.new);
-        }
-      });
+  String _nameOf(int? id) =>
+      str((_people ?? const <Json>[]).firstWhere((u) => intOf(u['id']) == id, orElse: () => <String, dynamic>{})['name'], 'Each person');
 
   void _split() => setState(() {
-        final ids = _chosen.keys.toList();
-        if (ids.isEmpty) return;
-        final each = _target ~/ ids.length;
-        var extra = _target - each * ids.length;
-        for (final id in ids) {
-          _shares[id]!.text = '${each + (extra-- > 0 ? 1 : 0)}';
+        final rows = _chosen.toList();
+        if (rows.isEmpty) return;
+        final each = _target ~/ rows.length;
+        var extra = _target - each * rows.length;
+        for (final r in rows) {
+          r.share = each + (extra-- > 0 ? 1 : 0);
         }
       });
 
   String? get _problem {
-    for (final id in _chosen.keys) {
-      final name = str((_people ?? const <Json>[]).firstWhere((u) => intOf(u['id']) == id, orElse: () => <String, dynamic>{})['name'], 'Each person');
-      final p = _wholeProblem(_shares[id]?.text ?? '', 'Responses for $name');
-      if (p != null) return p;
-      if (int.parse(_shares[id]!.text.trim()) < (_done[id] ?? 0)) return '$name already submitted ${_done[id]}: give them at least ${_done[id]}.';
-      if (_planCities.isNotEmpty && (_chosen[id] ?? const []).isEmpty) return 'Give $name at least one city.';
+    for (final r in _chosen) {
+      final name = _nameOf(r.uid);
+      if (r.share == null) return '$name: choose their responses.';
+      if (r.share! < (_done[r.uid] ?? 0)) return '$name already submitted ${_done[r.uid]}: give them at least ${_done[r.uid]}.';
+      if (_planCities.isNotEmpty && r.cities.isEmpty) return 'Choose a city for $name.';
     }
     if (_allocated > _target) return "That's ${_allocated - _target} more than the plan's $_target.";
     return null;
   }
 
   Future<void> _save() async {
+    if (_rows.any((r) => r.uid == null)) return setState(() => _error = 'Choose a survey person in every row, or remove the empty row.');
     final p = _problem;
     if (p != null) return setState(() => _error = p);
     setState(() {
@@ -924,7 +1096,7 @@ class _AllocateSheetState extends State<_AllocateSheet> {
     try {
       await _api('PUT', '/admin/action-plans/${intOf(widget.plan['id'])}/members', body: {
         'members': [
-          for (final e in _chosen.entries) {'user_id': e.key, 'cities': e.value, 'target': int.parse(_shares[e.key]!.text.trim())},
+          for (final r in _chosen) {'user_id': r.uid, 'cities': r.cities, 'target': r.share},
         ],
       });
       if (mounted) {
@@ -939,6 +1111,66 @@ class _AllocateSheetState extends State<_AllocateSheet> {
     }
   }
 
+  Widget _rowView(int i, _Row r, int remaining, Map<int, List<String>> elsewhere) {
+    final done = _done[r.uid] ?? 0;
+    final least = math.max(1, done);
+    final most = math.max(math.max(remaining + (r.share ?? 0), done), 1);
+    final taken = r.uid == null ? null : elsewhere[r.uid];
+    final people = (_people ?? const <Json>[]).where((u) => intOf(u['id']) == r.uid || !_rows.any((x) => x.uid == intOf(u['id']))).toList();
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.fromLTRB(10, 10, 4, 10),
+      decoration: BoxDecoration(border: Border.all(color: AppColors.line), borderRadius: BorderRadius.circular(12)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(
+            child: SearchDropdownField<int>(
+              value: r.uid,
+              decoration: const InputDecoration(labelText: 'Survey person', isDense: true),
+              items: [for (final u in people) DropdownMenuItem(value: intOf(u['id']), child: Text(str(u['name'])))],
+              onChanged: done > 0 ? null : (v) => setState(() => r.uid = v),
+            ),
+          ),
+          IconButton(
+            tooltip: done > 0 ? 'Already submitted responses' : 'Remove',
+            onPressed: done > 0 ? null : () => setState(() => _rows.removeAt(i)),
+            icon: const Icon(Icons.close_rounded),
+          ),
+        ]),
+        if (taken != null)
+          Padding(padding: const EdgeInsets.only(top: 2), child: Text('Also in ${taken.join(', ')}', style: TextStyle(fontSize: 12, color: AppColors.muted))),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: Row(children: [
+            if (_planCities.isNotEmpty) ...[
+              Expanded(
+                child: SearchDropdownField<String>(
+                  value: r.cities.length == 1 ? r.cities.first : (_planCities.length > 1 ? '__all' : _planCities.first),
+                  decoration: const InputDecoration(labelText: 'City', isDense: true),
+                  items: [
+                    if (_planCities.length > 1) const DropdownMenuItem(value: '__all', child: Text('All plan cities')),
+                    for (final c in _planCities) DropdownMenuItem(value: c, child: Text(c)),
+                  ],
+                  onChanged: (v) => setState(() => r.cities = v == null || v == '__all' ? [..._planCities] : [v]),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: SearchDropdownField<int>(
+                value: r.share,
+                decoration: InputDecoration(labelText: done > 0 ? 'Responses ($done done)' : 'Responses', isDense: true),
+                items: [for (var n = least; n <= most; n++) DropdownMenuItem(value: n, child: Text('$n'))],
+                onChanged: (v) => setState(() => r.share = v),
+              ),
+            ),
+          ]),
+        ),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final remaining = _target - _allocated;
@@ -948,10 +1180,14 @@ class _AllocateSheetState extends State<_AllocateSheet> {
         elsewhere.putIfAbsent(intOf(m['user_id']), () => []).add(str(p['name']));
       }
     }
+    final free = (_people ?? const <Json>[]).where((u) => !_rows.any((r) => r.uid == intOf(u['id']))).length;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(16, 16, 16, 24), children: [
-        Text('Team for “${str(widget.plan['name'])}”', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+        Row(children: [
+          Expanded(child: Text('Team for “${str(widget.plan['name'])}”', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink))),
+          const SheetCloseButton(),
+        ]),
         const SizedBox(height: 8),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -960,54 +1196,27 @@ class _AllocateSheetState extends State<_AllocateSheet> {
             borderRadius: BorderRadius.circular(10),
           ),
           child: Row(children: [
-            Text('Required $_target  ·  Allocated $_allocated  ·  Remaining $remaining', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
-            const Spacer(),
+            Expanded(
+              child: Text('Required $_target  ·  Allocated $_allocated  ·  Remaining $remaining',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
+            ),
             if (_chosen.isNotEmpty) TextButton(onPressed: _split, child: const Text('Split evenly')),
           ]),
         ),
         const SizedBox(height: 8),
         if (_people == null && _error == null) const Center(child: Padding(padding: EdgeInsets.all(16), child: CircularProgressIndicator())),
-        for (final u in _people ?? const <Json>[])
-          Container(
-            margin: const EdgeInsets.only(bottom: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(border: Border.all(color: AppColors.line), borderRadius: BorderRadius.circular(10)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                Checkbox(value: _chosen.containsKey(intOf(u['id'])), onChanged: (_) => _toggle(intOf(u['id']))),
-                Expanded(
-                  child: Text.rich(TextSpan(children: [
-                    TextSpan(text: str(u['name']), style: const TextStyle(fontWeight: FontWeight.w700)),
-                    if (elsewhere[intOf(u['id'])] != null)
-                      TextSpan(text: ' · also in ${elsewhere[intOf(u['id'])]!.join(', ')}', style: TextStyle(fontSize: 12, color: AppColors.muted)),
-                  ])),
-                ),
-                if (_chosen.containsKey(intOf(u['id'])))
-                  SizedBox(
-                    width: 74,
-                    child: TextField(
-                      controller: _shares[intOf(u['id'])],
-                      keyboardType: TextInputType.number,
-                      inputFormatters: _digitsOnly,
-                      onChanged: (_) => setState(() {}),
-                      decoration: InputDecoration(isDense: true, labelText: (_done[intOf(u['id'])] ?? 0) > 0 ? '${_done[intOf(u['id'])]} done' : 'Responses'),
-                    ),
-                  ),
-              ]),
-              if (_chosen.containsKey(intOf(u['id'])) && _planCities.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(44, 0, 0, 6),
-                  child: Wrap(spacing: 6, children: [
-                    for (final c in _planCities)
-                      FilterChip(
-                        label: Text(c),
-                        selected: _chosen[intOf(u['id'])]!.contains(c),
-                        onSelected: (on) => setState(() => on ? _chosen[intOf(u['id'])]!.add(c) : _chosen[intOf(u['id'])]!.remove(c)),
-                      ),
-                  ]),
-                ),
-            ]),
-          ),
+        if (_people != null) ...[
+          for (var i = 0; i < _rows.length; i++) _rowView(i, _rows[i], remaining, elsewhere),
+          if (free > 0 && _rows.every((r) => r.uid != null))
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: () => setState(() => _rows.add(_Row(cities: [..._planCities]))),
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: const Text('Add survey person'),
+              ),
+            ),
+        ],
         if (_people != null && _people!.isEmpty) Text('No active survey persons.', style: TextStyle(color: AppColors.muted)),
         if (_error != null || (_chosen.isNotEmpty && _problem != null))
           Padding(padding: const EdgeInsets.only(top: 6), child: Text(_error ?? _problem!, style: TextStyle(color: AppColors.neg))),

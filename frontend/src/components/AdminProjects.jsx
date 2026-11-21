@@ -30,8 +30,19 @@ function useLoad(loader, key) {
   return [state, load];
 }
 
+// The open project lives in the address (#/projects/12), so a refresh or a new sign-in reopens it.
+const idFromHash = () => {
+  const m = /^#\/projects\/(\d+)/.exec(window.location.hash || "");
+  return m ? Number(m[1]) : null;
+};
+
 export default function AdminProjects({ openId = null, onOpened }) {
-  const [selected, setSelected] = useState(openId);
+  const [selected, setSelectedState] = useState(openId ?? idFromHash());
+  const setSelected = (id) => {
+    setSelectedState(id);
+    const want = id != null ? `#/projects/${id}` : "#/projects";
+    if (window.location.hash !== want) window.history.replaceState(null, "", want);
+  };
   useEffect(() => {
     if (openId != null) {
       setSelected(openId);
@@ -163,7 +174,6 @@ function AdminProjectPage({ projectId, onBack }) {
           </h1>
           <p className="home-sub">Product: {project.product.name}{project.product.sku ? ` · ${project.product.sku}` : ""} · recipe v{project.product_version}</p>
         </div>
-        <span className="status-chip is-neutral admin-readonly" title="The Super Admin manages this project">Read only</span>
       </header>
       {notice && <p className="alert alert-ok" role="status">{notice}</p>}
       <section className="panel project-summary">
@@ -173,7 +183,7 @@ function AdminProjectPage({ projectId, onBack }) {
           <div><dt>Category</dt><dd>{project.category.name}</dd></div>
           <div><dt>Product</dt><dd>{project.product.name}</dd></div>
           <div><dt>Recipe version</dt><dd>{project.version_label}{project.version?.saved_at ? ` · saved ${fmtDate(project.version.saved_at)}` : ""}</dd></div>
-          <div><dt>Response target</dt><dd>{project.total_target ?? "Not set"}{plan.planned ? ` · ${plan.planned} planned` : ""}</dd></div>
+          <div><dt>Total consumer responses</dt><dd>{project.total_target ?? "Not set"}</dd></div>
         </dl>
       </section>
       <section className="panel" aria-labelledby="admin-plan-title">
@@ -188,6 +198,7 @@ function AdminProjectPage({ projectId, onBack }) {
                 ? `${plural(plan.plans.length, "plan")}${live ? ` · ${plan.round.done} of ${plan.round.target} consumers surveyed` : ` · ${plan.target} consumers`}. `
                   + (plan.can_allocate ? (unstaffed ? `${plural(unstaffed, "plan")} still need${unstaffed === 1 ? "s" : ""} a team.` : "Every plan has a team.") : "")
                 : "The Super Admin hasn't added survey plans yet."}
+              {plan.plans_from_survey ? ` These are the plans Survey ${plan.plans_from_survey} ran with.` : ""}
             </p>
           </div>
         </div>

@@ -247,6 +247,29 @@ def delete_action_plan(plan_id: int, request: Request, db: Session = Depends(get
     return {"deleted": plan_id}
 
 
+def _tell_assigned(db: Session, plan: ActionPlan, changes: list) -> None:
+    """Each survey person given (or given a new) share in a plan gets a notification: product, category,
+    project, cities and their own response target. One per assignment event (dedupe key)."""
+    from app.database.models import Category, Project
+    from app.services.notifications import notify
+
+    product = db.get(Product, plan.product_id)
+    category = db.get(Category, product.category_id) if product else None
+    project = db.get(Project, plan.project_id) if plan.project_id else P.project_of(db, plan.product_id, plan.recipe_version)
+    for uid, old, new in changes:
+        if new is None:
+            continue
+        notify(db, [uid], "plan_assigned",
+               title=f"Survey assignment: {product.name if product else 'a product'}",
+               message=(f"You're in “{plan.name}”{f' ({project.project_code})' if project else ''}: collect {new} consumer "
+                        f"response{'s' if new != 1 else ''}" + (f" in {', '.join(plan.cities)}" if plan.cities else "") + "."),
+               data={"product_id": plan.product_id, "product_name": product.name if product else None,
+                     "category_name": category.name if category else None, "category_id": category.id if category else None, "plan_id": plan.id, "plan_name": plan.name,
+                     "project_id": project.id if project else None, "project_code": project.project_code if project else None,
+                     "target": new, "previous_target": old, "cities": plan.cities or []},
+               dedupe_key=f"plan_assigned:{plan.id}:{uid}:{new}")
+
+
 @router.put("/admin/action-plans/{plan_id}/members")
 def allocate_members(plan_id: int, body: MembersBody, request: Request, db: Session = Depends(get_db)):
     me = _role(request, "admin")
@@ -254,7 +277,7 @@ def allocate_members(plan_id: int, body: MembersBody, request: Request, db: Sess
     plan = db.query(ActionPlan).filter(ActionPlan.id == plan_id).with_for_update().first() or _plan(db, plan_id)
     rnd = _editable(db, plan)
     try:
-        P.set_members(db, plan, body.members, me)
+        changes = P.set_members(db, plan, body.members, me)
     except P.PlanError as e:
         db.rollback()
         _fail(e)
@@ -263,6 +286,7 @@ def allocate_members(plan_id: int, body: MembersBody, request: Request, db: Sess
     db.commit()
     audit.note(request, summary=f"Allocated {len(body.members)} team member(s) to the action plan “{plan.name}”",
                details={"members": body.members})
+    _tell_assigned(db, plan, changes)
     return {"plan": _plan_now(db, plan, rnd)}
 
 

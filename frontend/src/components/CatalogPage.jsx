@@ -155,12 +155,12 @@ function CategoryDialog({ category, onClose, onSaved }) {
       }
     >
       <label className="field">
-        <span className="field-label">Category name *</span>
+        <span className="field-label">Category name <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={name} autoFocus placeholder="e.g. Beverages"
           onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
       </label>
       <label className="field">
-        <span className="field-label">Category code{category ? " *" : ""}</span>
+        <span className="field-label">Category code{category ? <> <span className="req" aria-hidden="true">*</span></> : ""}</span>
         <input className="input" value={projectId} maxLength={50}
           placeholder={category ? "e.g. CAT-0001" : "Leave empty to create one (CAT-0001, CAT-0002 …)"}
           onChange={(e) => setProjectId(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
@@ -283,13 +283,13 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
       }
     >
       <label className="field">
-        <span className="field-label">Category *</span>
+        <span className="field-label">Category <span className="req" aria-hidden="true">*</span></span>
         <Select className="input" value={form.category_id} onChange={set("category_id")}>
           {active.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Select>
       </label>
       <label className="field">
-        <span className="field-label">Product name *</span>
+        <span className="field-label">Product name <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={form.name} autoFocus placeholder="e.g. Aam (Mango) Jelly" onChange={set("name")} />
       </label>
       <label className="field">
@@ -297,7 +297,7 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
         <input className="input" value={form.sku} placeholder="e.g. FOOD-AAM-JELLY" onChange={set("sku")} />
       </label>
       <label className="field">
-        <span className="field-label">Recipe version *</span>
+        <span className="field-label">Recipe version <span className="req" aria-hidden="true">*</span></span>
         <div className="version-input">
           <span aria-hidden="true">v</span>
           <input className="input" type="number" inputMode="numeric" min="1" max="999" step="1" value={form.start_version}
@@ -684,14 +684,15 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
                 <span className="sidebar-count">{activeProducts.length}</span>
               </button>
             </li>
-            {categories
-              .filter((c) => showInactive || c.is_active)
+            {/* Every category is listed: inactive ones last, marked "Inactive" (never offered for new products). */}
+            {[...categories]
+              .sort((x, y) => Number(!x.is_active) - Number(!y.is_active))
               .map((c) => (
                 <li key={c.id}>
                   <button type="button" className={`${categoryId === c.id ? "is-on" : ""}${c.is_active ? "" : " is-inactive"}`}
                     onClick={() => setCategoryId(c.id)}>
                     <span>{c.name}</span>
-                    <span className="sidebar-count">{c.is_active ? countIn(c.id) : "off"}</span>
+                    <span className="sidebar-count">{c.is_active ? countIn(c.id) : <span className="status-chip is-neutral">Inactive</span>}</span>
                   </button>
                 </li>
               ))}
@@ -701,7 +702,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           )}
           <label className="sidebar-toggle">
             <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-            Show inactive
+            Show inactive products
           </label>
         </aside>
 
@@ -967,7 +968,7 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnl
       <fieldset className="catalog-fieldset" disabled={readOnly}>
       <div className="catalog-row">
         <label className="field">
-          <span className="field-label">Product name *</span>
+          <span className="field-label">Product name <span className="req" aria-hidden="true">*</span></span>
           <input className="input" value={form.name} onChange={set("name")} />
         </label>
         <label className="field">
@@ -1034,13 +1035,20 @@ onLovLoaded(() => {
 
 // readOnly: the admin dashboard lists the questions but can't change them (the
 // organization manages them in its portal; the server refuses admin changes too).
-export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly = false }) {
+// snapshot: the questions an earlier survey asked (read-only, same layout as the current list).
+export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly: readOnlyProp = false, snapshot = null }) {
+  const readOnly = readOnlyProp || Boolean(snapshot);
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null); // { id|null, ...form }
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
+    if (snapshot) {
+      setQuestions(snapshot);
+      setLoading(false);
+      return;
+    }
     try {
       setQuestions(listOf(await listQuestions(product.id), "questions"));
     } catch (err) {
@@ -1048,7 +1056,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
     } finally {
       setLoading(false);
     }
-  }, [product.id, onNotice]);
+  }, [product.id, onNotice, snapshot]);
 
   useEffect(() => {
     load();
@@ -1115,7 +1123,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
   const editor = editing && (
     <div className="catalog-form question-form">
       <label className="field">
-        <span className="field-label">Question *</span>
+        <span className="field-label">Question <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={editing.text} autoFocus placeholder="e.g. How would you rate the mango taste?"
           onChange={(e) => setEditing({ ...editing, text: e.target.value })} />
       </label>
@@ -1176,7 +1184,8 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       <div className="tab-head">
         <div className="tab-intro">
           <strong>Survey questions</strong>
-          <p className="muted">What survey persons ask each customer about {product.name}, in this order. Products need 5–10 questions.</p>
+          <p className="muted">{snapshot ? `What survey persons asked each customer about ${product.name} in this survey, in this order.`
+            : `What survey persons ask each customer about ${product.name}, in this order. Products need 5–10 questions.`}</p>
         </div>
         {!readOnly && (
         <span className="tab-intro-actions">
@@ -1192,18 +1201,18 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
         </span>
         )}
       </div>
-      {readOnly && (
+      {readOnly && !snapshot && (
         <p className="catalog-hint managed-note" role="note">
           Survey questions are added and changed by the organization in its portal. Changes appear here and in the
           survey workflow straight away.
         </p>
       )}
       {editing && !editing.id && editor}
-      <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>
+      {!snapshot && <p className={`catalog-hint ${count >= 5 && count <= 10 ? "is-ok" : "is-warn"}`}>
         {count} of 5–10 questions. {count < 5
           ? (readOnly ? `The Super Admin needs to add ${5 - count} more before it can be surveyed.` : `Add ${5 - count} more before it can be surveyed.`)
           : "Ready for surveys."}
-      </p>
+      </p>}
       {loading ? (
         <p className="muted">Loading…</p>
       ) : (
@@ -1219,6 +1228,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
                   <span className="question-meta">
                     <span className={`qtype qtype-${q.question_type}`}>{TYPES[q.question_type] || q.question_type}</span>
                     {!q.required && <span className="qtag">Optional</span>}
+                    {snapshot && q.still_asked === false && <span className="qtag">No longer asked</span>}
                     {q.report_role && REPORT_ROLES[q.report_role] && (
                       <span className="qtag is-report">Report: {REPORT_ROLES[q.report_role].label}</span>
                     )}
@@ -1303,7 +1313,9 @@ function amountOf(i) {
 // "30 min", "1 h", "1.5 hr", "45 sec" -> minutes; null when unclear.
 // readOnly: the admin dashboard shows recipes but can't change them (the organization
 // manages recipes in its portal; the server refuses admin changes too).
-export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
+// snapshot: an earlier survey's recipe version (read-only, same layout as the current recipe).
+export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp = false, snapshot = null }) {
+  const readOnly = readOnlyProp || Boolean(snapshot);
   const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
   const [reloadKey, setReloadKey] = useState(0); // new value = the recipe is loaded again
   const [recipe, setRecipe] = useState(null);
@@ -1318,7 +1330,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
 
   useEffect(() => {
     let alive = true;
-    getRecipe(product.id)
+    (snapshot ? Promise.resolve({ recipe: snapshot.recipe, standards: snapshot.standards, costing: snapshot.costing }) : getRecipe(product.id))
       .then((d) => {
         if (!alive) return;
         setExtras(d);
@@ -1337,7 +1349,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
     return () => {
       alive = false;
     };
-  }, [product.id, onNotice, reloadKey]);
+  }, [product.id, onNotice, reloadKey, snapshot]);
 
   const dirty = useMemo(() => recipe && JSON.stringify(recipe) !== saved, [recipe, saved]);
   if (!recipe) return <p className="muted">Loading recipe…</p>;
@@ -1432,7 +1444,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
           feedback to an exact ingredient, e.g. "7 of 10 find it too sweet: reduce sugar from 8 kg to 7 kg".
         </p>
       </div>
-      {readOnly && (
+      {readOnly && !snapshot && (
         <p className="catalog-hint managed-note" role="note">
           Recipes are added and changed by the organization in its portal. Every saved change becomes a new version,
           listed below.
@@ -1562,7 +1574,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
 
       {/* ---- production process ---- */}
       {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
-      {readOnly && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
+      {readOnly && !snapshot && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
       {/* The process: typed in here, attached as files below, or both */}
       <section className="recipe-card">
         <header className="recipe-card-head">
@@ -1579,7 +1591,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
             onChange={(e) => setRecipe({ ...recipe, process: e.target.value })} />
         )}
       </section>
-      <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />
+      {!snapshot && <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />}
       <LegacyStepsCard legacy={extras?.legacy_steps} />
 
       {/* ---- notes ---- */}
@@ -1629,14 +1641,14 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly = false }) {
         </div>
       )}
 
-      <RecipeHistory key={historyKey} productId={product.id} canDelete={!readOnly}
+      {!snapshot && <RecipeHistory key={historyKey} productId={product.id} canDelete={!readOnly}
         onDeleted={(text) => {
           setReloadKey((k) => k + 1);
           setHistoryKey((k) => k + 1);
           onNotice({ tone: "ok", text });
           onSaved?.();
         }}
-        onError={(text) => onNotice({ tone: "error", text })} />
+        onError={(text) => onNotice({ tone: "error", text })} />}
     </div>
   );
 }

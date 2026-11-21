@@ -270,7 +270,7 @@ def test_product_summary_for_the_add_project_page(client, db):
     body = s.json()
     assert body["recipe"]["version"] == 2 and body["recipe"]["versions"] == [1, 2]
     assert [i["name"] for i in body["recipe"]["ingredients"]] == ["Water", "Sugar"] and body["recipe"]["ingredients"][1]["amount"] == "2 kg"
-    assert body["questions"]["count"] == 5 and len(body["questions"]["sample"]) == 3
+    assert body["questions"]["count"] == 5 and len(body["questions"]["sample"]) == 5, "every question (the page folds them behind +N more)"
     one = client.get(f"/org/projects/product-summary?product_id={pid}&version=1", headers=auth(org)).json()
     assert one["recipe"]["ingredient_count"] == 1, "the chosen recipe version"
     assert client.get("/org/projects/product-summary?product_id=987654", headers=auth(org)).status_code == 404
@@ -441,7 +441,7 @@ def test_the_admin_shares_the_target_among_the_team_and_nobody_exceeds_their_sha
     assert state["plans"][0]["unallocated"] == 1 and state["plans"][0]["needs_allocation"] is True
     client.put(url, headers=auth(admin), json={"members": [{"user_id": ishaan.id, "target": 2}, {"user_id": suresh.id, "target": 1}]})
     state = client.get(f"/org/projects/{proj}/plans", headers=auth(org)).json()
-    assert "response target is 4" in state["start_problem"], "plans must add up to the project's target"
+    assert state["can_start"] is True and state["planned"] == 3, "fewer planned than the total (4) may start"
     client.put(f"/action-plans/{plan['id']}", headers=auth(org), json={**PLAN, "target": 4, "cities": []})
     assert db.query(Notification).filter_by(user_id=admin.id, kind="allocation_needed").count() >= 1, "Admin told to reallocate"
     client.put(url, headers=auth(admin), json={"members": [{"user_id": ishaan.id, "target": 3}, {"user_id": suresh.id, "target": 1}]})
@@ -473,3 +473,54 @@ def test_the_admin_shares_the_target_among_the_team_and_nobody_exceeds_their_sha
     # Suresh's submitted response can't be taken away: never below what he collected.
     low = client.put(url, headers=auth(admin), json={"members": [{"user_id": ishaan.id, "target": 4}]})
     assert low.status_code == 409 and "already submitted 1" in low.json()["detail"]
+
+
+def test_ending_a_project_ends_its_survey_and_survey_persons_are_told_their_share(client, db, admin, alice):
+    """Admin allocation notifies the survey person (once per assignment). The project's counts use
+    one set of words (target, submitted, remaining). Ending the project ends its collecting survey;
+    nothing more can be planned, started or reopened, and its responses are kept."""
+    from app.database.models import Notification, SurveyRound
+
+    org = make_user(db, role="client")
+    _, _, pid = _setup(client, org)
+    [v1] = _projects(db, pid)
+    client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 4})
+    plan = client.post(f"/org/projects/{v1.id}/plans", headers=auth(org), json={**PLAN, "target": 4, "cities": []}).json()["plans"][0]
+    for _ in range(2):  # saving the same share twice notifies once
+        client.put(f"/admin/action-plans/{plan['id']}/members", headers=auth(admin), json={"members": [{"user_id": alice.id, "target": 4}]})
+    notes = db.query(Notification).filter_by(user_id=alice.id, kind="plan_assigned").all()
+    assert len(notes) == 1 and notes[0].data["target"] == 4 and notes[0].data["project_id"] == v1.id
+    assert client.post(f"/org/projects/{v1.id}/start", headers=auth(org), json={}).status_code == 200
+    state = client.get(f"/org/projects/{v1.id}/plans", headers=auth(org)).json()
+    assert state["submitted"] == 0 and state["remaining"] == 4 and state["can_end"] is True
+
+    ended = client.post(f"/org/projects/{v1.id}/end", headers=auth(org))
+    assert ended.status_code == 200 and ended.json()["ended_surveys"] == [1] and ended.json()["stage"] == "closed"
+    db.expire_all()
+    assert db.query(SurveyRound).filter_by(product_id=pid).one().status == "closed"
+    detail = client.get(f"/org/projects/{v1.id}", headers=auth(org)).json()
+    assert detail["closed"] is True and detail["status_label"] == "Ended"
+    for r in (client.post(f"/org/projects/{v1.id}/plans", headers=auth(org), json=PLAN),
+              client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 9}),
+              client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 3}),
+              client.post(f"/org/projects/{v1.id}/end", headers=auth(org))):
+        assert r.status_code == 409, r.text
+    assert client.post(f"/org/projects/{v1.id}/end", headers=auth(admin)).status_code == 403
+
+
+def test_surveys_are_compared_as_separate_surveys_never_with_themselves(client, db):
+    """Survey 1 and Survey 2 of the same recipe version are two surveys: they can be compared, a survey
+    can't be compared with itself, and several can be compared side by side, each with its own results."""
+    org = make_user(db, role="client")
+    _, _, pid = _setup(client, org)
+    for _ in range(3):
+        assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 3}).status_code == 201
+        n = max(r["number"] for r in client.get(f"/org/products/{pid}", headers=auth(org)).json()["rounds"])
+        client.post(f"/org/products/{pid}/rounds/{n}/end", headers=auth(org))
+    two = client.get(f"/org/products/{pid}/compare?a=1&b=2", headers=auth(org)).json()
+    assert two["same_recipe"] is True and two["a"]["number"] == 1 and two["b"]["number"] == 2
+    assert all(r["project"] and r["project"]["code"].startswith("PRJ-") for r in two["rounds"]), "each survey's project"
+    assert client.get(f"/org/products/{pid}/compare?a=2&b=2", headers=auth(org)).status_code == 400
+    assert client.get(f"/org/products/{pid}/compare?surveys=1,1", headers=auth(org)).status_code == 400
+    many = client.get(f"/org/products/{pid}/compare?surveys=1,2,3", headers=auth(org)).json()
+    assert [s["number"] for s in many["surveys"]] == [1, 2, 3]

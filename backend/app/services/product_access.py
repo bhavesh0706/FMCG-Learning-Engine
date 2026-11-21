@@ -99,15 +99,12 @@ def visible_product_ids(db: Session, user) -> Optional[Set[int]]:
         return started_product_ids(db)
     if not getattr(user, "is_active", 1):
         return set()
+    # Only ACTIVE products whose collecting survey assigns this person (never products assigned to
+    # nobody, nor inactive ones). Their history stays in My surveys.
     rounds = current_rounds(db)
-    open_ids = open_product_ids(db)
+    active = {pid for (pid,) in db.query(Product.id).filter(Product.is_active == 1)}
     people = _people_by_round(db, [r.id for r in rounds.values()])
-    visible = set()
-    for pid, r in rounds.items():
-        assigned = people.get(r.id, set())
-        if user.id in assigned or (pid in open_ids and not assigned):
-            visible.add(pid)
-    return visible
+    return {pid for pid, r in rounds.items() if pid in active and user.id in people.get(r.id, set())}
 
 
 def hidden_product_ids(db: Session, user) -> Set[int]:
@@ -140,10 +137,7 @@ def round_for_survey(db: Session, user, product_id: int) -> Optional[SurveyRound
     assigned = _people_by_round(db, [current.id]).get(current.id, set())
     if user.id in assigned:
         return current
-    product = db.get(Product, product_id)
-    if product is not None and not product.needs_round and not assigned:
-        return current  # existing product, open to every survey person
-    return None
+    return None  # only survey persons assigned to the product's survey (by their Admin) may survey it
 
 
 def can_survey(db: Session, user, product_id: int) -> bool:

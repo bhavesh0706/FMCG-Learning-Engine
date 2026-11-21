@@ -269,3 +269,13 @@ class SectionTitle extends StatelessWidget {
     );
   }
 }
+
+
+/// A field label with a red asterisk: the field is mandatory.
+Widget requiredLabel(String text) => Text.rich(TextSpan(children: [
+      TextSpan(text: text),
+      TextSpan(text: ' *', style: TextStyle(color: AppColors.neg, fontWeight: FontWeight.w800)),
+    ]));
+
+/// "Full name *" -> the name with a red asterisk; any other label as it is.
+Widget fieldLabel(String text) => text.endsWith(' *') ? requiredLabel(text.substring(0, text.length - 2)) : Text(text);

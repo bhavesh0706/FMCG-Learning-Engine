@@ -3832,6 +3832,17 @@ textarea.input {
   overflow-wrap: anywhere;
 }
 
+.survey-context-facts .fact-wide {
+  grid-column: span 2;
+}
+
+.survey-context-facts .fact-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .survey-context .field-hint {
   margin-top: 8px;
 }
@@ -12784,3 +12795,70 @@ details.team-help > summary:hover {
 .date-day { height: 30px; font-size: 13px; border-radius: 8px; }
 .date-pop-foot { gap: 10px; padding-top: 6px; font-size: 13px; }
 .date-pop-foot .muted { font-size: 11.5px; }
+/* Compare surveys: choose two or more different surveys */
+.compare-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.compare-chip { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 6px 12px; font-weight: 600; cursor: pointer; }
+.compare-chip.is-on { background: var(--brand); border-color: var(--brand); color: var(--selected-ink); }
+.compare-chip.is-on .muted { color: color-mix(in srgb, var(--selected-ink) 80%, transparent); }
+.chip-link { cursor: pointer; border: 0; } .chip-link:hover { background: var(--hover-bg-strong); }
+/* Project: responses remaining (one set of words: target, submitted, remaining, allocated) */
+.remaining-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 10px 0; }
+.remaining-card { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.remaining-card strong { font-family: var(--font-display); font-size: 22px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.remaining-card span { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.remaining-card.is-main { background: linear-gradient(135deg, var(--brand), color-mix(in srgb, var(--brand) 70%, #4f46e5)); border-color: transparent; }
+.remaining-card.is-main strong, .remaining-card.is-main span { color: #fff; }
+.remaining-card.is-main strong { font-size: 28px; }
+.req { color: var(--neg); font-weight: 700; margin-left: 2px; }
+/* Popup close button: a larger target, subtle at rest, red on hover */
+.modal-x { width: 38px; height: 38px; min-width: 38px; border-radius: 10px; font-size: 24px; line-height: 1; display: grid; place-items: center;
+  color: var(--muted); background: transparent; border: 1px solid transparent; transition: background 0.15s, color 0.15s, border-color 0.15s; }
+.modal-x:hover, .modal-x:focus-visible { color: var(--neg-strong); background: var(--neg-soft); border-color: color-mix(in srgb, var(--neg) 30%, transparent); }
+/* Survey: the location step and the customer's place captured from the device */
+.loc-card { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); margin-bottom: 16px; }
+.loc-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.loc-card-head .survey-step-title { margin: 0; }
+.loc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 16px; margin: 0; }
+.loc-grid dt { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.loc-grid dd { margin: 2px 0 0; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.loc-card > .btn { justify-self: start; }
+.place-summary { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--brand-soft); }
+.place-text { flex: 1 1 200px; min-width: 0; color: var(--ink); }
+
+/* Team dialog: one row per survey person (person · city · responses) */
+.alloc-rows { display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; padding: 2px; }
+.alloc-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 0.9fr) 32px; gap: 8px; align-items: start; }
+.alloc-row:not(:has(> :nth-child(4))) { grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.9fr) 32px; }
+.alloc-row-head { font-size: 12px; font-weight: 600; color: var(--muted); }
+.alloc-cell { display: grid; gap: 2px; min-width: 0; }
+.alloc-remove { width: 32px; height: 38px; font-size: 20px; color: var(--muted); }
+.alloc-remove:not(:disabled):hover { color: var(--neg, #c0392b); }
+.alloc-add { justify-self: start; }
+@media (max-width: 560px) { .alloc-row { grid-template-columns: 1fr 1fr 32px; } .alloc-row > .alloc-cell { grid-column: 1 / -1; } .alloc-row-head { display: none; } }
+.po-made { display: block; margin-top: 2px; font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.po-more-item { list-style: none; margin-left: -1.1em; }
+.po-more { font-size: 13px; padding: 0; }
+
+/* Earlier survey snapshot (Recipe / Standards / Questions tabs) */
+.snap-panel { display: grid; gap: 12px; }
+.snap-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+.snap-head .report-h { margin: 0; }
+.snap-sub { margin: 6px 0 0; font-size: 15px; }
+.snap-steps, .snap-questions { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+.snap-process { white-space: pre-wrap; margin: 0; }
+.snap-chip { margin-left: 8px; }
+
+/* Bell: Clear all, and each notification's ✓ (mark read) and × (delete) */
+.notif-head-actions { display: inline-flex; align-items: center; gap: 12px; }
+.notif-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.notif-item { position: relative; overflow: hidden; }
+.notif-row { transition: transform 0.18s ease; }
+.notif-actions { position: absolute; top: 10px; right: 10px; display: flex; gap: 6px; z-index: 2; opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
+.notif-item:hover .notif-actions, .notif-item:focus-within .notif-actions, .notif-item.is-swiped .notif-actions { opacity: 1; pointer-events: auto; }
+.notif-act { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: var(--surface); color: var(--ink2, #334); cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.notif-act.is-read:hover { color: #fff; background: var(--pos, #2e7d4f); border-color: transparent; }
+.notif-act.is-delete:hover { color: #fff; background: var(--neg, #c0392b); border-color: transparent; }
+/* Touch screens: swiping left slides the notification to show its buttons */
+@media (hover: none) { .notif-actions { top: 50%; transform: translateY(-50%); } .notif-item.is-swiped .notif-row { transform: translateX(-84px); } }
+
+.rating-caption { display: block; margin-top: 2px; font-size: 11.5px; font-weight: 500; color: var(--muted); white-space: nowrap; }

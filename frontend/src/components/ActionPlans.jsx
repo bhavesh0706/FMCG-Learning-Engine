@@ -85,7 +85,7 @@ export function CitiesInput({ value = [], onChange, options, placeholder = "Type
 }
 
 /* The plan form: responses, dates, cities, audience, notes. */
-export function PlanFields({ value, onChange, idPrefix = "plan" }) {
+export function PlanFields({ value, onChange, idPrefix = "plan", limit = null }) {
   const set = (k) => (e) => onChange({ ...value, [k]: e.target.value });
   const today = todayIso();
   const targetText = String(value.target ?? "");
@@ -93,11 +93,19 @@ export function PlanFields({ value, onChange, idPrefix = "plan" }) {
   return (
     <div className="ap-fields">
       <label className="field">
-        <span className="field-label">Consumer responses *</span>
-        <input className={`input${targetProblem ? " is-invalid" : ""}`} type="text" inputMode="numeric" pattern="[1-9][0-9]*"
+        <span className="field-label">Consumer responses <span className="req" aria-hidden="true">*</span></span>
+        {limit != null ? (
+          // Within a project: choose 1 up to what the project's total leaves for this plan.
+          <Select className="input" aria-label="Consumer responses" value={targetText} onChange={set("target")}>
+            <option value="">Choose responses</option>
+            {Array.from({ length: Math.max(limit, Number(targetText) || 0) }, (_, k) => k + 1).map((n) => <option key={n} value={String(n)}>{n}</option>)}
+          </Select>
+        ) : (
+          <input className={`input${targetProblem ? " is-invalid" : ""}`} type="text" inputMode="numeric" pattern="[1-9][0-9]*"
           autoComplete="off" value={targetText} onChange={set("target")} placeholder="e.g. 30" aria-invalid={Boolean(targetProblem)}
           aria-describedby={targetProblem ? `${idPrefix}-target-err` : undefined}
           onKeyDown={(e) => { if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault(); }} />
+        )}
         {targetProblem && <span id={`${idPrefix}-target-err`} className="field-error">{targetProblem}</span>}
       </label>
       <label className="field">
@@ -144,8 +152,8 @@ export function PlanDialog({ productId, plan, onClose, onSaved, create, title, l
     const problem = planProblem(form, true);
     if (problem) return setError(problem);
     if (limit != null && Number(form.target) > limit) {
-      return setError(`This plan can have at most ${limit} consumers: the project's response target is ${total} and the other plans `
-        + `already have ${total - limit}. To plan more, raise the target first (Edit response target).`);
+      return setError(`This plan can have at most ${limit} consumers: the project's response target is ${total}. `
+        + "To plan more, raise the target first (Edit response target).");
     }
     setBusy(true);
     try {
@@ -164,13 +172,13 @@ export function PlanDialog({ productId, plan, onClose, onSaved, create, title, l
         <button type="button" className="btn btn-primary" disabled={busy} onClick={save}>{busy ? "Saving…" : plan ? "Save plan" : "Add plan"}</button>
       </>}>
       <label className="field">
-        <span className="field-label">Plan name *</span>
+        <span className="field-label">Plan name <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={name} maxLength={150} onChange={(e) => setName(e.target.value)} placeholder="e.g. Delhi team" />
       </label>
       {limit != null && (
         <p className="field-hint ap-limit">Up to <strong>{limit}</strong> consumer responses for this plan (response target {total}).</p>
       )}
-      <PlanFields value={form} onChange={setForm} idPrefix="action-plan" />
+      <PlanFields value={form} onChange={setForm} idPrefix="action-plan" limit={limit} />
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -275,20 +283,19 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
 /* Admin: which survey persons work in this plan, and in which of its cities. */
 export function AllocateDialog({ plan, plans, onClose, onSaved }) {
   const [people, setPeople] = useState(null);
-  const [chosen, setChosen] = useState(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.cities])));
-  // Each person's consumer responses: their shares add up to the plan's target.
-  const [shares, setShares] = useState(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.target ? String(m.target) : ""])));
-  const done = useMemo(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.done || 0])), [plan.members]);
+  const planCities = plan.cities || [];
+  // One row per survey person: who (dropdown), which of the plan's cities (dropdown) and how many
+  // consumer responses (dropdown). The rows' responses add up to at most the plan's target.
+  const [rows, setRows] = useState(() => plan.members.map((m) => ({ uid: String(m.user_id), cities: m.cities || [], share: m.target ? String(m.target) : "" })));
+  const done = useMemo(() => Object.fromEntries(plan.members.map((m) => [String(m.user_id), m.done || 0])), [plan.members]);
   const [history, setHistory] = useState(null);
-  const ids = Object.keys(chosen);
-  const allocated = ids.reduce((sum, id) => sum + (WHOLE_NUMBER.test(String(shares[id] || "")) ? Number(shares[id]) : 0), 0);
+  const chosenRows = rows.filter((r) => r.uid);
+  const allocated = chosenRows.reduce((sum, r) => sum + (WHOLE_NUMBER.test(r.share) ? Number(r.share) : 0), 0);
   const remaining = (plan.target || 0) - allocated;
-  const shareProblem = ids.map((id) => {
-    const v = String(shares[id] ?? "").trim();
-    const who = (people || []).find((u) => String(u.id) === id)?.name || "Each person";
-    if (!v) return `${who}: enter their responses.`;
-    if (!WHOLE_NUMBER.test(v)) return `${who}: responses must be a whole number from 1.`;
-    if (Number(v) < (done[id] || 0)) return `${who} already submitted ${done[id]}: give them at least ${done[id]}.`;
+  const nameOf = (uid) => (people || []).find((u) => String(u.id) === uid)?.name || "Each person";
+  const shareProblem = chosenRows.map((r) => {
+    if (!r.share) return `${nameOf(r.uid)}: choose their responses.`;
+    if (Number(r.share) < (done[r.uid] || 0)) return `${nameOf(r.uid)} already submitted ${done[r.uid]}: give them at least ${done[r.uid]}.`;
     return "";
   }).find(Boolean) || (remaining < 0 ? `That's ${-remaining} more than the plan's ${plan.target}.` : "");
   const [error, setError] = useState("");
@@ -303,84 +310,94 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
     getTeam().then((r) => setPeople((r.users || []).filter((u) => u.role === "executive" && u.is_active)))
       .catch((e) => setError(orgError(e, "The team couldn't be loaded.")));
   }, []);
-  const toggle = (id) => setChosen((c) => {
-    const next = { ...c };
-    if (next[id]) delete next[id]; else next[id] = [...(plan.cities || [])];
-    return next;
-  });
+  const setRow = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addRow = () => setRows((rs) => [...rs, { uid: "", cities: [...planCities], share: "" }]);
+  const removeRow = (i) => setRows((rs) => rs.filter((_, j) => j !== i));
   const splitEvenly = () => {
-    if (!ids.length) return;
-    const each = Math.floor((plan.target || 0) / ids.length);
-    let extra = (plan.target || 0) - each * ids.length;
-    setShares(Object.fromEntries(ids.map((id) => [id, String(each + (extra-- > 0 ? 1 : 0))])));
+    if (!chosenRows.length) return;
+    const each = Math.floor((plan.target || 0) / chosenRows.length);
+    let extra = (plan.target || 0) - each * chosenRows.length;
+    setRows((rs) => rs.map((r) => (r.uid ? { ...r, share: String(each + (extra-- > 0 ? 1 : 0)) } : r)));
   };
-  const toggleCity = (id, city) => setChosen((c) => {
-    const have = c[id] || [];
-    const next = have.includes(city) ? have.filter((x) => x !== city) : [...have, city];
-    return { ...c, [id]: next };
-  });
   const save = async () => {
-    if (plan.cities?.length && Object.values(chosen).some((cities) => !cities.length)) {
-      return setError("Give every chosen person at least one city.");
-    }
+    if (rows.some((r) => !r.uid)) return setError("Choose a survey person in every row, or remove the empty row.");
+    if (planCities.length && chosenRows.some((r) => !r.cities.length)) return setError("Choose a city for every survey person.");
     if (shareProblem) return setError(shareProblem);
     setBusy(true);
     try {
-      onSaved(await allocatePlan(plan.id, Object.entries(chosen).map(([user_id, cities]) => ({ user_id: Number(user_id), cities, target: Number(shares[user_id]) }))));
+      onSaved(await allocatePlan(plan.id, chosenRows.map((r) => ({ user_id: Number(r.uid), cities: r.cities, target: Number(r.share) }))));
     } catch (e) {
       setError(orgError(e, "The team couldn't be saved."));
       setBusy(false);
     }
   };
+  const free = (people || []).filter((u) => !rows.some((r) => r.uid === String(u.id)));
   return (
     <Modal title={`Team for “${plan.name}”`}
-      subtitle={plan.cities?.length ? `Choose the survey persons and the cities each may survey (${plan.cities.join(", ")}).` : "Choose the survey persons; this plan has no city limit."}
+      subtitle={planCities.length ? `Choose each survey person, their city (${planCities.join(", ")}) and responses.` : "Choose each survey person and their responses; this plan has no city limit."}
       onClose={onClose}
       footer={<>
-        <span className="muted small ap-count">{ids.length} chosen</span>
+        <span className="muted small ap-count">{chosenRows.length} chosen</span>
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" disabled={busy || !people} onClick={save}>{busy ? "Saving…" : "Save team"}</button>
       </>}>
-      <div className={`alloc-sum${remaining === 0 && ids.length ? " is-ok" : remaining < 0 ? " is-over" : ""}`} role="status">
+      <div className={`alloc-sum${remaining === 0 && chosenRows.length ? " is-ok" : remaining < 0 ? " is-over" : ""}`} role="status">
         <span>Required <strong>{plan.target}</strong></span>
         <span>Allocated <strong>{allocated}</strong></span>
         <span>Remaining <strong>{remaining}</strong></span>
-        {ids.length > 0 && <button type="button" className="link-btn" onClick={splitEvenly}>Split evenly</button>}
+        {chosenRows.length > 0 && <button type="button" className="link-btn" onClick={splitEvenly}>Split evenly</button>}
       </div>
       {!people && !error && <p className="muted">Loading the team…</p>}
-      <ul className="ap-people">
-        {(people || []).map((u) => {
-          const taken = elsewhere[u.id];
-          const on = Boolean(chosen[u.id]);
-          return (
-            <li key={u.id}>
-              <label className="ap-person">
-                <input type="checkbox" checked={on} onChange={() => toggle(u.id)} />
-                <span><strong>{u.name}</strong>{taken && <span className="muted small"> · also in {taken.map((n) => `“${n}”`).join(", ")}</span>}</span>
-              </label>
-              {on && (
-                <label className="alloc-share">
-                  <span className="muted small">{done[u.id] ? `Responses (${done[u.id]} done)` : "Responses"}</span>
-                  <input className="input" type="text" inputMode="numeric" autoComplete="off" value={shares[u.id] ?? ""}
-                    aria-label={`Responses for ${u.name}`} placeholder="0"
-                    onKeyDown={(e) => { if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault(); }}
-                    onChange={(e) => setShares((sh) => ({ ...sh, [u.id]: e.target.value }))} />
-                </label>
-              )}
-              {on && plan.cities?.length > 0 && (
-                <span className="ap-city-toggles" role="group" aria-label={`Cities for ${u.name}`}>
-                  {plan.cities.map((c) => (
-                    <button key={c} type="button" className={`ap-chip-toggle${chosen[u.id].includes(c) ? " is-on" : ""}`}
-                      aria-pressed={chosen[u.id].includes(c)} onClick={() => toggleCity(u.id, c)}>{c}</button>
-                  ))}
+      {people && (
+        <div className="alloc-rows">
+          {rows.length > 0 && (
+            <div className="alloc-row alloc-row-head" aria-hidden="true">
+              <span>Survey person</span>{planCities.length > 0 && <span>City</span>}<span>Responses</span><span />
+            </div>
+          )}
+          {rows.map((r, i) => {
+            const mine = Number(r.share) || 0;
+            const most = Math.max(remaining + mine, done[r.uid] || 0, 1);
+            const least = Math.max(1, done[r.uid] || 0);
+            const taken = r.uid && elsewhere[r.uid];
+            return (
+              <div key={i} className="alloc-row">
+                <span className="alloc-cell">
+                  <Select className="input" aria-label={`Survey person ${i + 1}`} value={r.uid} disabled={Boolean(done[r.uid])}
+                    onChange={(e) => setRow(i, { uid: e.target.value })}>
+                    <option value="">Choose a survey person</option>
+                    {(people || []).filter((u) => u.id === Number(r.uid) || free.includes(u)).map((u) => <option key={u.id} value={String(u.id)}>{u.name}</option>)}
+                  </Select>
+                  {taken && <span className="muted small">Also in {taken.map((n) => `“${n}”`).join(", ")}</span>}
                 </span>
-              )}
-            </li>
-          );
-        })}
-        {people && !people.length && <li className="muted">No active survey persons. Add them on the Team page.</li>}
-      </ul>
-      {(error || (shareProblem && ids.length > 0)) && <p className="form-error" role="alert">{error || shareProblem}</p>}
+                {planCities.length > 0 && (
+                  <Select className="input" aria-label={`City for survey person ${i + 1}`}
+                    value={r.cities.length === 1 ? r.cities[0] : "__all"}
+                    onChange={(e) => setRow(i, { cities: e.target.value === "__all" ? [...planCities] : [e.target.value] })}>
+                    {planCities.length > 1 && <option value="__all">All plan cities</option>}
+                    {planCities.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </Select>
+                )}
+                <Select className="input" aria-label={`Responses for survey person ${i + 1}`} value={r.share}
+                  onChange={(e) => setRow(i, { share: e.target.value })}>
+                  <option value="">Responses</option>
+                  {Array.from({ length: Math.max(0, most - least + 1) }, (_, k) => least + k).map((n) => (
+                    <option key={n} value={String(n)}>{n}{done[r.uid] ? ` (${done[r.uid]} done)` : ""}</option>
+                  ))}
+                </Select>
+                <button type="button" className="icon-btn alloc-remove" aria-label={`Remove survey person ${i + 1}`}
+                  disabled={Boolean(done[r.uid])} title={done[r.uid] ? "Already submitted responses: can't be removed" : "Remove"}
+                  onClick={() => removeRow(i)}>×</button>
+              </div>
+            );
+          })}
+          {free.length > 0 && rows.every((r) => r.uid) && (
+            <button type="button" className="btn btn-secondary btn-sm alloc-add" onClick={addRow}>+ Add survey person</button>
+          )}
+          {!people.length && <p className="muted">No active survey persons. Add them on the Team page.</p>}
+        </div>
+      )}
+      {(error || (shareProblem && chosenRows.length > 0)) && <p className="form-error" role="alert">{error || shareProblem}</p>}
       <details className="alloc-history" onToggle={(e) => {
         if (e.currentTarget.open && history === null) {
           allocationHistory(plan.id).then((r) => setHistory(r.history || [])).catch(() => setHistory([]));

@@ -67,6 +67,14 @@ import { canSeal, sealRecording } from "./services/recordingCrypto";
    Helpers
    ================================================================ */
 
+// "Noida, Uttar Pradesh, India" for the survey's GPS place (or what was typed / the coordinates).
+function placeText(place) {
+  const parts = [place?.city, place?.state, place?.country].filter(Boolean);
+  if (parts.length) return parts.join(", ");
+  if (place?.label) return place.label;
+  return place?.coords ? "Captured (address added when online)" : "Not captured";
+}
+
 function formatTime(seconds) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
   const h = Math.floor(total / 3600);
@@ -4856,7 +4864,9 @@ function AppContent({ user }) {
   // Page -> address bar (#/team), so pages can be bookmarked and Back works.
   useEffect(() => {
     const want = `#/${PAGE_SLUG[view]}`;
-    if (allowedPages.includes(view) && window.location.hash !== want) window.location.hash = want;
+    const here = window.location.hash || "";
+    // Keep deeper addresses of the same page (#/projects/12 opens that project after a refresh).
+    if (allowedPages.includes(view) && here !== want && !here.startsWith(`${want}/`)) window.location.hash = want;
   }, [view, allowedPages]);
 
   // Address bar -> page, refusing pages this role may not open.
@@ -5484,7 +5494,10 @@ function AppContent({ user }) {
             </nav>
             <NotificationBell
               onOpenHistory={isAdminUser ? goHistory : undefined}
-              onOpenSurvey={allowedPages.includes("survey") ? goSurvey : undefined}
+              onOpenSurvey={allowedPages.includes("survey")
+                // A notification about one product opens Take survey with that product chosen.
+                ? (pid, cid) => (pid && cid ? startNewSurvey({ id: pid, category_id: cid }) : goSurvey())
+                : undefined}
               onOpenRounds={isAdminUser ? (pid) => openCatalogProduct(pid, "rounds") : undefined}
               onOpenProduct={isAdminUser ? (pid) => openCatalogProduct(pid, "details") : undefined}
               onOpenProject={isAdminUser ? (id) => goProjects(id) : undefined}
@@ -5644,9 +5657,15 @@ function AppContent({ user }) {
                           <dt>Respondent</dt>
                           <dd>{surveyDraft.respondentName}</dd>
                         </div>
-                        <div>
-                          <dt>Questions</dt>
-                          <dd>{surveyDraft.questionCount} answered</dd>
+                        <div className="fact-wide">
+                          <dt>Current location</dt>
+                          <dd>{placeText(surveyDraft.place)}</dd>
+                          {surveyDraft.place?.coords && (
+                            <span className="fact-sub">
+                              {Number(surveyDraft.place.coords.latitude).toFixed(5)}, {Number(surveyDraft.place.coords.longitude).toFixed(5)}
+                              {surveyDraft.place.coords.accuracy != null ? ` · ± ${Math.round(surveyDraft.place.coords.accuracy)} m` : ""}
+                            </span>
+                          )}
                         </div>
                       </dl>
                       {!busy && (

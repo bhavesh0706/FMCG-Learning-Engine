@@ -16,7 +16,7 @@ function when(iso) {
 function PasswordConfirm({ value, onChange }) {
   return (
     <label className="field">
-      <span className="field-label">Your password *</span>
+      <span className="field-label">Your password <span className="req" aria-hidden="true">*</span></span>
       <input className="input" type="password" autoComplete="current-password" value={value} onChange={(e) => onChange(e.target.value)}
         placeholder="To confirm it's you" />
     </label>
@@ -73,11 +73,11 @@ function AddDialog({ onClose, onAdded }) {
         <button type="button" className="btn btn-primary" disabled={busy} onClick={save}>{busy ? "Adding…" : "Add Super Admin"}</button>
       </>}>
       <label className="field">
-        <span className="field-label">Full name *</span>
+        <span className="field-label">Full name <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Priya Shah" />
       </label>
       <label className="field">
-        <span className="field-label">Sign-in email *</span>
+        <span className="field-label">Sign-in email <span className="req" aria-hidden="true">*</span></span>
         <input className="input" type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="name@company.com" />
       </label>
       <PasswordConfirm value={form.current_password} onChange={(v) => setForm({ ...form, current_password: v })} />

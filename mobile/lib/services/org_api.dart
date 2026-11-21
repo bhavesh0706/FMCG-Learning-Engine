@@ -117,8 +117,8 @@ class OrgApi {
   /// Report for one round (latest when [round] is null).
   static Future<Json> report(int id, {int? round}) => _get('/org/products/$id/report', {if (round != null) 'round': round});
 
-  static Future<Json> compare(int id, {int? a, int? b}) =>
-      _get('/org/products/$id/compare', {if (a != null) 'a': a, if (b != null) 'b': b});
+  static Future<Json> compare(int id, {int? a, int? b, List<int>? surveys}) => _get('/org/products/$id/compare',
+      {if (a != null) 'a': a, if (b != null) 'b': b, if (surveys != null && surveys.length > 2) 'surveys': surveys.join(',')});
 
   static Future<Json> startRound(int id, {int? target, String? note, String? dueDate}) => _post('/org/products/$id/rounds', {
         if (target != null) 'target': target,

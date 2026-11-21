@@ -1,4 +1,7 @@
 import 'package:dio/dio.dart';
+
+import '../widgets/design.dart';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
@@ -123,9 +126,15 @@ Widget _title(String text) => Padding(
 // ---------------------------------------------------------------- Recipe extras
 
 class RecipeExtrasView extends StatefulWidget {
-  const RecipeExtrasView({super.key, required this.productId, this.canEdit = false, this.standardsOnly = false});
+  const RecipeExtrasView({super.key, required this.productId, this.canEdit = false, this.standardsOnly = false, this.data, this.costingOnly = false});
 
   final int productId;
+
+  /// Given data (an earlier survey's version) instead of loading the current recipe.
+  final Json? data;
+
+  /// Only the costing table (Cost per KG, Cost in Use).
+  final bool costingOnly;
   final bool canEdit; // Super Admin: upload / remove attachments, manage this product's standards
   final bool standardsOnly; // the product's Standards tab: results and rules only
 
@@ -146,6 +155,10 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
   }
 
   Future<void> _load() async {
+    if (widget.data != null) {
+      setState(() => _d = widget.data);
+      return;
+    }
     try {
       final d = await NextApi.recipe(widget.productId);
       final rules = widget.canEdit ? asJsonList((await NextApi.standards(productId: widget.productId))['standards']) : const <Json>[];
@@ -329,6 +342,8 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
           ]),
         ),
       ],
+      if (widget.costingOnly && rows.isEmpty) Text('No costs were entered for this version.', style: TextStyle(color: AppColors.muted)),
+      if (!widget.costingOnly) ...[
       // Standards: read-only results here for admins; the Super Admin manages them on the Standards tab
       if (!widget.canEdit) ..._standardsWidgets(standards, results),
       Row(children: [
@@ -359,6 +374,7 @@ class _RecipeExtrasViewState extends State<RecipeExtrasView> {
         Text("New recipe versions don't use steps.", style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
         for (final (i, s) in asJsonList(legacy['steps']).indexed)
           Padding(padding: const EdgeInsets.only(top: 4), child: Text('${i + 1}. ${str(s['title'])}')),
+      ],
       ],
     ]);
   }
@@ -1333,7 +1349,7 @@ class _SuperAdminsPageState extends State<SuperAdminsPage> {
           title: const Text('Add Super Admin'),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: name, decoration: const InputDecoration(labelText: 'Full name')),
+              TextField(controller: name, decoration: InputDecoration(label: requiredLabel('Full name'))),
               TextField(controller: email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Sign-in email')),
               TextField(controller: pw, obscureText: true, decoration: const InputDecoration(labelText: 'Your password (to confirm)')),
               if (error != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(error!, style: TextStyle(color: AppColors.neg))),

@@ -4,6 +4,8 @@ import {
   getUnreadCount,
   markAllNotificationsRead,
   markNotificationRead,
+  deleteNotification,
+  clearNotifications,
 } from "../services/notificationsApi";
 
 // Styles: "Notification bell" section at the end of App.css.
@@ -32,6 +34,9 @@ const POLL_MS = 30000;
 const MISSING_VIDEO = "survey_missing_video";
 const PRODUCT_ASSIGNED = "product_assigned";
 const PROJECT_CREATED = "project_created"; // Admins: a new project to review and staff
+const ALLOCATION_NEEDED = "allocation_needed"; // Admins: a plan's target changed, share it again
+const PLAN_ASSIGNED = "plan_assigned"; // Survey persons: you're in a plan, with your own response target
+const PROJECT_KINDS = [PROJECT_CREATED, ALLOCATION_NEEDED];
 const CLIENT_RECIPE = "client_recipe_updated";
 const CLIENT_CATALOG = "client_catalog_changed";
 const ROUND_STARTED_BY_ORG = "client_round_started";
@@ -70,7 +75,7 @@ function BellIcon() {
 }
 
 function KindIcon({ kind }) {
-  if (kind === PROJECT_CREATED) {
+  if (PROJECT_KINDS.includes(kind) || kind === PLAN_ASSIGNED) {
     return (
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -133,12 +138,33 @@ const dayOnly = (iso) => {
 
 function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject, onClose }) {
   const d = item.data || {};
-  if (item.kind === PROJECT_CREATED) {
+  if (item.kind === PLAN_ASSIGNED) {
+    return (
+      <div className="notif-details">
+        <dl>
+          <dt>Product</dt>
+          <dd>{d.product_name || "—"}{d.category_name && <span className="notif-sub">{d.category_name}</span>}</dd>
+          {d.project_code && (<><dt>Project</dt><dd>{d.project_code}</dd></>)}
+          <dt>Plan</dt>
+          <dd>{d.plan_name || "—"}</dd>
+          <dt>Your responses</dt>
+          <dd>{d.target}{d.previous_target ? ` (was ${d.previous_target})` : ""}</dd>
+          {d.cities?.length ? (<><dt>Cities</dt><dd>{d.cities.join(", ")}</dd></>) : null}
+        </dl>
+        {onOpenSurvey && (
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => { onClose(); onOpenSurvey(d.product_id); }}>
+            Take a survey
+          </button>
+        )}
+      </div>
+    );
+  }
+  if (PROJECT_KINDS.includes(item.kind)) {
     return (
       <div className="notif-details">
         <dl>
           <dt>Project</dt>
-          <dd>{d.project_code || "—"}</dd>
+          <dd>{d.project_code || (d.project_id ? `#${d.project_id}` : "—")}</dd>
           <dt>Product</dt>
           <dd>{d.product_name || "—"}{d.recipe_version ? <span className="notif-sub">Recipe v{d.recipe_version}</span> : null}</dd>
           {d.target ? (<><dt>Response target</dt><dd>{d.target} consumers</dd></>) : null}
@@ -322,6 +348,26 @@ function Details({ item, onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds
   return null;
 }
 
+// Where tapping a notification goes straight away (like a phone notification), or null when it
+// has nowhere to go (then it opens its details in the list).
+function destination(item, { onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject }) {
+  const d = item.data || {};
+  if (item.kind === PLAN_ASSIGNED || item.kind === PRODUCT_ASSIGNED || item.kind === ROUND_STARTED) {
+    return onOpenSurvey ? () => onOpenSurvey(d.product_id, d.category_id) : null;
+  }
+  if (PROJECT_KINDS.includes(item.kind)) return onOpenProject && d.project_id ? () => onOpenProject(d.project_id) : null;
+  if (ROUND_KINDS.includes(item.kind)) return onOpenRounds && d.product_id ? () => onOpenRounds(d.product_id) : null;
+  if (item.kind === CLIENT_RECIPE && d.product_id) {
+    if (onOpenRecipe) return () => onOpenRecipe(d.product_id);
+    return onOpenProduct ? () => onOpenProduct(d.product_id) : null;
+  }
+  if (item.kind === CLIENT_CATALOG) {
+    return onOpenProduct && d.product_id && d.action !== "deleted" && d.entity === "product" ? () => onOpenProduct(d.product_id) : null;
+  }
+  if (item.kind === MISSING_VIDEO) return onOpenHistory ? () => onOpenHistory() : null;
+  return null;
+}
+
 export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
@@ -329,6 +375,9 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [expanded, setExpanded] = useState(null);
+  const touchX = useRef(null);
+  const [swiped, setSwiped] = useState(null); // notification whose ✓ / × are shown (touch swipe)
+  const [confirmClear, setConfirmClear] = useState(false);
   const [panelTop, setPanelTop] = useState(64);
   const latestSeen = useRef(0);
   const ref = useRef(null);
@@ -397,7 +446,13 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
   }, [open]);
 
   async function toggleItem(item) {
-    setExpanded((cur) => (cur === item.id ? null : item.id));
+    const go = destination(item, { onOpenHistory, onOpenSurvey, onOpenRecipe, onOpenRounds, onOpenProduct, onOpenProject });
+    if (go) {
+      setOpen(false);
+      go();
+    } else {
+      setExpanded((cur) => (cur === item.id ? null : item.id));
+    }
     if (item.is_read) return;
     // Show it as read at once; the server confirms the new count.
     setItems((list) => list.map((n) => (n.id === item.id ? { ...n, is_read: true } : n)));
@@ -409,6 +464,53 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
       /* the next refresh corrects the count */
     }
   }
+
+  // One notification: mark it read (✓) or remove it (×) without opening it.
+  async function markOne(item) {
+    if (item.is_read) return;
+    setItems((list) => list.map((n) => (n.id === item.id ? { ...n, is_read: true } : n)));
+    setUnread((c) => Math.max(0, c - 1));
+    setSwiped(null);
+    try {
+      const res = await markNotificationRead(item.id);
+      setUnread(res.unread_count ?? 0);
+    } catch {
+      refresh();
+    }
+  }
+
+  async function removeOne(item) {
+    setItems((list) => list.filter((n) => n.id !== item.id));
+    if (!item.is_read) setUnread((c) => Math.max(0, c - 1));
+    setSwiped(null);
+    try {
+      const res = await deleteNotification(item.id);
+      setUnread(res.unread_count ?? 0);
+    } catch {
+      refresh();
+    }
+  }
+
+  async function clearAll() {
+    setConfirmClear(false);
+    setItems([]);
+    setUnread(0);
+    try {
+      await clearNotifications();
+    } catch {
+      refresh();
+    }
+  }
+
+  // Swipe a notification left (touch screens) to show its ✓ and × buttons; right to hide them.
+  const onTouchStart = (e) => { touchX.current = e.touches[0].clientX; };
+  const onTouchEnd = (item) => (e) => {
+    if (touchX.current == null) return;
+    const dx = e.changedTouches[0].clientX - touchX.current;
+    touchX.current = null;
+    if (dx < -40) setSwiped(item.id);
+    else if (dx > 40) setSwiped(null);
+  };
 
   async function readAll() {
     setItems((list) => list.map((n) => ({ ...n, is_read: true })));
@@ -436,9 +538,20 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
         <div className="notif-panel" role="dialog" aria-label="Notifications" style={{ "--notif-top": `${panelTop}px` }}>
           <div className="notif-head">
             <strong>Notifications</strong>
-            {unread > 0 && (
-              <button type="button" className="link-btn" onClick={readAll}>Mark all as read</button>
-            )}
+            <span className="notif-head-actions">
+              {unread > 0 && !confirmClear && (
+                <button type="button" className="link-btn" onClick={readAll}>Mark all as read</button>
+              )}
+              {items.length > 0 && (confirmClear ? (
+                <span className="notif-confirm" role="group" aria-label="Clear all notifications?">
+                  <span>Clear all?</span>
+                  <button type="button" className="link-btn danger-link" onClick={clearAll}>Clear</button>
+                  <button type="button" className="link-btn" onClick={() => setConfirmClear(false)}>Cancel</button>
+                </span>
+              ) : (
+                <button type="button" className="link-btn danger-link" onClick={() => setConfirmClear(true)}>Clear all</button>
+              ))}
+            </span>
           </div>
 
           {error && <p className="notif-error" role="alert">{error}</p>}
@@ -454,7 +567,20 @@ export default function NotificationBell({ onOpenHistory, onOpenSurvey, onOpenRe
               {items.map((item) => {
                 const isOpen = expanded === item.id;
                 return (
-                  <li key={item.id} className={`notif-item${item.is_read ? "" : " is-unread"}${item.resolved ? " is-resolved" : ""}`}>
+                  <li key={item.id} className={`notif-item${item.is_read ? "" : " is-unread"}${item.resolved ? " is-resolved" : ""}${swiped === item.id ? " is-swiped" : ""}`}
+                    onTouchStart={onTouchStart} onTouchEnd={onTouchEnd(item)}>
+                    <span className="notif-actions">
+                      {!item.is_read && (
+                        <button type="button" className="notif-act is-read" aria-label={`Mark “${item.title}” as read`} title="Mark as read"
+                          onClick={() => markOne(item)}>
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                        </button>
+                      )}
+                      <button type="button" className="notif-act is-delete" aria-label={`Delete “${item.title}”`} title="Delete"
+                        onClick={() => removeOne(item)}>
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
+                      </button>
+                    </span>
                     <button type="button" className="notif-row" aria-expanded={isOpen} onClick={() => toggleItem(item)}>
                       <span className={`notif-icon kind-${item.kind}`}><KindIcon kind={item.kind} /></span>
                       <span className="notif-text">

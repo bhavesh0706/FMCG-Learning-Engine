@@ -80,8 +80,8 @@ class AdminApi {
 
   // ---------------------------------------------------------------- Catalog (read-only)
 
-  static Future<List<Json>> categories() async =>
-      asJsonList((await _send('GET', '/categories', query: {'include_inactive': false}))['categories']);
+  static Future<List<Json>> categories({bool includeInactive = false}) async =>
+      asJsonList((await _send('GET', '/categories', query: {'include_inactive': includeInactive}))['categories']);
 
   // ---- Product checks: feedback about another product than the one selected (web: Survey history > Product checks)
 

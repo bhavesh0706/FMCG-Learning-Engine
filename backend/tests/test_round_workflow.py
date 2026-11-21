@@ -239,34 +239,32 @@ def _existing_product(client, db, org, admin):
     return pid
 
 
-def test_existing_products_stay_open_to_every_survey_person_without_a_round(client, db, org, admin):
+def test_survey_persons_see_only_products_assigned_to_them(client, db, org, admin):
+    """Even an older product (surveyed before rounds existed) is shown only to the survey persons its
+    Admin assigned: nobody else, and never once it is inactive."""
     pid = _existing_product(client, db, org, admin)
     riya, amit = make_user(db, name="Riya Field"), make_user(db, name="Amit Field")
-    assert pid in _ids(client, riya) and pid in _ids(client, amit) and pid in _ids(client, admin)
-    made = _survey(client, db, riya, pid)
-    assert made.status_code == 201 and made.json()["round"] == 1, "goes into its latest round, no new round needed"
-    who = client.get(f"/admin/products/{pid}/executives", headers=auth(admin)).json()
-    assert who["open_to_all"] is True and who["needs_round"] is False and who["round"]["number"] == 1
-    member = next(u for u in client.get("/admin/users", headers=auth(admin)).json()["users"] if u["id"] == amit.id)
-    assert pid in member["assigned_products"], "the Team page shows it as surveyable"
-
-
-def test_an_existing_product_can_be_restricted_and_opened_again(client, db, org, admin):
-    pid = _existing_product(client, db, org, admin)
-    riya, amit = make_user(db), make_user(db)
+    assert pid not in _ids(client, riya) and pid not in _ids(client, amit) and pid in _ids(client, admin)
+    assert _survey(client, db, riya, pid).status_code == 403, "not assigned: can't survey it"
     assert client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]}).status_code == 200
     assert pid in _ids(client, riya) and pid not in _ids(client, amit)
     assert _survey(client, db, amit, pid).status_code == 403
-    assert client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": []}).status_code == 200
-    assert pid in _ids(client, amit), "nobody assigned: open to everyone again"
+    made = _survey(client, db, riya, pid)
+    assert made.status_code == 201 and made.json()["round"] == 1
+    from app.database.models import Product
+
+    db.get(Product, pid).is_active = 0
+    db.commit()
+    assert pid not in _ids(client, riya), "inactive products are never offered"
 
 
 def test_a_new_recipe_version_needs_the_super_admin_to_start_its_round(client, db, org, admin):
     pid = _existing_product(client, db, org, admin)
     riya = make_user(db)
+    client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]})
     assert pid in _ids(client, riya)
     assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=RECIPE_V2).status_code == 200
-    assert pid not in _ids(client, riya) and _survey(client, db, riya, pid).status_code == 403
+    assert pid not in _ids(client, riya), "no survey of the new version is collecting yet"
     assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5}).status_code == 201
     assert pid not in _ids(client, riya), "the new version's round is assigned by an admin"
     client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]})

@@ -212,6 +212,30 @@ class Notifications {
     }
   }
 
+  /// Removes one notification from the bell for good (the server keeps it hidden).
+  static Future<void> delete(AppNotification n) async {
+    items.value = [for (final x in items.value) if (x.id != n.id) x];
+    if (!n.isRead) unread.value = unread.value > 0 ? unread.value - 1 : 0;
+    try {
+      final res = await _dio.delete('/notifications/${n.id}');
+      final data = _json(res.data);
+      if (data is Map) unread.value = (data['unread_count'] as num?)?.toInt() ?? unread.value;
+    } catch (_) {
+      refresh();
+    }
+  }
+
+  /// Clears the whole bell.
+  static Future<void> clearAll() async {
+    items.value = const [];
+    unread.value = 0;
+    try {
+      await _dio.delete('/notifications');
+    } catch (_) {
+      refresh();
+    }
+  }
+
   static Future<void> markAllRead() async {
     items.value = [for (final x in items.value) x.copyWith(isRead: true)];
     unread.value = 0;

@@ -405,8 +405,17 @@ class _ProductRow extends StatelessWidget {
           ]),
         ),
         if (rating != null)
-          Text(prev != null ? '${ratingText(prev)} → ${ratingText(rating)}' : ratingText(rating),
-              style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(prev != null ? '${ratingText(prev)} → ${ratingText(rating)}' : ratingText(rating),
+                style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+            // Which surveys: the one just before the current survey -> the current survey.
+            if (prev != null && asJson(p['previous_round']).isNotEmpty)
+              Text(
+                'S${intOf(asJson(p['previous_round'])['number'])} (v${intOf(asJson(p['previous_round'])['recipe_version'])}) → '
+                'S${intOf(round['number'])} (v${intOf(round['recipe_version'])})',
+                style: TextStyle(fontSize: 11, color: AppColors.muted),
+              ),
+          ]),
         const SizedBox(width: 4),
         Icon(Icons.chevron_right, color: AppColors.muted),
       ]),

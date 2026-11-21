@@ -40,7 +40,7 @@ function PasswordField({ value, onChange, label = "Password *" }) {
   const [show, setShow] = useState(true);
   return (
     <label className="field">
-      <span className="field-label">{label}</span>
+      <span className="field-label">{label.endsWith(" *") ? <>{label.slice(0, -2)} <span className="req" aria-hidden="true">*</span></> : label}</span>
       <div className="password-row">
         <input className="input" type={show ? "text" : "password"} value={value} autoComplete="new-password"
           onChange={(e) => onChange(e.target.value)} placeholder="8+ letters and numbers" />
@@ -122,7 +122,7 @@ export function AddMemberDialog({ onClose, onAdded }) {
       }
     >
       <div className="field">
-        <span className="field-label">Role *</span>
+        <span className="field-label">Role <span className="req" aria-hidden="true">*</span></span>
         <div className="segmented" role="radiogroup" aria-label="Role">
           {[["executive", "Survey person"], ["admin", "Admin"]].map(([value, label]) => (
             <button key={value} type="button" role="radio" aria-checked={form.role === value}
@@ -136,12 +136,12 @@ export function AddMemberDialog({ onClose, onAdded }) {
         )}
       </div>
       <label className="field">
-        <span className="field-label">Full name *</span>
+        <span className="field-label">Full name <span className="req" aria-hidden="true">*</span></span>
         <input className="input" value={form.name} onChange={set("name")} placeholder="e.g. Riya Kapoor" autoComplete="off" />
       </label>
       <div className="catalog-row">
         <label className="field">
-          <span className="field-label">Mobile number *</span>
+          <span className="field-label">Mobile number <span className="req" aria-hidden="true">*</span></span>
           <input className="input" type="tel" inputMode="tel" value={form.mobile} onChange={set("mobile")} placeholder="98765 43210" />
         </label>
         <label className="field">

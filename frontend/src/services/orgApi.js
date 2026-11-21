@@ -26,8 +26,10 @@ export const getOrgProducts = () => data(api.get("/org/products"));
 export const getOrgProduct = (id) => data(api.get(`/org/products/${id}`));
 export const getRoundReport = (id, round = null) =>
   data(api.get(`/org/products/${id}/report`, { params: round != null ? { round } : {} }));
-export const compareRounds = (id, a = null, b = null) =>
-  data(api.get(`/org/products/${id}/compare`, { params: { ...(a ? { a } : {}), ...(b ? { b } : {}) } }));
+export const compareRounds = (id, a = null, b = null, surveys = null) =>
+  data(api.get(`/org/products/${id}/compare`, { params: { ...(a ? { a } : {}), ...(b ? { b } : {}), ...(surveys ? { surveys: surveys.join(",") } : {}) } }));
+// What one survey used: its recipe version, standards checked against it, the questions it asked.
+export const getRoundSnapshot = (id, number) => data(api.get(`/org/products/${id}/rounds/${number}/snapshot`));
 export const startRound = (id, body) => data(api.post(`/org/products/${id}/rounds`, body));
 export const endRound = (id, number) => data(api.post(`/org/products/${id}/rounds/${number}/end`));
 // A survey (round) started by mistake: the latest one, while it has no responses
@@ -67,6 +69,7 @@ export const projectOptions = () => data(api.get("/org/projects/options"));
 export const createProject = (body) => data(api.post("/org/projects", body));
 export const getProject = (id) => data(api.get(`/org/projects/${id}`));
 export const updateProject = (id, body) => data(api.put(`/org/projects/${id}`, body));
+export const endProject = (id) => data(api.post(`/org/projects/${id}/end`));
 export const deleteProject = (id) => data(api.delete(`/org/projects/${id}`));
 // Admin: projects read-only, and their survey plans (teams are allocated with allocatePlan)
 export const adminProjects = () => data(api.get("/admin/projects"));

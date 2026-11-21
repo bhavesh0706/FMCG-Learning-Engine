@@ -6,6 +6,8 @@ GET  /notifications                  ?limit=30&unread_only=false&before_id=
                                      -> {unread_count, latest_id, notifications: [...]}
 POST /notifications/{id}/read        mark one as read  -> {notification, unread_count}
 POST /notifications/read-all         mark all as read  -> {updated, unread_count}
+DELETE /notifications/{id}           remove one from the bell -> {unread_count}
+DELETE /notifications                clear the whole bell     -> {cleared, unread_count}
 
 Each notification: {id, kind, title, message, data, is_read, read_at, resolved,
 resolved_at, created_at}. Times are UTC ISO-8601 with "Z".
@@ -51,6 +53,19 @@ def list_notifications(
 def read_all(user: User = Depends(current_user), db: Session = Depends(get_db)):
     updated = svc.mark_all_read(db, user)
     return {"updated": updated, "unread_count": 0}
+
+
+@router.delete("")
+def clear_all(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    cleared = svc.dismiss_all(db, user)
+    return {"cleared": cleared, "unread_count": 0}
+
+
+@router.delete("/{notification_id}")
+def delete_one(notification_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not svc.dismiss(db, user, notification_id):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"unread_count": svc.unread_count(db, user)}
 
 
 @router.post("/{notification_id}/read")

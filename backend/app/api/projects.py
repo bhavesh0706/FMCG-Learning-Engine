@@ -174,7 +174,9 @@ def _out(p: Project, category: Optional[Category], product: Optional[Product], i
             "has_recipe": bool(version and version.recipe),
         },
         "status": status,
-        "status_label": STATUS_LABEL[status],
+        "status_label": "Ended" if p.closed_at else STATUS_LABEL[status],
+        "closed": p.closed_at is not None,
+        "closed_at": _iso(p.closed_at),
         "rounds": info["rounds"],
         "total_target": p.total_target,
         # Deletable while no consumer feedback has come in for it (its survey plans go first).
@@ -280,14 +282,16 @@ def product_summary(product_id: int, request: Request, version: Optional[int] = 
                     "category": category.name if category else None, "description": (product.description or "").strip() or None},
         "recipe": {
             "version": number, "versions": sorted(versions), "saved_at": _iso(saved.created_at) if saved else None,
+            # When this version came into being (the product itself for a first recipe never re-saved).
+            "created_at": _iso(saved.created_at) if saved else _iso(getattr(product, "created_at", None)),
             "saved_by": saved.changed_by_name if saved else None, "changes": (saved.changes or [])[:3] if saved else [],
             "batch_size": recipe.get("batch_size"), "ingredient_count": len(ingredients),
-            "ingredients": [{"name": i["name"].strip(), "amount": amount(i)} for i in ingredients[:6]],
+            "ingredients": [{"name": i["name"].strip(), "amount": amount(i)} for i in ingredients],
             "steps": len(recipe.get("steps") or []), "has_recipe": bool(ingredients),
         },
         "standards": {"count": len(standards), "failed": len(failed),
-                      "names": [s.name for s in standards[:4]]},
-        "questions": {"count": len(questions), "sample": [q.text for q in questions[:3]]},
+                      "names": [s.name for s in standards]},
+        "questions": {"count": len(questions), "sample": [q.text for q in questions]},
         "plan": {"target": plan.get("target"), "persons_needed": plan.get("persons_needed"),
                  "start_date": plan.get("start_date"), "end_date": plan.get("end_date"),
                  "cities": plan.get("cities") or [], "audience": plan.get("audience"), "notes": plan.get("notes")},
@@ -401,6 +405,8 @@ def edit_response_target(project_id: int, body: TargetIn, request: Request, db: 
     after the project's survey ended, that survey reopens for the extra responses."""
     _client(request)
     project = _get(db, project_id)
+    if project.closed_at is not None:
+        raise HTTPException(status_code=409, detail="This project has ended: its response target can't change.")
     try:
         new = P._int(body.total_target, "Response target")
     except P.PlanError as e:
@@ -434,6 +440,28 @@ def edit_response_target(project_id: int, body: TargetIn, request: Request, db: 
                        + (f"; Survey {reopened.number} reopened for {reopened.target} consumers" if reopened else ""))
     return {**_plans_state(db, project), "total_target": new, "previous_target": old,
             "reopened": {"number": reopened.number, "target": reopened.target} if reopened else None}
+
+
+@router.post("/{project_id}/end")
+def end_project(project_id: int, request: Request, db: Session = Depends(get_db)):
+    """The Super Admin ends the project: its collecting survey ends now (no more responses), and the
+    project can't be planned, started or reopened again. Every response collected is kept."""
+    me = _client(request)
+    project = _get(db, project_id)
+    if project.closed_at is not None:
+        raise HTTPException(status_code=409, detail="This project has already ended.")
+    product = db.get(Product, project.product_id)
+    ended = []
+    for r in _version_rounds(db, project, product):
+        if r.status == R.LIVE:
+            R.end_round(db, r)
+            ended.append(r.number)
+    project.closed_at = datetime.utcnow()
+    project.closed_by_name = me.get("name")
+    db.commit()
+    audit.note(request, target_id=project.id, summary=f"Ended project {project.project_code}"
+               + (f"; Survey {', '.join(map(str, ended))} ended with it" if ended else ""))
+    return {**_plans_state(db, project), "ended_surveys": ended}
 
 
 @router.put("/{project_id}")
@@ -477,11 +505,22 @@ def _plans_state(db: Session, project: Project) -> dict:
                 "recipe_version": r.recipe_version, "started_at": _iso(r.started_at), "closed_at": _iso(r.closed_at)}
 
     total = project.total_target  # the project's own response target (never another version's)
+    # Responses counts, the same words everywhere: target, submitted, remaining.
+    submitted = sum(done.get(r.id, 0) for r in rounds)
+    counts = {"submitted": submitted, "remaining": max((total or 0) - submitted, 0) if total else None}
+    if project.closed_at is not None:  # an ended project: read-only, nothing more is collected
+        last = rounds[-1] if rounds else None
+        return {"stage": "closed", "round": round_info(last) if last else None, "plans": P.round_plans_out(db, last.id) if last else [],
+                "can_edit": False, "can_add_plans": False, "can_start": False, "can_end": False, "next_number": None,
+                "start_problem": f"This project ended on {project.closed_at:%d %b %Y}. Its surveys and responses are kept.",
+                "target": total, "total_target": total, "used": submitted, "available": 0, "planned": 0, "reopen_above": None,
+                "surveys": [round_info(r) for r in rounds], **counts}
     if live is not None:
         planned = sum(p.target or 0 for p in P.plans_of_round(db, live.id))
         return {"stage": "live", "round": round_info(live), "plans": P.round_plans_out(db, live.id),
                 "can_edit": True, "can_add_plans": True, "can_start": False, "start_problem": None, "target": live.target,
-                "total_target": total, "used": 0, "available": total, "planned": planned, "surveys": [round_info(r) for r in rounds]}
+                "total_target": total, "used": 0, "available": total, "planned": planned, "can_end": True,
+                "surveys": [round_info(r) for r in rounds], **counts}
     drafts = P.draft_plans(db, project.id)
     # After an ended survey the project is closed until the Super Admin raises the product's
     # total above what it was then; the next survey plans only that increase.
@@ -509,21 +548,24 @@ def _plans_state(db: Session, project: Project) -> dict:
         problem = f"The plans add up to {target} consumers; a survey needs {R.MIN_TARGET} to {R.MAX_TARGET}."
     # The Super Admin starts without waiting for the Admin: the Admin allocates the team (and each
     # person's share) afterwards; only allocated team members can collect responses.
-    if drafts and not problem and total and not used and target != total:
-        problem = (f"The plans add up to {target} consumers but the response target is {total}: "
-                   f"{'add plans for the other ' + str(total - target) if target < total else 'lower a plan'} so they match.")
+    # The survey may start with fewer planned responses than the project's total (plans can be added
+    # while it collects), never with more.
     if drafts and not problem and available is not None and target > available:
         problem = (f"The plans add up to {target} consumers, more than the {available} the project's response target leaves"
                    f"{' after the earlier survey' if used else ''}. Lower a plan, or raise the response target.")
     return {"stage": "ended" if last else "draft", "round": round_info(last) if last else None,
             # Each project is independent: an older recipe's project keeps its own plans and survey
             # (a newer recipe has its own project), so it is managed the same way.
-            "plans": P.plans_out(db, drafts), "can_edit": product is not None,
+            # Before the next survey: its planned plans; otherwise the completed survey's plans (read-only history).
+            "plans": P.plans_out(db, drafts) if drafts or not last else P.round_plans_out(db, last.id),
+            "plans_from_survey": None if drafts or not last else last.number,
+            "can_edit": product is not None,
             "can_add_plans": product is not None and reopened,
             # Survey numbers run across the product (all its recipes): the number Start survey gives.
             "next_number": ((R.latest_round(db, project.product_id).number if R.latest_round(db, project.product_id) else 0) + 1),
             "can_start": problem is None, "start_problem": problem, "target": target,
-            "total_target": total, "used": used, "available": available, "reopen_above": reopen_above,
+            "total_target": total, "used": used, "available": available, "reopen_above": reopen_above, "can_end": bool(rounds),
+            **counts,
             "planned": target, "surveys": [round_info(r) for r in rounds]}
 
 

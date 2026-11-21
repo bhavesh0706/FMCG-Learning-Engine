@@ -4,6 +4,7 @@ import '../main.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../services/session.dart';
+import '../services/survey_queue.dart' show RecentProduct;
 import 'home_screens.dart';
 import 'project_screens.dart' show ProjectDetailPage;
 import 'product_checks_screen.dart';
@@ -77,6 +78,22 @@ class _NotificationsPageState extends State<NotificationsPage> {
       Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProjectDetailPage(projectId: projectId, admin: Session.isAdmin)));
       return;
     }
+    // Like a phone notification: tapping goes straight to what it is about.
+    if (!Session.isAdmin && (n.kind == AppNotification.productAssigned || n.kind == 'plan_assigned' || n.kind == 'round_started')) {
+      final pid = int.tryParse('${n.data['product_id'] ?? ''}');
+      final cid = int.tryParse('${n.data['category_id'] ?? ''}');
+      openSurvey(
+        context,
+        product: pid != null && cid != null
+            ? RecentProduct(id: pid, name: '${n.data['product_name'] ?? ''}', categoryId: cid, categoryName: '${n.data['category_name'] ?? ''}')
+            : null,
+      );
+      return;
+    }
+    if (n.kind == AppNotification.productMismatch && Session.isAdmin) {
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProductChecksPage()));
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -84,7 +101,7 @@ class _NotificationsPageState extends State<NotificationsPage> {
       backgroundColor: AppColors.surface,
       builder: (sheetContext) => _NotificationDetails(
         notification: n,
-        onStartSurvey: n.kind == AppNotification.productAssigned && !Session.isAdmin
+        onStartSurvey: (n.kind == AppNotification.productAssigned || n.kind == 'plan_assigned') && !Session.isAdmin
             ? () {
                 Navigator.of(sheetContext).pop();
                 openSurvey(context);
@@ -105,9 +122,27 @@ class _NotificationsPageState extends State<NotificationsPage> {
             valueListenable: Notifications.unread,
             builder: (context, count, _) => count == 0
                 ? const SizedBox.shrink()
-                : TextButton(
+                : IconButton(
+                    tooltip: 'Mark all as read',
                     onPressed: Notifications.markAllRead,
-                    child: const Text('Mark all read'),
+                    icon: const Icon(Icons.done_all_rounded),
+                  ),
+          ),
+          ValueListenableBuilder<List<AppNotification>>(
+            valueListenable: Notifications.items,
+            builder: (context, items, _) => items.isEmpty
+                ? const SizedBox.shrink()
+                : IconButton(
+                    tooltip: 'Clear all',
+                    icon: const Icon(Icons.delete_sweep_outlined),
+                    onPressed: () async {
+                      final ok = await confirmAction(context,
+                          title: 'Clear all notifications?',
+                          message: 'They are removed from your bell. New notifications still arrive.',
+                          confirmLabel: 'Clear all',
+                          cancelLabel: 'Keep');
+                      if (ok) await Notifications.clearAll();
+                    },
                   ),
           ),
         ],
@@ -152,7 +187,21 @@ class _NotificationsPageState extends State<NotificationsPage> {
               padding: const EdgeInsets.symmetric(vertical: 8),
               itemCount: items.length,
               separatorBuilder: (context, index) => Divider(height: 1, color: AppColors.line),
-              itemBuilder: (context, i) => _NotificationTile(notification: items[i], onTap: () => _open(items[i])),
+              // Swipe right: mark as read (✓). Swipe left: delete (×).
+              itemBuilder: (context, i) => Dismissible(
+                key: ValueKey('notif-${items[i].id}'),
+                background: _SwipeBg(icon: Icons.done_rounded, color: AppColors.pos, alignStart: true),
+                secondaryBackground: _SwipeBg(icon: Icons.close_rounded, color: AppColors.neg, alignStart: false),
+                confirmDismiss: (direction) async {
+                  if (direction == DismissDirection.startToEnd) {
+                    await Notifications.markRead(items[i]);
+                    return false; // stays in the list, now read
+                  }
+                  return true;
+                },
+                onDismissed: (_) => Notifications.delete(items[i]),
+                child: _NotificationTile(notification: items[i], onTap: () => _open(items[i])),
+              ),
             );
           },
         ),
@@ -253,7 +302,19 @@ class _NotificationDetails extends StatelessWidget {
     Color chipBg = AppColors.brandSoft;
     Color chipFg = AppColors.brand;
 
-    if (n.kind == AppNotification.productAssigned) {
+    if (n.kind == 'plan_assigned') {
+      // The Admin put this survey person in a plan: their own share of its responses.
+      chip = 'Your responses: ${n.text('target') ?? '—'}';
+      add('Product', n.text('product_name'));
+      add('Category', n.text('category_name'));
+      add('Project', n.text('project_code'));
+      add('Plan', n.text('plan_name'));
+      add('Assigned responses', n.text('target'));
+      if (n.text('previous_target') != null) add('Before', n.text('previous_target'));
+      final cities = n.data['cities'] is List ? (n.data['cities'] as List).join(', ') : '';
+      add('Cities', cities.isEmpty ? 'Any city' : cities);
+      add('Received', formatDate(n.createdAt));
+    } else if (n.kind == AppNotification.productAssigned) {
       add('Product', n.text('product_name'));
       add('Category', n.text('category_name'));
       add('Assigned by', n.text('assigned_by'));
@@ -381,4 +442,21 @@ class _NotificationDetails extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The colour and icon shown behind a notification while it is swiped.
+class _SwipeBg extends StatelessWidget {
+  const _SwipeBg({required this.icon, required this.color, required this.alignStart});
+
+  final IconData icon;
+  final Color color;
+  final bool alignStart;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        color: color,
+        alignment: alignStart ? Alignment.centerLeft : Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Icon(icon, color: Colors.white, size: 26),
+      );
 }

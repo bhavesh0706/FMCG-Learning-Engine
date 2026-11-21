@@ -44,7 +44,8 @@ function toFix(pos) {
     longitude: Number(pos.coords.longitude.toFixed(6)),
     accuracy: Math.round(pos.coords.accuracy * 10) / 10,
     // The moment the browser took the position (not when the survey is saved).
-    captured_at: new Date(pos.timestamp || Date.now()).toISOString(),
+    // Some browsers (Safari) report a timestamp from another clock: then use now.
+    captured_at: new Date(Math.abs((pos.timestamp || 0) - Date.now()) < 864e5 ? pos.timestamp : Date.now()).toISOString(),
     source: "web",
   };
 }

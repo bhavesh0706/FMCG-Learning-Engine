@@ -8,6 +8,7 @@ import 'org_screens.dart';
 import 'report_screens.dart' show ToneBar;
 import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads, ActionPlansView;
 import '../widgets/search_dropdown.dart';
+import 'survey_snapshot.dart';
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
@@ -81,15 +82,25 @@ class _OrgProductPageState extends State<OrgProductPage> {
                 : TabBarView(children: [
                     _ReportTab(productId: widget.productId),
                     // This product's recipe standards (results, add / edit / remove)
-                    RefreshIndicator(
-                      onRefresh: _load,
-                      child: ListView(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-                        children: [RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true)],
+                    // Standards, Recipe, Questions: the current setup, or (chosen above) what a survey used.
+                    SurveyScoped(
+                      productId: widget.productId,
+                      detail: _detail!,
+                      kind: 'standards',
+                      child: RefreshIndicator(
+                        onRefresh: _load,
+                        child: ListView(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+                          children: [RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true)],
+                        ),
                       ),
                     ),
-                    _RecipeTab(productId: widget.productId, onSaved: _load),
-                    _QuestionsTab(productId: widget.productId),
+                    SurveyScoped(productId: widget.productId, detail: _detail!, kind: 'recipe',
+                        snapshotView: (d) => _RecipeTab(productId: widget.productId, onSaved: _load, snapshot: {...asJson(d['recipe']), '_costing': d['costing']}),
+                        child: _RecipeTab(productId: widget.productId, onSaved: _load)),
+                    SurveyScoped(productId: widget.productId, detail: _detail!, kind: 'questions',
+                        snapshotView: (d) => _QuestionsTab(productId: widget.productId, snapshot: asJsonList(d['questions'])),
+                        child: _QuestionsTab(productId: widget.productId)),
                     ActionPlansView(productId: widget.productId),
                     _RoundsTab(productId: widget.productId, detail: _detail!, onChanged: _load),
                     RoundCompareView(productId: widget.productId),
@@ -321,15 +332,18 @@ class _ReportTabState extends State<_ReportTab> {
 // ---------------------------------------------------------------- recipe
 
 class _RecipeTab extends StatelessWidget {
-  const _RecipeTab({required this.productId, required this.onSaved});
+  const _RecipeTab({required this.productId, required this.onSaved, this.snapshot});
 
   final int productId;
   final VoidCallback onSaved;
+  /// An earlier survey's recipe: the same view, read-only (no edit buttons).
+  final Json? snapshot;
 
   @override
   Widget build(BuildContext context) {
+    final readOnly = snapshot != null;
     return Loaded<Json>(
-      load: () => OrgApi.recipe(productId),
+      load: () => readOnly ? Future.value(snapshot!) : OrgApi.recipe(productId),
       builder: (context, recipe, reload) {
         final ingredients = asJsonList(recipe['ingredients']);
         Future<void> edit() async {
@@ -346,7 +360,9 @@ class _RecipeTab extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
             Text(
-              'The report\'s recommendations refer to these ingredients. Saving a change creates a new version and tells the research team.',
+              readOnly
+                  ? 'The recipe this survey tested (read-only).'
+                  : 'The report\'s recommendations refer to these ingredients. Saving a change creates a new version and tells the research team.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
             ),
             const SizedBox(height: 12),
@@ -354,7 +370,7 @@ class _RecipeTab extends StatelessWidget {
               Panel(
                 child: Column(children: [
                   const EmptyNote(icon: Icons.menu_book_outlined, title: 'No recipe yet', text: 'Add how the product is made.'),
-                  FilledButton.icon(onPressed: edit, icon: const Icon(Icons.add), label: const Text('Add recipe')),
+                  if (!readOnly) FilledButton.icon(onPressed: edit, icon: const Icon(Icons.add), label: const Text('Add recipe')),
                 ]),
               )
             else ...[
@@ -362,7 +378,7 @@ class _RecipeTab extends StatelessWidget {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     Expanded(child: Text('Batch size', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink))),
-                    TextButton(onPressed: edit, child: const Text('Edit')),
+                    if (!readOnly) TextButton(onPressed: edit, child: const Text('Edit')),
                   ]),
                   Text(str(recipe['batch_size'], 'Not set'), style: TextStyle(color: AppColors.ink2)),
                 ]),
@@ -389,7 +405,9 @@ class _RecipeTab extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               // Costing (Cost per KG x Usage %), standards, attachments, earlier steps (read-only)
-              RecipeExtrasView(productId: productId, canEdit: true),
+              if (!readOnly) RecipeExtrasView(productId: productId, canEdit: true)
+              // An earlier version: its own Cost per KG and Cost in Use.
+              else RecipeExtrasView(productId: productId, data: {'costing': snapshot!['_costing']}, costingOnly: true),
               const SizedBox(height: 8),
               if (str(recipe['process']).isNotEmpty) ...[
                 const SizedBox(height: 8),
@@ -412,7 +430,7 @@ class _RecipeTab extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 14),
-              FilledButton.icon(onPressed: edit, icon: const Icon(Icons.edit_outlined), label: const Text('Edit recipe')),
+              if (!readOnly) FilledButton.icon(onPressed: edit, icon: const Icon(Icons.edit_outlined), label: const Text('Edit recipe')),
             ],
           ],
         );
@@ -679,16 +697,21 @@ const _typeLabels = {
 const _optionTypes = {'single_choice', 'multiple_choice', 'preference'};
 
 class _QuestionsTab extends StatelessWidget {
-  const _QuestionsTab({required this.productId});
+  const _QuestionsTab({required this.productId, this.snapshot});
 
   final int productId;
+  /// The questions an earlier survey asked: the same view, read-only.
+  final List<Json>? snapshot;
 
   @override
   Widget build(BuildContext context) {
+    final readOnly = snapshot != null;
     return Loaded<List<Json>>(
-      load: () => OrgApi.questions(productId),
+      load: () => readOnly ? Future.value(snapshot!) : OrgApi.questions(productId),
       builder: (context, all, reload) {
-        final qs = all.where((q) => q['is_active'] != false).toList()..sort((a, b) => intOf(a['position']).compareTo(intOf(b['position'])));
+        final qs = readOnly
+            ? all
+            : (all.where((q) => q['is_active'] != false).toList()..sort((a, b) => intOf(a['position']).compareTo(intOf(b['position']))));
         final n = qs.length;
         final (tone, status) = n < 5
             ? ('warn', '$n of 5–10 questions · add ${5 - n} more before it can be surveyed')
@@ -730,11 +753,13 @@ class _QuestionsTab extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
             Text(
-              'Survey persons ask these questions, in this order. Keep them the same between surveys you want to compare.',
+              readOnly
+                  ? 'The questions this survey asked, in this order (read-only).'
+                  : 'Survey persons ask these questions, in this order. Keep them the same between surveys you want to compare.',
               style: TextStyle(color: AppColors.muted, height: 1.4),
             ),
             const SizedBox(height: 10),
-            Align(alignment: Alignment.centerLeft, child: Pill(status, tone: tone)),
+            if (!readOnly) Align(alignment: Alignment.centerLeft, child: Pill(status, tone: tone)),
             const SizedBox(height: 10),
             for (var k = 0; k < qs.length; k++) ...[
               Panel(
@@ -755,12 +780,13 @@ class _QuestionsTab extends StatelessWidget {
                           _typeLabels[str(qs[k]['question_type'])] ?? str(qs[k]['question_type']),
                           if (qs[k]['required'] == true) 'required',
                           if (qs[k]['options'] is List) (qs[k]['options'] as List).join(' / '),
+                          if (readOnly && qs[k]['still_asked'] == false) 'no longer asked',
                         ].join(' · '),
                         style: TextStyle(fontSize: 12, color: AppColors.muted),
                       ),
                     ]),
                   ),
-                  PopupMenuButton<String>(
+                  if (!readOnly) PopupMenuButton<String>(
                     tooltip: 'Question actions',
                     onSelected: (a) async {
                       if (a == 'edit') await edit(qs[k]);
@@ -991,7 +1017,9 @@ class _RoundsTab extends StatelessWidget {
           Text(
             [
               'Recipe v${intOf(r['recipe_version'])}',
-              '$done of $target consumers',
+              if (asJson(r['project'])['code'] != null) '${asJson(r['project'])['code']}',
+              '$done submitted of $target · ${(target - done).clamp(0, target)} remaining',
+              if (str(r['started_at']).isNotEmpty) 'from ${str(r['started_at']).substring(0, 10)}',
               if (numOrNull(r['rating']) != null) '${ratingText(r['rating'])} ★',
               if (str(r['note']).isNotEmpty) '“${str(r['note'])}”',
             ].join(' · '),
@@ -1153,14 +1181,18 @@ class RoundCompareView extends StatefulWidget {
 }
 
 class _RoundCompareViewState extends State<RoundCompareView> {
-  int? _a;
-  int? _b;
+  // Separate surveys (Survey 1 and Survey 2 may test the same recipe); never a survey with itself.
+  List<int>? _picked; // null: the two latest
+  int? get _a => _picked != null && _picked!.length >= 2 ? _picked![0] : null;
+  int? get _b => _picked != null && _picked!.length >= 2 ? _picked![1] : null;
 
   @override
   Widget build(BuildContext context) {
     return Loaded<Json>(
-      key: ValueKey('compare-$_a-$_b'),
-      load: () => OrgApi.compare(widget.productId, a: _a, b: _b),
+      key: ValueKey('compare-${_picked?.join(',')}'),
+      load: () => _picked != null && _picked!.length < 2
+          ? OrgApi.compare(widget.productId).then((d) => {...d, 'need_two': true})
+          : OrgApi.compare(widget.productId, a: _a, b: _b, surveys: _picked),
       builder: (context, data, reload) {
         if (data['enough_rounds'] != true) {
           return ListView(children: const [
@@ -1173,23 +1205,53 @@ class _RoundCompareViewState extends State<RoundCompareView> {
         }
         final rounds = asJsonList(data['rounds']);
         final a = asJson(data['a']), b = asJson(data['b']);
+        final picked = _picked ?? [intOf(a['number']), intOf(b['number'])];
+        final chips = Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final r in rounds)
+            FilterChip(
+              label: Text('Survey ${intOf(r['number'])} · v${intOf(r['recipe_version'])}'
+                  '${asJson(r['project'])['code'] != null ? ' · ${asJson(r['project'])['code']}' : ''}'),
+              selected: picked.contains(intOf(r['number'])),
+              onSelected: (on) => setState(() {
+                final next = [...picked];
+                on ? next.add(intOf(r['number'])) : next.remove(intOf(r['number']));
+                next.sort();
+                _picked = next;
+              }),
+            ),
+        ]);
+        if (data['need_two'] == true) {
+          return ListView(padding: const EdgeInsets.all(16), children: [
+            chips,
+            const SizedBox(height: 12),
+            Text('Choose at least two different surveys.', style: TextStyle(color: AppColors.muted)),
+          ]);
+        }
+        final many = asJsonList(data['surveys']);
+        if (picked.length > 2 && many.isNotEmpty) {
+          String v(dynamic x, [String suffix = '']) => x == null ? '—' : '${numOrNull(x) is double ? (numOrNull(x) as double).toStringAsFixed(1) : x}$suffix';
+          return ListView(padding: const EdgeInsets.fromLTRB(16, 12, 16, 28), children: [
+            chips,
+            const SizedBox(height: 12),
+            for (final s in many)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Panel(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('Survey ${intOf(s['number'])} · Recipe v${intOf(s['recipe_version'])}',
+                        style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+                    const SizedBox(height: 4),
+                    Text('Submitted responses ${v(asJson(s['numbers'])['consumers'])} · Rating ${v(asJson(s['numbers'])['rating'])} · '
+                        'Positive ${v(asJson(s['numbers'])['positive_pct'], '%')} · Negative ${v(asJson(s['numbers'])['negative_pct'], '%')}',
+                        style: TextStyle(color: AppColors.ink2)),
+                  ]),
+                ),
+              ),
+            Text("Each survey keeps its own responses; surveys of the same recipe aren't merged.", style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+          ]);
+        }
         final na = asJson(a['numbers']), nb = asJson(b['numbers']);
         final changes = (data['recipe_changes'] is List ? data['recipe_changes'] as List : const []).map((e) => '$e').toList();
-
-        Widget picker(String label, int value, void Function(int) onPick) => Expanded(
-              child: SearchDropdownField<int>(
-                isExpanded: true,
-                value: value,
-                decoration: InputDecoration(labelText: label),
-                items: [
-                  for (final r in rounds)
-                    DropdownMenuItem(value: intOf(r['number']), child: Text('Survey ${intOf(r['number'])} · v${intOf(r['recipe_version'])}')),
-                ],
-                onChanged: (v) {
-                  if (v != null) setState(() => onPick(v));
-                },
-              ),
-            );
 
         TableRow row(String label, dynamic x, dynamic y, {String suffix = '', bool higherIsBetter = true}) {
           final dx = numOrNull(x), dy = numOrNull(y);
@@ -1221,11 +1283,7 @@ class _RoundCompareViewState extends State<RoundCompareView> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
           children: [
-            Row(children: [
-              picker('From', intOf(a['number']), (v) => _a = v),
-              const SizedBox(width: 10),
-              picker('To', intOf(b['number']), (v) => _b = v),
-            ]),
+            chips,
             const SizedBox(height: 12),
             Panel(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
