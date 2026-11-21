@@ -398,12 +398,13 @@ def start_round(db: Session, product: Product, account: dict, recipe_version: Op
     # only after the Super Admin raises the total, and covers just the increase.
     ended = (db.query(SurveyRound).filter(SurveyRound.product_id == product.id, SurveyRound.recipe_version == version)
              .order_by(SurveyRound.number.desc()).first())
-    if ended is not None and ended.total_at_close is not None:
+    if ended is not None and ended.status == CLOSED and _product_total(db, ended):
+        collected = done_counts(db, [ended.id]).get(ended.id, 0)
         now_total = _product_total(db, ended) or 0
-        room = now_total - ended.total_at_close
+        room = now_total - collected
         if room <= 0:
             raise RoundError(f"Survey {ended.number} is completed. To survey again, raise the project's response target above "
-                             f"{ended.total_at_close} first.", 409)
+                             f"{collected} first.", 409)
         if target > room:
             raise RoundError(f"The project's response target leaves {room} consumer responses after Survey {ended.number}: "
                              f"survey at most {room}, or raise the target.", 409)
@@ -470,13 +471,11 @@ def _product_total(db: Session, r: SurveyRound) -> Optional[int]:
 
 
 def reopen_baseline(r: Optional[SurveyRound], done: int = 0) -> int:
-    """The total the product must go above before a survey after this ended one can be planned:
-    the total when it ended (older surveys: what it covered, its target or responses)."""
+    """What an ended survey actually collected: the response target must go above it to survey again
+    (ended early with 3 of 5: any target above 3 reopens it)."""
     if r is None:
         return 0
-    if r.total_at_close is not None:
-        return int(r.total_at_close)
-    return max(int(r.target or 0), int(done or 0))
+    return int(done or 0)
 
 
 # ============================================================

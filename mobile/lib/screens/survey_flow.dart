@@ -1026,6 +1026,26 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
             Expanded(child: _field(_age, 'Age', keyboard: TextInputType.number)),
           ],
         ),
+        if (intOf(_myPlan?['my_target']) > 0)
+          Container(
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            decoration: BoxDecoration(
+              color: intOf(_myPlan?['my_done']) >= intOf(_myPlan?['my_target']) ? AppColors.warnSoft : AppColors.brandSoft,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.line),
+            ),
+            child: Text.rich(
+              TextSpan(children: [
+                const TextSpan(text: 'Your share: '),
+                TextSpan(text: '${intOf(_myPlan?['my_done'])} of ${intOf(_myPlan?['my_target'])}', style: const TextStyle(fontWeight: FontWeight.w800)),
+                TextSpan(text: intOf(_myPlan?['my_done']) >= intOf(_myPlan?['my_target'])
+                    ? ' responses · all done (ask your Admin if more are needed)'
+                    : ' responses · ${intOf(_myPlan?['my_target']) - intOf(_myPlan?['my_done'])} to go'),
+              ]),
+              style: TextStyle(fontSize: 13.5, color: AppColors.ink, height: 1.35),
+            ),
+          ),
         if (_myCities.isNotEmpty)
           Container(
             margin: const EdgeInsets.only(bottom: 12),

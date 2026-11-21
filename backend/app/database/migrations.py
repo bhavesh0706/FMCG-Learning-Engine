@@ -335,6 +335,7 @@ def run_migrations():
     # Offline GPS: accuracy, capture time and platform of a survey's GPS fix.
     _add_column("survey_responses", "location_accuracy", "FLOAT NULL")
     _add_column("survey_rounds", "total_at_close", "INT NULL")
+    _add_column("action_plan_members", "target", "INT NULL")
     project_totals()
     _add_column("survey_responses", "location_captured_at", "DATETIME NULL")
     _add_column("survey_responses", "location_source", "VARCHAR(20) NULL")

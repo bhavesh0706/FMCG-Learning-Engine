@@ -14,6 +14,7 @@ import 'org_screens.dart' show Loaded, Panel, Pill, EmptyNote, agoText, ratingTe
 import 'report_screens.dart' show ProductReportPage;
 import 'next_update_screens.dart' show ActionPlansView, MastersPage, RecipeExtrasView;
 import '../widgets/search_dropdown.dart';
+import 'project_screens.dart' show AdminPasskeyPanel, ProjectsPage;
 
 /* ============================================================
    Admin (role "admin") in the app
@@ -33,7 +34,7 @@ class AdminShell extends StatefulWidget {
 
 class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
   int _tab = 0;
-  static const _titles = ['Overview', 'Survey history', 'Catalog', 'Team'];
+  static const _titles = ['Overview', 'Survey history', 'Projects', 'Catalog', 'Team'];
 
   @override
   void initState() {
@@ -88,6 +89,7 @@ class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
       body: IndexedStack(index: _tab, children: [
         AdminHomePage(onViewAll: () => setState(() => _tab = 1)),
         const MobileHistoryPage(), // admins: Surveys and Products tabs, reports
+        const ProjectsPage(admin: true), // read-only projects; teams and their shares are allocated here
         const AdminCatalogPage(),
         const AdminTeamPage(),
       ]),
@@ -97,6 +99,7 @@ class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.history), selectedIcon: Icon(Icons.history), label: 'History'),
+          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Projects'),
           NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Catalog'),
           NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: 'Team'),
         ],
@@ -428,7 +431,7 @@ class AdminProductPage extends StatelessWidget {
     final p = product;
     final live = asJson(p['live_round']);
     return DefaultTabController(
-      length: 4,
+      length: 3,
       child: Scaffold(
         backgroundColor: AppColors.bg,
         appBar: AppBar(
@@ -438,14 +441,12 @@ class AdminProductPage extends StatelessWidget {
           ]),
           bottom: TabBar(isScrollable: true, tabAlignment: TabAlignment.start, tabs: [
             const Tab(text: 'Product details'),
-            const Tab(text: 'Who can survey'),
             const Tab(text: 'Plans'),
             Tab(text: live.isEmpty ? 'Surveys' : 'Surveys · ${intOf(live['number'])} live'),
           ]),
         ),
         body: TabBarView(children: [
           _ProductDetailsTab(product: p),
-          _WhoCanSurveyTab(productId: intOf(p['id']), name: str(p['name'])),
           ActionPlansView(productId: intOf(p['id'])),
           _ProductRoundsTab(productId: intOf(p['id'])),
         ]),
@@ -735,6 +736,8 @@ class _AdminTeamPageState extends State<AdminTeamPage> {
           children: [
             Text('Survey executives using the mobile app. Add executives and choose who may see their survey history.',
                 style: TextStyle(color: AppColors.muted, height: 1.4)),
+            const SizedBox(height: 12),
+            const AdminPasskeyPanel(), // pass the recording passkey on to survey persons
             const SizedBox(height: 12),
             FilledButton.icon(onPressed: add, icon: const Icon(Icons.person_add_alt_1), label: const Text('Add team member')),
             const SizedBox(height: 12),

@@ -208,6 +208,12 @@ def update_action_plan(plan_id: int, body: ActionPlanBody, request: Request, db:
         P.apply_fields(plan, body.model_dump())
         P.check_total(_plan_total(db, plan), db.get(Product, plan.product_id).name, P.sibling_target(db, plan), old_target,
                       plan.target, used=_used_before(db, plan))
+        if plan.target != old_target:
+            members = P.members_of(db, [plan.id]).get(plan.id, [])
+            done = P.member_done(db, [plan.id])
+            floor = sum(done.get((plan.id, m.user_id), 0) for m in members)
+            if plan.target < floor:
+                raise P.PlanError(f"The team already submitted {floor} response(s) in this plan: its target can't go below {floor}.", 409)
         for m in P.members_of(db, [plan.id]).get(plan.id, []):  # keep members' cities inside the plan's
             if plan.cities and m.cities:
                 kept = [c for c in m.cities if c.lower() in {x.lower() for x in plan.cities}]
@@ -217,6 +223,8 @@ def update_action_plan(plan_id: int, body: ActionPlanBody, request: Request, db:
         _fail(e)
     if rnd:
         P.sync_round(db, rnd.id)
+    if plan.target != old_target and P.members_of(db, [plan.id]).get(plan.id):
+        notify_reallocation(db, plan, f"Its target changed from {old_target} to {plan.target}.")
     db.commit()
     audit.note(request, summary=f"Changed the action plan “{plan.name}” ({_where(rnd)})")
     return {"plan": _plan_now(db, plan, rnd)}
@@ -241,11 +249,12 @@ def delete_action_plan(plan_id: int, request: Request, db: Session = Depends(get
 
 @router.put("/admin/action-plans/{plan_id}/members")
 def allocate_members(plan_id: int, body: MembersBody, request: Request, db: Session = Depends(get_db)):
-    _role(request, "admin")
-    plan = _plan(db, plan_id)
+    me = _role(request, "admin")
+    # Two Admins saving at once: the second waits for the first (row lock), then sees its result.
+    plan = db.query(ActionPlan).filter(ActionPlan.id == plan_id).with_for_update().first() or _plan(db, plan_id)
     rnd = _editable(db, plan)
     try:
-        P.set_members(db, plan, body.members)
+        P.set_members(db, plan, body.members, me)
     except P.PlanError as e:
         db.rollback()
         _fail(e)
@@ -255,6 +264,31 @@ def allocate_members(plan_id: int, body: MembersBody, request: Request, db: Sess
     audit.note(request, summary=f"Allocated {len(body.members)} team member(s) to the action plan “{plan.name}”",
                details={"members": body.members})
     return {"plan": _plan_now(db, plan, rnd)}
+
+
+@router.get("/admin/action-plans/{plan_id}/allocation-history")
+def allocation_history(plan_id: int, request: Request, db: Session = Depends(get_db)):
+    """Who changed which team member's response allocation, when, from what to what."""
+    _role(request, "admin", "client")
+    _plan(db, plan_id)
+    from app.database.models import ActionPlanAllocationLog, User
+
+    rows = (db.query(ActionPlanAllocationLog).filter(ActionPlanAllocationLog.action_plan_id == plan_id)
+            .order_by(ActionPlanAllocationLog.at.desc(), ActionPlanAllocationLog.id.desc()).limit(200).all())
+    names = {u.id: u.name for u in db.query(User).filter(User.id.in_({r.user_id for r in rows} or {-1}))}
+    return {"history": [{"at": r.at.isoformat(timespec="seconds") + "Z", "member": names.get(r.user_id, f"#{r.user_id}"),
+                         "old": r.old_target, "new": r.new_target, "by": r.changed_by_name} for r in rows]}
+
+
+def notify_reallocation(db: Session, plan: ActionPlan, why: str) -> None:
+    """Tell the Admins that a plan's response target changed: its team allocation needs a review."""
+    from app.database.models import User
+    from app.services.notifications import notify
+
+    admins = [uid for (uid,) in db.query(User.id).filter(User.role == "admin", User.is_active == 1)]
+    notify(db, admins, "allocation_needed", title=f"Reallocate responses: {plan.name}",
+           message=f"{why} Share the new target among the team of “{plan.name}”.",
+           data={"plan_id": plan.id, "project_id": plan.project_id, "product_id": plan.product_id, "target": plan.target})
 
 
 @router.get("/my/action-plans")

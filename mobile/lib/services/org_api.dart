@@ -45,6 +45,9 @@ class OrgApi {
 
   // ---------------------------------------------------------------- plumbing
 
+  /// Any backend route, for screens that call it directly (screens/project_screens.dart).
+  static Future<Json> request(String method, String path, {Object? body}) => _send(method, path, body: body);
+
   static Future<Json> _send(String method, String path, {Object? body, Map<String, dynamic>? query}) async {
     try {
       final r = await _dio.request(path, data: body, queryParameters: query, options: Options(method: method));

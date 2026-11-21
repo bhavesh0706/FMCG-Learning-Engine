@@ -1,6 +1,7 @@
 """Recipe plans and action plans: planning per product, several plans per round,
 team members allocated to cities (enforced), and plans carried to new recipe versions."""
 
+from conftest import start_project, staff_project  # noqa: F401
 from conftest import _unique, auth, make_user
 
 from app.database.models import ActionPlan, ProductAssignment, SurveyResponse
@@ -211,7 +212,7 @@ def test_survey_plans_never_add_up_to_more_than_the_projects_target(client, db):
     assert low.status_code == 409 and "can't go below 28" in low.json()["detail"]
     assert client.put(f"/org/projects/{proj}/target", headers=auth(org), json={"total_target": 100}).json()["total_target"] == 100
     assert client.put(f"/action-plans/{hyd}", headers=auth(org), json={"name": "Hyd team", "target": 80}).status_code == 200
-    started = client.post(f"/org/projects/{proj}/start", headers=auth(org), json={})
+    started = start_project(client, db, proj, auth(org), {})
     assert started.status_code == 200 and started.json()["round"]["target"] == 100
     # While the survey runs the same cap applies; an Admin can't change the target.
     late = client.post(f"/org/projects/{proj}/plans", headers=auth(org), json={"name": "Extra", "target": 1})

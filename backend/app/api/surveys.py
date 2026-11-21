@@ -989,6 +989,13 @@ def submit_survey_response(
             ),
         )
 
+    # A team member can't submit more responses than the Admin allocated to them in the plan.
+    if response.action_plan_id and response.status != "submitted":
+        from app.services.action_plans import quota_problem
+
+        full = quota_problem(db, response.action_plan_id, response.user_id, exclude_response=response.id)
+        if full:
+            raise HTTPException(status_code=409, detail=full)
     response.status = "submitted"
     response.submitted_at = datetime.utcnow()
 

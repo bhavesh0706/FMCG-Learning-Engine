@@ -1293,7 +1293,7 @@ function ProjectPage({ projectId }) {
               {live
                 ? `${plural(plan.plans.length, "plan")} · ${plan.round.done} of ${plan.round.target} consumers surveyed. The Admin allocates each plan's team.`
                 : closed
-                  ? `Survey ${plan.round.number} is completed. To survey again, raise the response target above ${reopenAbove} (Edit response target): Survey ${plan.round.number} reopens for the extra responses.`
+                  ? `Survey ${plan.round.number} is completed. To survey again, set the response target above ${reopenAbove} (Edit response target): Survey ${plan.round.number} reopens for the extra responses.`
                   : plan.plans.length
                   ? `${plural(plan.plans.length, "plan")} · ${plan.target} consumers in total. Start the survey when the plan is ready.`
                   : "Plan the survey: how many consumers, which cities and when. Add one plan per team or city."}
@@ -1749,7 +1749,7 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice, base = `
             {live ? (
               <p className="muted small">The next survey can start when Survey {live.number} is complete.</p>
             ) : detail.can_start_round ? (
-              <button type="button" className="btn btn-secondary btn-sm" onClick={onStart}>Plan Survey {next} in the project</button>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={onStart}>Open the project to survey again</button>
             ) : (
               <p className="muted small">Add the recipe first, then start Survey {next}.</p>
             )}

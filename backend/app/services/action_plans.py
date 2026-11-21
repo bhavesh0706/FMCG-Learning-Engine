@@ -27,7 +27,15 @@ from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.database.models import ActionPlan, ActionPlanMember, ProductAssignment, SurveyResponse, SurveyRound, User
+from app.database.models import (
+    ActionPlan,
+    ActionPlanAllocationLog,
+    ActionPlanMember,
+    ProductAssignment,
+    SurveyResponse,
+    SurveyRound,
+    User,
+)
 from app.services.rounds import DONE_STATUSES  # the same "done" as round progress
 
 AUDIENCES = ("internal", "external")
@@ -195,15 +203,34 @@ def done_by_plan(db: Session, plan_ids) -> dict:
     return {pid: n for pid, n in rows}
 
 
-def plan_out(plan: ActionPlan, members: list, done: int, names: dict) -> dict:
+def member_done(db: Session, plan_ids) -> dict:
+    """{(plan_id, user_id): valid responses submitted} for these plans."""
+    rows = (db.query(SurveyResponse.action_plan_id, SurveyResponse.user_id, func.count(SurveyResponse.id))
+            .filter(SurveyResponse.action_plan_id.in_(list(plan_ids) or [-1]), SurveyResponse.status.in_(DONE_STATUSES))
+            .group_by(SurveyResponse.action_plan_id, SurveyResponse.user_id).all())
+    return {(pid, uid): n for pid, uid, n in rows}
+
+
+def allocation_state(plan: ActionPlan, members: list) -> dict:
+    """How the plan's target is shared among its team: allocated, left, and whether it's complete."""
+    allocated = sum(m.target or 0 for m in members)
+    complete = bool(members) and all(m.target for m in members) and allocated == (plan.target or 0)
+    return {"allocated": allocated, "unallocated": max(0, (plan.target or 0) - allocated), "allocation_complete": complete,
+            "needs_allocation": not complete}
+
+
+def plan_out(plan: ActionPlan, members: list, done: int, names: dict, member_counts: Optional[dict] = None) -> dict:
+    counts = member_counts or {}
     return {
+        **allocation_state(plan, members),
         "id": plan.id, "product_id": plan.product_id, "round_id": plan.round_id, "recipe_version": plan.recipe_version,
         "name": plan.name, "target": plan.target, "done": done, "persons_needed": plan.persons_needed,
         "start_date": plan.start_date.isoformat() if plan.start_date else None,
         "end_date": plan.end_date.isoformat() if plan.end_date else None,
         "cities": plan.cities or [], "audience": plan.audience, "respondent_types": plan.respondent_types or [],
         "notes": plan.notes, "copied_from_id": plan.copied_from_id,
-        "members": [{"user_id": m.user_id, "name": names.get(m.user_id, f"#{m.user_id}"), "cities": m.cities or plan.cities or []}
+        "members": [{"user_id": m.user_id, "name": names.get(m.user_id, f"#{m.user_id}"), "cities": m.cities or plan.cities or [],
+                     "target": m.target, "done": counts.get((plan.id, m.user_id), 0)}
                     for m in members],
     }
 
@@ -233,7 +260,8 @@ def plans_out(db: Session, plans: list) -> list:
     ids = {m.user_id for ms in members.values() for m in ms}
     names = {u.id: u.name for u in db.query(User).filter(User.id.in_(ids or {-1}))}
     done = done_by_plan(db, [p.id for p in plans])
-    return [plan_out(p, members.get(p.id, []), done.get(p.id, 0), names) for p in plans]
+    counts = member_done(db, [p.id for p in plans])
+    return [plan_out(p, members.get(p.id, []), done.get(p.id, 0), names, counts) for p in plans]
 
 
 # ---------------------------------------------------------------- keeping rounds in step
@@ -254,17 +282,24 @@ def sync_round(db: Session, round_id: int) -> None:
             db.delete(a)
 
 
-def set_members(db: Session, plan: ActionPlan, members: list) -> None:
-    """[{user_id, cities}]: survey persons, each with cities from the plan's (empty = all).
-    A person may be in several plans of a survey (e.g. Greater Noida, then Hyderabad): each
-    survey they take counts in the plan of the customer's city (plan_for_survey)."""
+def set_members(db: Session, plan: ActionPlan, members: list, who: Optional[dict] = None) -> list:
+    """[{user_id, cities, target}]: survey persons, each with cities from the plan's (empty = all) and
+    the consumer responses they must collect (a positive whole number). Their targets may add up to
+    at most the plan's target, and none below what that person already submitted in the plan.
+    A person may be in several plans of a survey: each survey counts in the plan of the customer's
+    city (plan_for_survey). Every allocation change is logged. Returns the changes."""
     plan_cities = {c.lower(): c for c in plan.cities or []}
     wanted = {}
+    targets = {}
+    names = {}
     for item in members or []:
         uid = int(item.get("user_id"))
         user = db.get(User, uid)
         if user is None or user.role != "executive" or not user.is_active:
             raise PlanError(f"#{uid} is not an active survey person.")
+        names[uid] = user.name
+        if item.get("target") not in (None, ""):
+            targets[uid] = _int(item.get("target"), f"Responses for {user.name}")
         cities = _cities(item.get("cities"))
         if plan_cities:
             outside = [c for c in cities if c.lower() not in plan_cities]
@@ -272,14 +307,58 @@ def set_members(db: Session, plan: ActionPlan, members: list) -> None:
                 raise PlanError(f"{', '.join(outside)} is not a city of “{plan.name}” ({', '.join(plan.cities)}).")
             cities = [plan_cities[c.lower()] for c in cities]
         wanted[uid] = cities
-    for m in db.query(ActionPlanMember).filter(ActionPlanMember.action_plan_id == plan.id):
-        if m.user_id not in wanted:
+    total = sum(targets.values())
+    if total > (plan.target or 0):
+        raise PlanError(f"The team's responses add up to {total}, more than the {plan.target} of “{plan.name}”. "
+                        f"Share at most {plan.target}.", 409)
+    counts = member_done(db, [plan.id])
+    current = {m.user_id: m for m in db.query(ActionPlanMember).filter(ActionPlanMember.action_plan_id == plan.id)}
+    for uid, m in current.items():
+        submitted = counts.get((plan.id, uid), 0)
+        if uid not in wanted and submitted:
+            raise PlanError(f"{db.get(User, uid).name if db.get(User, uid) else uid} already submitted {submitted} response(s) in "
+                            f"“{plan.name}”: keep them in the team (their responses are never moved).", 409)
+    for uid, t in targets.items():
+        submitted = counts.get((plan.id, uid), 0)
+        if t < submitted:
+            raise PlanError(f"{names[uid]} already submitted {submitted} response(s) in “{plan.name}”: give them at least {submitted}.", 409)
+    changes = []
+    for uid, m in current.items():
+        if uid not in wanted:
+            changes.append((uid, m.target, None))
             db.delete(m)
         else:
-            m.cities = wanted.pop(m.user_id) or None
+            m.cities = wanted.pop(uid) or None
+            new = targets.get(uid, m.target)
+            if new != m.target:
+                changes.append((uid, m.target, new))
+                m.target = new
     for uid, cities in wanted.items():
-        db.add(ActionPlanMember(action_plan_id=plan.id, user_id=uid, cities=cities or None))
+        db.add(ActionPlanMember(action_plan_id=plan.id, user_id=uid, cities=cities or None, target=targets.get(uid)))
+        if targets.get(uid) is not None:
+            changes.append((uid, None, targets.get(uid)))
+    for uid, old, new in changes:
+        db.add(ActionPlanAllocationLog(action_plan_id=plan.id, user_id=uid, old_target=old, new_target=new,
+                                       changed_by=(who or {}).get("id"), changed_by_name=(who or {}).get("name")))
     db.flush()
+    return changes
+
+
+def quota_problem(db: Session, plan_id: int, user_id: int, exclude_response: Optional[int] = None) -> Optional[str]:
+    """Why this person can't add a response to the plan: their allocation is used up. None when they can."""
+    member = db.query(ActionPlanMember).filter(ActionPlanMember.action_plan_id == plan_id, ActionPlanMember.user_id == user_id).first()
+    if member is None or not member.target:
+        return None  # no allocation set (older plans): no personal limit
+    q = db.query(func.count(SurveyResponse.id)).filter(SurveyResponse.action_plan_id == plan_id, SurveyResponse.user_id == user_id,
+                                                       SurveyResponse.status.in_(DONE_STATUSES))
+    if exclude_response:
+        q = q.filter(SurveyResponse.id != exclude_response)
+    done = int(q.scalar() or 0)
+    if done >= member.target:
+        plan = db.get(ActionPlan, plan_id)
+        return (f"You've collected all {member.target} responses allocated to you in “{plan.name if plan else 'this plan'}”. "
+                "Ask your Admin if more are needed.")
+    return None
 
 
 # ---------------------------------------------------------------- the city rule
@@ -300,12 +379,16 @@ def plan_for_survey(db: Session, round_id: Optional[int], user, city: Optional[s
     if not mine:
         return None
     here = " ".join(str(city or "").split()).lower()
-    for plan, allowed in mine:
-        if here and here in {c.lower() for c in allowed}:
+    fits = [plan for plan, allowed in mine if here and here in {c.lower() for c in allowed}]
+    fits += [plan for plan, allowed in mine if not allowed and plan not in fits]  # plans that may survey anywhere
+    full = None
+    for plan in fits:
+        problem = quota_problem(db, plan.id, user.id)
+        if problem is None:
             return plan.id
-    for plan, allowed in mine:
-        if not allowed:
-            return plan.id  # this plan may survey anywhere
+        full = full or problem
+    if full:
+        raise PlanError(full, 409)
     cities = sorted({c for _, allowed in mine for c in allowed})
     names = ", ".join(f"“{p.name}”" for p, _ in mine)
     if not here:
@@ -322,8 +405,14 @@ def cities_for(db: Session, round_id: int, user_id: int) -> Optional[dict]:
     cities = [] if anywhere else list(dict.fromkeys(c for _, allowed in mine for c in allowed))
     starts = [p.start_date for p, _ in mine if p.start_date]
     ends = [p.end_date for p, _ in mine if p.end_date]
+    counts = member_done(db, [p.id for p, _ in mine])
+    targets = {m.action_plan_id: m.target for m in db.query(ActionPlanMember).filter(
+        ActionPlanMember.action_plan_id.in_([p.id for p, _ in mine]), ActionPlanMember.user_id == user_id)}
+    my_target = sum(t or 0 for t in targets.values())
     return {"action_plan_id": mine[0][0].id, "plan_name": " + ".join(p.name for p, _ in mine), "cities": cities,
-            "plans": [{"id": p.id, "name": p.name, "cities": allowed} for p, allowed in mine],
+            "my_target": my_target or None, "my_done": sum(counts.get((p.id, user_id), 0) for p, _ in mine),
+            "plans": [{"id": p.id, "name": p.name, "cities": allowed, "my_target": targets.get(p.id),
+                       "my_done": counts.get((p.id, user_id), 0)} for p, allowed in mine],
             "start_date": min(starts).isoformat() if starts else None,
             "end_date": max(ends).isoformat() if ends else None}
 
@@ -444,12 +533,15 @@ def reopen_for_new_total(db: Session, project) -> Optional[SurveyRound]:
     baseline = R.reopen_baseline(last, R.done_counts(db, [last.id]).get(last.id, 0))
     if not total or total <= baseline:
         return None
-    increase = total - baseline
+    # The survey's plans grow so that they add up to the new target (the first plan takes the extra).
     plans = plans_of_round(db, last.id)
+    planned = sum(p.target or 0 for p in plans) if plans else (last.target or 0)
+    diff = total - planned  # e.g. ended at 3 of 3, new target 4: +1; ended early at 3 of 5, target 5: no change
     if plans:
-        plans[0].target = (plans[0].target or 0) + increase
+        first_done = done_by_plan(db, [plans[0].id]).get(plans[0].id, 0)
+        plans[0].target = max((plans[0].target or 0) + diff, first_done, 1)
     else:
-        last.target = (last.target or 0) + increase
+        last.target = max(total, baseline + 1)
     last.status, last.closed_at, last.closed_reason, last.total_at_close = R.LIVE, None, None, None
     db.flush()
     sync_round(db, last.id)

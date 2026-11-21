@@ -222,3 +222,23 @@ def end_live_surveys(db):
 
     db.query(SurveyRound).filter(SurveyRound.status == "live").update({"status": "closed"}, synchronize_session=False)
     db.commit()
+
+
+def staff_project(client, db, project_id):
+    """What the Admin does before a project's survey can start: every planned survey plan gets a team
+    whose response allocations add up to the plan's target (existing members are kept)."""
+    admin = make_user(db, role="admin")
+    plans = client.get(f"/admin/projects/{project_id}/plans", headers=auth(admin)).json().get("plans", [])
+    for p in plans:
+        members = [m["user_id"] for m in p["members"]] or [make_user(db).id]
+        share, extra = divmod(p["target"], len(members))
+        body = [{"user_id": uid, "target": share + (1 if i < extra else 0)} for i, uid in enumerate(members)]
+        body = [b for b in body if b["target"] > 0]
+        r = client.put(f"/admin/action-plans/{p['id']}/members", headers=auth(admin), json={"members": body})
+        assert r.status_code == 200, r.text
+
+
+def start_project(client, db, project_id, headers, json=None):
+    """Staffs the project's plans (staff_project), then the Super Admin starts its survey."""
+    staff_project(client, db, project_id)
+    return client.post(f"/org/projects/{project_id}/start", headers=headers, json=json if json is not None else {})

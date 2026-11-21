@@ -8,6 +8,7 @@ import 'home_screens.dart' show MobileSettingsPage;
 import 'org_catalog_screen.dart';
 import 'org_product_screens.dart';
 import 'next_update_screens.dart' show AnalyticsPage, OrgSurveysPage, RecipeMasterPage, SuperAdminsPage;
+import 'project_screens.dart' show OrgPasskeyCard, ProjectsPage;
 
 /* ============================================================
    Organization (client role) in the app
@@ -234,7 +235,7 @@ class _OrgShellState extends State<OrgShell> {
   int _unread = 0;
   final _keys = List.generate(4, (_) => GlobalKey());
 
-  static const _titles = ['Overview', 'Products', 'Catalog', 'Updates', 'Surveys'];
+  static const _titles = ['Overview', 'Products', 'Projects', 'Catalog', 'Updates', 'Surveys'];
 
   @override
   void initState() {
@@ -253,7 +254,7 @@ class _OrgShellState extends State<OrgShell> {
 
   void _select(int i) {
     setState(() => _tab = i);
-    if (i == 3) {
+    if (i == 4) {
       OrgApi.markUpdatesSeen().then((_) {
         if (mounted) setState(() => _unread = 0);
       }).catchError((_) {});
@@ -306,6 +307,7 @@ class _OrgShellState extends State<OrgShell> {
       body: IndexedStack(index: _tab, children: [
         OrgOverviewPage(key: _keys[0]),
         OrgProductsPage(key: _keys[1]),
+        const ProjectsPage(admin: false),
         OrgCatalogPage(key: _keys[2]),
         OrgUpdatesPage(key: _keys[3]),
         const OrgSurveysPage(), // every survey and its report review
@@ -316,6 +318,7 @@ class _OrgShellState extends State<OrgShell> {
         destinations: [
           const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Overview'),
           const NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Products'),
+          const NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Projects'),
           const NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Catalog'),
           NavigationDestination(
             icon: Badge(isLabelVisible: _unread > 0, label: Text('$_unread'), child: const Icon(Icons.notifications_outlined)),
@@ -435,6 +438,8 @@ class _OrgProductsPageState extends State<OrgProductsPage> {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
+            const OrgPasskeyCard(), // the recording passkey (survey persons need it; Super Admin sends it to Admins)
+            const SizedBox(height: 12),
             TextField(
               decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search products'),
               onChanged: (v) => setState(() => _query = v),

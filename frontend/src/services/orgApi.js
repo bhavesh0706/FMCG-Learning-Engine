@@ -53,6 +53,7 @@ export const getActionPlans = (productId, round) => data(api.get(`/products/${pr
 export const createActionPlan = (productId, plan) => data(api.post(`/products/${productId}/action-plans`, plan));
 export const updateActionPlan = (planId, plan) => data(api.put(`/action-plans/${planId}`, plan));
 export const deleteActionPlan = (planId) => data(api.delete(`/action-plans/${planId}`));
+export const allocationHistory = (planId) => data(api.get(`/admin/action-plans/${planId}/allocation-history`));
 export const allocatePlan = (planId, members) => data(api.put(`/admin/action-plans/${planId}/members`, { members }));
 export const myActionPlans = () => data(api.get("/my/action-plans"));
 

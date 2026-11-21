@@ -940,7 +940,25 @@ class ActionPlanMember(AuditMixin, Base):
     action_plan_id = Column(Integer, nullable=False, index=True)
     user_id = Column(Integer, nullable=False, index=True)
     cities = Column(JSON, nullable=True)  # empty = every city of the plan
+    # Consumer responses this person must collect in this plan (set by the Admin). The plan's
+    # members' targets add up to the plan's target; a person can't submit more than theirs.
+    target = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ActionPlanAllocationLog(AuditMixin, Base):
+    """Every change of a team member's response allocation: who changed it, when, from what to what."""
+
+    __tablename__ = "action_plan_allocation_log"
+
+    id = record_no()
+    action_plan_id = Column(Integer, nullable=False, index=True)
+    user_id = Column(Integer, nullable=False, index=True)  # the team member
+    old_target = Column(Integer, nullable=True)
+    new_target = Column(Integer, nullable=True)
+    changed_by = Column(Integer, nullable=True)
+    changed_by_name = Column(String(150), nullable=True)
+    at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 # ============================================================

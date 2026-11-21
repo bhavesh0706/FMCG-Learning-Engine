@@ -935,6 +935,12 @@ export default function SurveyWorkflow({ onReady, locked = false, initialContext
                         value={respondent.age} onChange={(e) => setRespondent({ ...respondent, age: e.target.value })} />
                     )}
                   </Field>
+                  {myPlan?.my_target ? (
+                    <p className={`ap-note${myPlan.my_done >= myPlan.my_target ? " is-full" : ""}`} role="note">
+                      Your share: <strong>{myPlan.my_done} of {myPlan.my_target}</strong> responses
+                      {myPlan.my_done >= myPlan.my_target ? " · all done (ask your Admin if more are needed)" : ` · ${myPlan.my_target - myPlan.my_done} to go`}
+                    </p>
+                  ) : null}
                   {myCities.length > 0 && (
                     <p className="ap-note" role="note">
                       You survey in <strong>{myCities.join(", ")}</strong> only · action plan “{myPlan.plan_name}”

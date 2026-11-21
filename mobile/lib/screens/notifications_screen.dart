@@ -5,6 +5,7 @@ import '../services/api_service.dart';
 import '../services/notification_service.dart';
 import '../services/session.dart';
 import 'home_screens.dart';
+import 'project_screens.dart' show ProjectDetailPage;
 import 'product_checks_screen.dart';
 
 /* ================================================================
@@ -70,6 +71,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
   void _open(AppNotification n) {
     Notifications.markRead(n);
+    // A new project, or a plan whose responses must be shared again: open that project.
+    final projectId = int.tryParse('${n.data['project_id'] ?? ''}');
+    if ((n.kind == 'project_created' || n.kind == 'allocation_needed') && projectId != null) {
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProjectDetailPage(projectId: projectId, admin: Session.isAdmin)));
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,

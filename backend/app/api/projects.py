@@ -420,7 +420,14 @@ def edit_response_target(project_id: int, body: TargetIn, request: Request, db: 
     project.total_target = new
     db.flush()
     # Raised above what it was (and above what the completed survey covered): the survey reopens.
-    reopened = P.reopen_for_new_total(db, project) if state["stage"] == "ended" and new > (state.get("reopen_above") or 0) else None
+    # Saving any target above what the ended survey collected reopens it (Super Admin's choice).
+    reopened = P.reopen_for_new_total(db, project) if state["stage"] == "ended" and new > (state.get("used") or 0) else None
+    if reopened is not None:
+        from app.api.action_plans import notify_reallocation
+
+        for p in P.plans_of_round(db, reopened.id):
+            if P.allocation_state(p, P.members_of(db, [p.id]).get(p.id, []))["needs_allocation"]:
+                notify_reallocation(db, p, f"The response target of {project.project_code} changed from {old} to {new}.")
     db.commit()
     audit.note(request, target_id=project.id,
                summary=f"Response target of {project.project_code}: {old if old is not None else 'not set'} → {new}"
@@ -483,7 +490,7 @@ def _plans_state(db: Session, project: Project) -> dict:
     # A completed survey stays completed: the project surveys again only by reopening it, which
     # happens when the Super Admin raises the response target above what it is now.
     reopened = last is None
-    reopen_above = max(used, total or 0) if last else 0
+    reopen_above = used if last else 0
     problem = None
     other_live = R.live_round(db, project.product_id) if product else None
     if product is None:
@@ -491,7 +498,7 @@ def _plans_state(db: Session, project: Project) -> dict:
     elif other_live is not None:
         problem = f"Survey {other_live.number} of {product.name} is still collecting responses."
     elif not reopened:
-        problem = (f"Survey {last.number} is completed. To survey again, raise the project's response target above {reopen_above} "
+        problem = (f"Survey {last.number} is completed. To survey again, set the response target above {reopen_above} "
                    f"(Edit response target): Survey {last.number} reopens for the extra responses.")
     elif not numbers and not product.recipe:
         problem = "Add the product's recipe first (Products > Recipe), so the survey knows what consumers taste."
@@ -500,6 +507,11 @@ def _plans_state(db: Session, project: Project) -> dict:
     target = sum(p.target or 0 for p in drafts)
     if drafts and not problem and not R.MIN_TARGET <= target <= R.MAX_TARGET:
         problem = f"The plans add up to {target} consumers; a survey needs {R.MIN_TARGET} to {R.MAX_TARGET}."
+    # The Super Admin starts without waiting for the Admin: the Admin allocates the team (and each
+    # person's share) afterwards; only allocated team members can collect responses.
+    if drafts and not problem and total and not used and target != total:
+        problem = (f"The plans add up to {target} consumers but the response target is {total}: "
+                   f"{'add plans for the other ' + str(total - target) if target < total else 'lower a plan'} so they match.")
     if drafts and not problem and available is not None and target > available:
         problem = (f"The plans add up to {target} consumers, more than the {available} the project's response target leaves"
                    f"{' after the earlier survey' if used else ''}. Lower a plan, or raise the response target.")

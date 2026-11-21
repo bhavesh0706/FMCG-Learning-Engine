@@ -38,8 +38,9 @@ export default function DateField({ value, onChange, min, id, placeholder = "Cho
     if (!open || !triggerRef.current) return undefined;
     const place = () => {
       const r = triggerRef.current.getBoundingClientRect();
-      const width = Math.min(340, window.innerWidth - 24);
-      const height = 392;
+      // As wide as the date box (at least 248px so the days stay tappable).
+      const width = Math.min(Math.max(r.width, 248), window.innerWidth - 24);
+      const height = 300;
       const below = window.innerHeight - r.bottom;
       const top = below >= height + 8 || below >= r.top ? r.bottom + 6 : Math.max(8, r.top - height - 6);
       const left = Math.min(Math.max(12, r.left), window.innerWidth - width - 12);

@@ -4,7 +4,7 @@ import { confirmDialog } from "./ConfirmDialog";
 import { lovValues } from "../services/lov";
 import { getTeam } from "../services/teamApi";
 import {
-  allocatePlan, createActionPlan, deleteActionPlan, getActionPlans, orgError, updateActionPlan,
+  allocatePlan, allocationHistory, createActionPlan, deleteActionPlan, getActionPlans, orgError, updateActionPlan,
 } from "../services/orgApi";
 import Select from "./Select";
 import DateField, { todayIso } from "./DateField";
@@ -53,7 +53,6 @@ export const planProblem = (form, needTarget = false) => {
   return "";
 };
 
-const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "");
 const span = (p) => (p.start_date || p.end_date ? `${fmtDate(p.start_date) || "…"} – ${fmtDate(p.end_date) || "…"}` : "No dates set");
 const AUDIENCE = { internal: "Internal", external: "External" };
@@ -208,18 +207,40 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
           <span className="muted small">{p.done} submitted · {left} remaining</span>
         </div>
       )}
-      <dl className="plan-facts">
-        <div><dt>Dates</dt><dd>{span(p)}</dd></div>
-        <div><dt>Audience</dt><dd>{p.audience ? `${AUDIENCE[p.audience]} only` : "Internal and external"}</dd></div>
-        <div className="is-wide">
-          <dt>Cities</dt>
-          <dd className="plan-chips">{p.cities.length ? p.cities.map((c) => <span key={c} className="ap-chip is-small">{c}</span>) : <span className="muted">Any city</span>}</dd>
-        </div>
-      </dl>
+      <ul className="plan-meta">
+        <li>
+          <span className="plan-meta-icon tone-date" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.9" /><path d="M3.5 9.5h17M8 3v4M16 3v4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>
+          </span>
+          <span className="plan-meta-label">Dates</span>
+          <span className="plan-meta-value">{span(p)}</span>
+        </li>
+        <li>
+          <span className="plan-meta-icon tone-aud" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15"><circle cx="9" cy="8" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.9" /><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5M16 5.2a3 3 0 010 5.6M18 14.4c1.6.7 2.7 2.3 3 4.6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>
+          </span>
+          <span className="plan-meta-label">Audience</span>
+          <span className="plan-meta-value">{p.audience ? `${AUDIENCE[p.audience]} only` : "Internal and external"}</span>
+        </li>
+        <li>
+          <span className="plan-meta-icon tone-city" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="15" height="15"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0113 0c0 5.4-6.5 11-6.5 11z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" /><circle cx="12" cy="10" r="2.3" fill="none" stroke="currentColor" strokeWidth="1.9" /></svg>
+          </span>
+          <span className="plan-meta-label">Cities</span>
+          <span className="plan-meta-value plan-chips">
+            {p.cities.length ? p.cities.map((c) => <span key={c} className="plan-city">{c}</span>) : <span className="muted">Any city</span>}
+          </span>
+        </li>
+      </ul>
       <section className="plan-team" aria-label={`Team of ${p.name}`}>
         <div className="plan-team-head">
           <strong>Team</strong>
-          <span className={`status-chip ${staffed ? "is-ok" : "is-warn"}`}>{staffed ? `${plural(p.members.length, "survey person")} allocated` : "Not allocated yet"}</span>
+          <span className={`status-chip ${staffed && p.allocation_complete ? "is-ok" : "is-warn"}`}>
+            {!staffed ? "Not allocated yet"
+              : p.allocation_complete ? `${p.allocated} of ${p.target} shared`
+                : p.allocated > (p.target || 0) ? "Needs reallocation"
+                  : `${p.allocated} of ${p.target} shared · ${p.unallocated} left`}
+          </span>
         </div>
         {staffed ? (
           <ul className="plan-people">
@@ -227,12 +248,15 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
               <li key={m.user_id}>
                 <span className="plan-avatar" aria-hidden="true">{initials(m.name)}</span>
                 <span className="plan-person"><span>{m.name}</span><span className="muted small">{m.cities.length ? m.cities.join(", ") : "Any city"}</span></span>
+                <span className="plan-quota" title="Submitted of allocated">
+                  {m.target ? <><strong>{m.done || 0}</strong> / {m.target}</> : <span className="muted small">no share</span>}
+                </span>
               </li>
             ))}
           </ul>
         ) : <p className="muted small">The Admin allocates the survey persons for this plan.</p>}
       </section>
-      {p.notes && <p className="plan-notes"><span className="plan-notes-label">Other requirements</span>{p.notes}</p>}
+      {p.notes && <p className="plan-notes" title={p.notes}><span className="plan-notes-text">{p.notes}</span></p>}
       {p.copied_from_id && <p className="muted small">Copied from the previous survey.</p>}
       {(canAllocate || canEdit) && (
         <footer className="plan-card-actions">
@@ -252,6 +276,21 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
 export function AllocateDialog({ plan, plans, onClose, onSaved }) {
   const [people, setPeople] = useState(null);
   const [chosen, setChosen] = useState(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.cities])));
+  // Each person's consumer responses: their shares add up to the plan's target.
+  const [shares, setShares] = useState(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.target ? String(m.target) : ""])));
+  const done = useMemo(() => Object.fromEntries(plan.members.map((m) => [m.user_id, m.done || 0])), [plan.members]);
+  const [history, setHistory] = useState(null);
+  const ids = Object.keys(chosen);
+  const allocated = ids.reduce((sum, id) => sum + (WHOLE_NUMBER.test(String(shares[id] || "")) ? Number(shares[id]) : 0), 0);
+  const remaining = (plan.target || 0) - allocated;
+  const shareProblem = ids.map((id) => {
+    const v = String(shares[id] ?? "").trim();
+    const who = (people || []).find((u) => String(u.id) === id)?.name || "Each person";
+    if (!v) return `${who}: enter their responses.`;
+    if (!WHOLE_NUMBER.test(v)) return `${who}: responses must be a whole number from 1.`;
+    if (Number(v) < (done[id] || 0)) return `${who} already submitted ${done[id]}: give them at least ${done[id]}.`;
+    return "";
+  }).find(Boolean) || (remaining < 0 ? `That's ${-remaining} more than the plan's ${plan.target}.` : "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // A person may work in several plans of a survey; each survey counts in the plan of the customer's city.
@@ -269,6 +308,12 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
     if (next[id]) delete next[id]; else next[id] = [...(plan.cities || [])];
     return next;
   });
+  const splitEvenly = () => {
+    if (!ids.length) return;
+    const each = Math.floor((plan.target || 0) / ids.length);
+    let extra = (plan.target || 0) - each * ids.length;
+    setShares(Object.fromEntries(ids.map((id) => [id, String(each + (extra-- > 0 ? 1 : 0))])));
+  };
   const toggleCity = (id, city) => setChosen((c) => {
     const have = c[id] || [];
     const next = have.includes(city) ? have.filter((x) => x !== city) : [...have, city];
@@ -278,9 +323,10 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
     if (plan.cities?.length && Object.values(chosen).some((cities) => !cities.length)) {
       return setError("Give every chosen person at least one city.");
     }
+    if (shareProblem) return setError(shareProblem);
     setBusy(true);
     try {
-      onSaved(await allocatePlan(plan.id, Object.entries(chosen).map(([user_id, cities]) => ({ user_id: Number(user_id), cities }))));
+      onSaved(await allocatePlan(plan.id, Object.entries(chosen).map(([user_id, cities]) => ({ user_id: Number(user_id), cities, target: Number(shares[user_id]) }))));
     } catch (e) {
       setError(orgError(e, "The team couldn't be saved."));
       setBusy(false);
@@ -291,10 +337,16 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
       subtitle={plan.cities?.length ? `Choose the survey persons and the cities each may survey (${plan.cities.join(", ")}).` : "Choose the survey persons; this plan has no city limit."}
       onClose={onClose}
       footer={<>
-        <span className="muted small ap-count">{Object.keys(chosen).length} chosen</span>
+        <span className="muted small ap-count">{ids.length} chosen</span>
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" disabled={busy || !people} onClick={save}>{busy ? "Saving…" : "Save team"}</button>
       </>}>
+      <div className={`alloc-sum${remaining === 0 && ids.length ? " is-ok" : remaining < 0 ? " is-over" : ""}`} role="status">
+        <span>Required <strong>{plan.target}</strong></span>
+        <span>Allocated <strong>{allocated}</strong></span>
+        <span>Remaining <strong>{remaining}</strong></span>
+        {ids.length > 0 && <button type="button" className="link-btn" onClick={splitEvenly}>Split evenly</button>}
+      </div>
       {!people && !error && <p className="muted">Loading the team…</p>}
       <ul className="ap-people">
         {(people || []).map((u) => {
@@ -306,6 +358,15 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
                 <input type="checkbox" checked={on} onChange={() => toggle(u.id)} />
                 <span><strong>{u.name}</strong>{taken && <span className="muted small"> · also in {taken.map((n) => `“${n}”`).join(", ")}</span>}</span>
               </label>
+              {on && (
+                <label className="alloc-share">
+                  <span className="muted small">{done[u.id] ? `Responses (${done[u.id]} done)` : "Responses"}</span>
+                  <input className="input" type="text" inputMode="numeric" autoComplete="off" value={shares[u.id] ?? ""}
+                    aria-label={`Responses for ${u.name}`} placeholder="0"
+                    onKeyDown={(e) => { if (["e", "E", "+", "-", ".", ","].includes(e.key)) e.preventDefault(); }}
+                    onChange={(e) => setShares((sh) => ({ ...sh, [u.id]: e.target.value }))} />
+                </label>
+              )}
               {on && plan.cities?.length > 0 && (
                 <span className="ap-city-toggles" role="group" aria-label={`Cities for ${u.name}`}>
                   {plan.cities.map((c) => (
@@ -319,7 +380,24 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
         })}
         {people && !people.length && <li className="muted">No active survey persons. Add them on the Team page.</li>}
       </ul>
-      {error && <p className="form-error" role="alert">{error}</p>}
+      {(error || (shareProblem && ids.length > 0)) && <p className="form-error" role="alert">{error || shareProblem}</p>}
+      <details className="alloc-history" onToggle={(e) => {
+        if (e.currentTarget.open && history === null) {
+          allocationHistory(plan.id).then((r) => setHistory(r.history || [])).catch(() => setHistory([]));
+        }
+      }}>
+        <summary>Allocation history</summary>
+        {history === null ? <p className="muted small">Loading…</p> : !history.length ? <p className="muted small">No changes yet.</p> : (
+          <ul>
+            {history.map((h, i) => (
+              <li key={i} className="small">
+                <strong>{h.member}</strong>: {h.old ?? "—"} → {h.new ?? "removed"}
+                <span className="muted"> · {h.by || "—"} · {new Date(h.at).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
     </Modal>
   );
 }
