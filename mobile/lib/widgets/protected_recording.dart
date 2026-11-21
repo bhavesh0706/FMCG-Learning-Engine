@@ -32,7 +32,6 @@ class _ProtectedRecordingState extends State<ProtectedRecording> {
 
   bool get _isAdmin => Session.user.value?.role == 'admin' || Session.isClient;
   bool get _isSurveyPerson => !_isAdmin && Session.user.value?.role == 'executive';
-  bool get _mayPlay => _isAdmin || _isSurveyPerson;
 
   @override
   void initState() {
