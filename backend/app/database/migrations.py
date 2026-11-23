@@ -340,6 +340,10 @@ def run_migrations():
     _add_column("projects", "closed_by_name", "VARCHAR(150) NULL")
     _add_column("notifications", "dismissed_at", "DATETIME NULL", index=True)
     project_totals()
+    # Recipe codes (RCP-0001 ...): one per saved recipe version
+    _add_column("recipe_versions", "recipe_code", "VARCHAR(20) NULL")
+    _add_unique_index("recipe_versions", "recipe_code")
+    recipe_codes()
     _add_column("survey_responses", "location_captured_at", "DATETIME NULL")
     _add_column("survey_responses", "location_source", "VARCHAR(20) NULL")
 
@@ -726,3 +730,22 @@ def project_totals() -> None:
         session.commit()
     if made:
         print(f"Database updated: {made} project(s) given their product's response total")
+
+
+def recipe_codes() -> None:
+    """Recipe versions saved before recipe codes existed get RCP-#### once, oldest first
+    (after any code already given). Does nothing once every version has a code."""
+    with engine.begin() as conn:
+        missing = conn.execute(text("SELECT record_no FROM recipe_versions WHERE recipe_code IS NULL "
+                                    "ORDER BY created_at, record_no")).scalars().all()
+        if not missing:
+            return
+        highest = 0
+        for (code,) in conn.execute(text("SELECT recipe_code FROM recipe_versions WHERE recipe_code LIKE 'RCP-%'")):
+            digits = (code or "")[4:]
+            if digits.isdigit():
+                highest = max(highest, int(digits))
+        for rid in missing:
+            highest += 1
+            conn.execute(text("UPDATE recipe_versions SET recipe_code = :c WHERE record_no = :r"), {"c": f"RCP-{highest:04d}", "r": rid})
+    print(f"Database updated: {len(missing)} recipe version(s) got a recipe code (RCP-####)")

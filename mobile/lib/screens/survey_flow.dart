@@ -1287,7 +1287,7 @@ class _SurveyFlowScreenState extends State<SurveyFlowScreen> {
           padding: const EdgeInsets.only(bottom: 12),
           child: Row(children: [
             Expanded(
-              child: Text('Not in the city list. An admin can add it in Catalog > Master lists.',
+              child: Text('Not in the city list. An admin can add it in Categories > Master lists.',
                   style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
             ),
             TextButton(

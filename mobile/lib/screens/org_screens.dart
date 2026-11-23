@@ -235,7 +235,7 @@ class _OrgShellState extends State<OrgShell> {
   int _unread = 0;
   final _keys = List.generate(4, (_) => GlobalKey());
 
-  static const _titles = ['Overview', 'Products', 'Projects', 'Catalog', 'Updates', 'Surveys'];
+  static const _titles = ['Overview', 'Categories', 'Products', 'Projects', 'Updates', 'Surveys'];
 
   @override
   void initState() {
@@ -306,9 +306,9 @@ class _OrgShellState extends State<OrgShell> {
       ),
       body: IndexedStack(index: _tab, children: [
         OrgOverviewPage(key: _keys[0]),
+        OrgCatalogPage(key: _keys[2]),
         OrgProductsPage(key: _keys[1]),
         const ProjectsPage(admin: false),
-        OrgCatalogPage(key: _keys[2]),
         OrgUpdatesPage(key: _keys[3]),
         const OrgSurveysPage(), // every survey and its report review
       ]),
@@ -317,9 +317,9 @@ class _OrgShellState extends State<OrgShell> {
         onDestinationSelected: _select,
         destinations: [
           const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Overview'),
+          const NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Categories'),
           const NavigationDestination(icon: Icon(Icons.inventory_2_outlined), selectedIcon: Icon(Icons.inventory_2), label: 'Products'),
           const NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Projects'),
-          const NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Catalog'),
           NavigationDestination(
             icon: Badge(isLabelVisible: _unread > 0, label: Text('$_unread'), child: const Icon(Icons.notifications_outlined)),
             selectedIcon: const Icon(Icons.notifications),
@@ -372,7 +372,7 @@ class OrgOverviewPage extends StatelessWidget {
             Text('Recently added products', style: TextStyle(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
             const SizedBox(height: 8),
             if (products.isEmpty)
-              const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'Add your first product in Catalog.'),
+              const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'Add your first product in Categories.'),
             for (final p in products) ...[
               _ProductRow(p: p),
               const SizedBox(height: 8),
@@ -402,6 +402,16 @@ class _ProductRow extends StatelessWidget {
             Text(str(p['name']), style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
             const SizedBox(height: 3),
             Text(roundLine(round.isEmpty ? null : round), style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+            if (str(asJson(p['recipe'])['code']).isNotEmpty) ...[
+              const SizedBox(height: 4),
+              // The recipe code (RCP-####): opens this product's recipe
+              InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () => openOrgProduct(context, intOf(p['id']), str(p['name']), tab: 'recipe'),
+                child: Text('Recipe ${str(asJson(p['recipe'])['code'])}',
+                    style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.brand, decoration: TextDecoration.underline)),
+              ),
+            ],
           ]),
         ),
         if (rating != null)
@@ -458,7 +468,7 @@ class _OrgProductsPageState extends State<OrgProductsPage> {
               EmptyNote(
                 icon: Icons.search_off,
                 title: products.isEmpty ? 'No products yet' : 'No matches',
-                text: products.isEmpty ? 'Add your first product in Catalog.' : 'Try a different name or SKU.',
+                text: products.isEmpty ? 'Add your first product in Categories.' : 'Try a different name or product code.',
               ),
             for (final p in shown) ...[
               Panel(

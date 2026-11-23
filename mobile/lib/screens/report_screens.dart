@@ -934,7 +934,7 @@ class _ProductReportPageState extends State<ProductReportPage> {
         title: 'Recipe recommendations',
         child: recipeRecs.isEmpty
             ? Text(
-                "No recipe changes suggested. Add this product's recipe in the web Catalog, then regenerate.",
+                "No recipe changes suggested. Add this product's recipe on its Recipe tab, then regenerate.",
                 style: TextStyle(fontSize: 13.5, height: 1.45, color: AppColors.muted),
               )
             : Column(

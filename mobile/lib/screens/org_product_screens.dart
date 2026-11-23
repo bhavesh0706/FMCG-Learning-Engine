@@ -14,7 +14,8 @@ import 'survey_snapshot.dart';
    One product (organization): Report · Recipe · Questions · Rounds · Compare
    ============================================================ */
 
-const _tabs = ['report', 'standards', 'recipe', 'questions', 'plans', 'rounds', 'compare'];
+// Survey questions are edited in the project (one shared set per product): no tab here.
+const _tabs = ['standards', 'recipe', 'report', 'plans', 'rounds', 'compare'];
 
 class OrgProductPage extends StatefulWidget {
   const OrgProductPage({super.key, required this.productId, required this.name, this.initialTab = 'report'});
@@ -72,7 +73,7 @@ class _OrgProductPageState extends State<OrgProductPage> {
           bottom: const TabBar(
             isScrollable: true,
             tabAlignment: TabAlignment.start,
-            tabs: [Tab(text: 'Report'), Tab(text: 'Standards'), Tab(text: 'Recipe'), Tab(text: 'Questions'), Tab(text: 'Plans'), Tab(text: 'Surveys'), Tab(text: 'Compare')],
+            tabs: [Tab(text: 'Standards'), Tab(text: 'Recipe'), Tab(text: 'Report'), Tab(text: 'Plans'), Tab(text: 'Survey runs'), Tab(text: 'Compare')],
           ),
         ),
         body: _error != null && _detail == null
@@ -80,7 +81,6 @@ class _OrgProductPageState extends State<OrgProductPage> {
             : _detail == null
                 ? const Center(child: CircularProgressIndicator())
                 : TabBarView(children: [
-                    _ReportTab(productId: widget.productId),
                     // This product's recipe standards (results, add / edit / remove)
                     // Standards, Recipe, Questions: the current setup, or (chosen above) what a survey used.
                     SurveyScoped(
@@ -98,9 +98,7 @@ class _OrgProductPageState extends State<OrgProductPage> {
                     SurveyScoped(productId: widget.productId, detail: _detail!, kind: 'recipe',
                         snapshotView: (d) => _RecipeTab(productId: widget.productId, onSaved: _load, snapshot: {...asJson(d['recipe']), '_costing': d['costing']}),
                         child: _RecipeTab(productId: widget.productId, onSaved: _load)),
-                    SurveyScoped(productId: widget.productId, detail: _detail!, kind: 'questions',
-                        snapshotView: (d) => _QuestionsTab(productId: widget.productId, snapshot: asJsonList(d['questions'])),
-                        child: _QuestionsTab(productId: widget.productId)),
+                    _ReportTab(productId: widget.productId),
                     ActionPlansView(productId: widget.productId),
                     _RoundsTab(productId: widget.productId, detail: _detail!, onChanged: _load),
                     RoundCompareView(productId: widget.productId),
@@ -696,8 +694,8 @@ const _typeLabels = {
 };
 const _optionTypes = {'single_choice', 'multiple_choice', 'preference'};
 
-class _QuestionsTab extends StatelessWidget {
-  const _QuestionsTab({required this.productId, this.snapshot});
+class ProductQuestionsTab extends StatelessWidget {
+  const ProductQuestionsTab({required this.productId, this.snapshot});
 
   final int productId;
   /// The questions an earlier survey asked: the same view, read-only.

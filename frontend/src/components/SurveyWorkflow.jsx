@@ -288,7 +288,7 @@ function CustomerPlace({ respondent, setRespondent, onLocated }) {
           ? select(id, state?.label || "", states, (v) => { setOtherCity(false); set({ state: v, city: "" }); }, "state")
           : text(id, respondent.state, (v) => set({ state: v, city: "" }), country ? "Type the state" : "Choose the country first")}
       </Field>
-      <Field label="City" required hint={typingCity ? "Not in the city list. An admin can add it in Catalog > Master lists." : null}>
+      <Field label="City" required hint={typingCity ? "Not in the city list. An admin can add it in Categories > Master lists." : null}>
         {(id) => !cities.length
           ? text(id, respondent.city, (v) => set({ city: v }), state || !states.length ? "Type the city" : "Choose the state first")
           : typingCity

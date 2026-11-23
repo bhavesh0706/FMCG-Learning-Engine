@@ -13080,3 +13080,16 @@ details.team-help > summary:hover {
 .rm-bar { height: 5px; }
 .rm-foot { padding-top: 8px; }
 .rm-foot .btn-sm { padding-block: 4px; }
+
+/* Big popup (recipe of a recipe code) */
+.modal.modal-wide { width: min(1100px, 100%); }
+.recipe-code { font-weight: 700; letter-spacing: 0.02em; }
+.recipe-code-table { margin-top: 4px; }
+.recipe-code-notes { margin: 14px 0 0; }
+
+/* Add / Edit project: the survey questions step, then the buttons */
+.project-questions-step { margin-top: 20px; }
+.project-questions-step > .eyebrow { margin: 0 0 4px; }
+.project-questions-note { margin: 0 0 6px; }
+.add-project-footer { margin-top: 18px; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
+.add-project-why { margin-right: auto; }

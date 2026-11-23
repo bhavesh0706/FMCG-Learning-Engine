@@ -439,6 +439,9 @@ class RecipeVersion(AuditMixin, Base):
     product_id = Column(Integer, nullable=False, index=True)
     version = Column(Integer, nullable=False)
     recipe = Column(JSON, nullable=True)  # None = the recipe was cleared
+    # The recipe's code: RCP-0001, RCP-0002 ... one per saved version, given when it is saved
+    # (_set_recipe_code below). Shown in the portal; opening it shows that recipe.
+    recipe_code = Column(String(20), nullable=True, unique=True, index=True)
     # Who saved it (name and role copied, so history still reads correctly later).
     changed_by = Column(Integer, nullable=True)
     changed_by_name = Column(String(150), nullable=True)
@@ -1175,3 +1178,36 @@ class RecordingAccessLog(AuditMixin, Base):
     outcome = Column(String(30), nullable=False, index=True)
     ip = Column(String(64), nullable=True)
     at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+# ============================================================
+# RECIPE CODES: every saved recipe version gets the next RCP-0001, RCP-0002, ...
+# ============================================================
+RECIPE_CODE_PREFIX = "RCP-"
+
+
+def next_recipe_code(connection, taken=()) -> str:
+    """The next free RCP-#### (one higher than the highest one in use or in `taken`)."""
+    from sqlalchemy import select
+
+    highest = 0
+    stored = connection.execute(select(RecipeVersion.recipe_code).where(RecipeVersion.recipe_code.like(f"{RECIPE_CODE_PREFIX}%"))).scalars()
+    for value in [*stored, *taken]:
+        digits = (value or "")[len(RECIPE_CODE_PREFIX):]
+        if digits.isdigit():
+            highest = max(highest, int(digits))
+    return f"{RECIPE_CODE_PREFIX}{highest + 1:04d}"
+
+
+def _set_recipe_code(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy event signature)
+    if (target.recipe_code or "").strip():
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(target)
+    taken = session.info.setdefault("recipe_codes_given", set()) if session is not None else set()
+    target.recipe_code = next_recipe_code(connection, taken)
+    taken.add(target.recipe_code)
+
+
+event.listen(RecipeVersion, "before_insert", _set_recipe_code)

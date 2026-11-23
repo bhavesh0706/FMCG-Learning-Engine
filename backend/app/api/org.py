@@ -96,7 +96,8 @@ def _recipe_info(change: Optional[dict], viewer: str) -> Optional[dict]:
     by = change.get("by_name")
     if change.get("by_role") != "client":
         by = R.RESEARCH_TEAM if viewer == "client" or not by else by
-    return {"version": change["version"], "by_role": change.get("by_role"), "by_name": by, "at": change.get("at")}
+    return {"version": change["version"], "code": change.get("code"), "by_role": change.get("by_role"), "by_name": by,
+            "at": change.get("at")}
 
 
 def _product_rows(db: Session, products: list[Product], viewer: str) -> list[dict]:

@@ -396,8 +396,8 @@ function PortalShell({ user, ReportView }) {
   }, [page]);
   const nav = [
     ["overview", "Overview", "Home"],
+    ["catalog", "Categories"],
     ["products", "Products"],
-    ["catalog", "Catalog"],
     ["projects", "Projects"],
     ["recipes", "Recipes"],
     ["surveys", "Surveys"],
@@ -581,7 +581,89 @@ function RatingCell({ product }) {
   );
 }
 
+/* The recipe behind a recipe code (RCP-####): the product's latest saved recipe, in a big popup. */
+const kgText = (i) => [i.quantity, i.unit].filter((x) => x != null && String(x).trim() !== "").join(" ") || "—";
+const rupees = (v) => (v == null ? "—" : `₹${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+
+function RecipeCodeDialog({ product, onClose }) {
+  const [state, setState] = useState({ loading: true, data: null, error: "" });
+  useEffect(() => {
+    let alive = true;
+    getRecipe(product.id)
+      .then((d) => alive && setState({ loading: false, data: d, error: "" }))
+      .catch((e) => alive && setState({ loading: false, data: null, error: orgError(e, "The recipe couldn't be loaded.") }));
+    return () => {
+      alive = false;
+    };
+  }, [product.id]);
+  const d = state.data;
+  const recipe = d?.recipe || {};
+  const rows = (recipe.ingredients || []).filter((i) => (i.name || "").trim());
+  const costs = new Map((d?.costing?.ingredients || []).map((c) => [String(c.name || "").trim().toLowerCase(), c]));
+  const code = d?.recipe_code || product.recipe?.code;
+  return (
+    <Modal size="wide" onClose={onClose}
+      title={`${code || "Recipe"} · ${product.name}`}
+      subtitle={d ? `Recipe v${d.latest_version ?? product.recipe?.version ?? "—"}${recipe.batch_size ? ` · batch ${recipe.batch_size}` : ""}`
+        + `${product.recipe?.by_name ? ` · saved by ${product.recipe.by_name}` : ""}${product.recipe?.at ? ` · ${fmtDate(product.recipe.at)}` : ""}` : null}
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>Close</button>
+          <button type="button" className="btn btn-primary" onClick={() => { onClose(); go(`products/${product.id}/recipe`); }}>Open recipe</button>
+        </>
+      }
+    >
+      {state.loading && <Loading />}
+      {state.error && <p className="form-error" role="alert">{state.error}</p>}
+      {d && !rows.length && <p className="muted">This product has no recipe yet.</p>}
+      {d && rows.length > 0 && (
+        <div className="table-wrap recipe-code-table">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Ingredient</th>
+                <th scope="col" className="num-cell">Quantity</th>
+                <th scope="col" className="num-cell">Share of batch</th>
+                <th scope="col" className="num-cell">Cost per KG</th>
+                <th scope="col" className="num-cell">Cost in Use</th>
+                <th scope="col">Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((i, n) => {
+                const c = costs.get(String(i.name).trim().toLowerCase());
+                return (
+                  <tr key={`${i.name}-${n}`}>
+                    <td><strong>{i.name}</strong></td>
+                    <td className="num-cell">{kgText(i)}</td>
+                    <td className="num-cell">{c?.usage_pct != null ? `${+c.usage_pct.toFixed(2)}%` : "—"}</td>
+                    <td className="num-cell">{rupees(c?.cost_per_kg)}</td>
+                    <td className="num-cell">{rupees(c?.cost_in_use)}</td>
+                    <td className="muted">{i.notes || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td><strong>Total</strong></td>
+                <td className="num-cell"><strong>{d.costing?.batch_kg != null ? `${d.costing.batch_kg} kg` : ""}</strong></td>
+                <td className="num-cell"><strong>100%</strong></td>
+                <td className="num-cell muted">{d.costing?.batch_cost != null ? `Batch: ${rupees(d.costing.batch_cost)}` : ""}</td>
+                <td className="num-cell"><strong>{rupees(d.costing?.cost_per_kg)}</strong>{d.costing?.cost_per_kg != null && <span className="muted"> /kg</span>}</td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+      {d && recipe.notes && <p className="recipe-code-notes"><strong>Notes:</strong> {recipe.notes}</p>}
+    </Modal>
+  );
+}
+
 function OverviewPage() {
+  const [recipeOf, setRecipeOf] = useState(null); // the product whose recipe popup is open
   const [state, reload] = useData(getOverview, []);
   if (state.loading && !state.data) return <Loading />;
   if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
@@ -633,6 +715,7 @@ function OverviewPage() {
                 <thead>
                   <tr>
                     <th scope="col">Product</th>
+                    <th scope="col">Recipe code</th>
                     <th scope="col">Current survey</th>
                     <th scope="col" className="col-category">Progress</th>
                     <th scope="col">Rating</th>
@@ -646,6 +729,12 @@ function OverviewPage() {
                           <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); go(`products/${p.id}/report`); }}>{p.name}</button>
                           <span>{p.category_name}{p.created_at ? ` · added ${ago(p.created_at)}` : ""}</span>
                         </div>
+                      </td>
+                      <td>
+                        {p.recipe?.code ? (
+                          <button type="button" className="link-btn recipe-code" onClick={(e) => { e.stopPropagation(); setRecipeOf(p); }}
+                            aria-label={`Open recipe ${p.recipe.code} of ${p.name}`}>{p.recipe.code}</button>
+                        ) : <span className="muted">No recipe yet</span>}
                       </td>
                       <td><RoundChip round={p.current_round} /></td>
                       <td className="col-category">
@@ -681,6 +770,7 @@ function OverviewPage() {
           </div>
         </section>
       </div>
+      {recipeOf && <RecipeCodeDialog product={recipeOf} onClose={() => setRecipeOf(null)} />}
     </section>
   );
 }
@@ -770,12 +860,13 @@ function ProductsPage() {
    One product: Consumer report · Recipe · Survey questions · Rounds · Compare rounds
    ================================================================ */
 
+// Survey questions are edited in the project (one shared set per product): no tab here.
+// The old #/products/{id}/questions address still opens them (links in older notifications).
 const TABS = [
-  ["report", "Consumer report"],
   ["standards", "Recipe standards"],
   ["recipe", "Recipe"],
-  ["questions", "Survey questions"],
-  ["rounds", "Surveys"],
+  ["report", "Consumer report"],
+  ["rounds", "Survey runs"],
   ["recording", "Recording log"],
   ["compare", "Compare surveys"],
 ];
@@ -1088,6 +1179,8 @@ function AddProjectPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState({ loading: false, data: null, error: "" });
+  const [questionsKey, setQuestionsKey] = useState(0); // new value = the overview (question count) reloads
+  const [notice, setNotice] = useState(null);
   useEffect(() => {
     projectOptions().then((d) => setOptions(d.categories)).catch((e) => setError(orgError(e, "The categories couldn't be loaded.")));
   }, []);
@@ -1106,7 +1199,7 @@ function AddProjectPage() {
       })
       .catch((e) => alive && setSummary({ loading: false, data: null, error: orgError(e, "The product overview couldn't be loaded.") }));
     return () => { alive = false; };
-  }, [form.product_id, form.product_version]);
+  }, [form.product_id, form.product_version, questionsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm((f) => {
     const next = { ...f, [k]: e.target.value };
     if (k === "category_id") Object.assign(next, { product_id: "", product_version: "" });
@@ -1117,8 +1210,11 @@ function AddProjectPage() {
     return next;
   });
   const targetProblem = form.total_target.trim() ? wholeNumberProblem(form.total_target, "Total consumer responses") : "";
+  // The product's survey questions must be ready (5-10) before its project can be created.
+  const questionCount = summary.data?.product?.id === Number(form.product_id) ? summary.data?.questions?.count ?? null : null;
+  const questionsOk = questionCount != null && questionCount >= 5 && questionCount <= 10;
   const ready = form.project_name.trim().length >= 2 && form.category_id && form.product_id && form.product_version
-    && form.total_target.trim() && !targetProblem;
+    && form.total_target.trim() && !targetProblem && questionsOk;
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true);
@@ -1188,18 +1284,44 @@ function AddProjectPage() {
             {targetProblem ? <span className="field-error">{targetProblem}</span>
               : <span className="field-hint">The survey plans share this target.</span>}
           </label>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="add-project-actions">
-            <button type="button" className="btn btn-secondary" onClick={() => go("projects")}>Cancel</button>
-            <button type="button" className="btn btn-primary" onClick={submit} disabled={!ready || busy}>{busy ? "Creating…" : "Create project"}</button>
-          </div>
         </section>
         <ProductOverview summary={summary} chosen={Boolean(form.product_id)} />
+      </div>
+      <Notice notice={notice} onClose={() => setNotice(null)} />
+      {product && (
+        <ProjectQuestionsStep product={{ id: product.id, name: product.name }} onNotice={setNotice}
+          onChanged={() => setQuestionsKey((k) => k + 1)} />
+      )}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="add-project-actions add-project-footer">
+        {product && questionCount != null && !questionsOk && (
+          <span className="field-hint add-project-why">
+            {questionCount < 5 ? `Add ${5 - questionCount} more survey question${5 - questionCount === 1 ? "" : "s"} (5–10) to create the project.`
+              : "Keep at most 10 survey questions to create the project."}
+          </span>
+        )}
+        <button type="button" className="btn btn-secondary" onClick={() => go("projects")}>Cancel</button>
+        <button type="button" className="btn btn-primary" onClick={submit} disabled={!ready || busy}>{busy ? "Creating…" : "Create project"}</button>
       </div>
     </section>
   );
 }
 
+
+/* Survey questions of the chosen product, set while creating (or editing) its project: one shared
+   set per product, 5-10 questions, saved as they are changed. A project is created only with them. */
+function ProjectQuestionsStep({ product, onChanged, onNotice, readOnly = false }) {
+  return (
+    <section className="panel project-questions-step" aria-label="Survey questions">
+      <p className="eyebrow">Survey questions</p>
+      <p className="muted small project-questions-note">
+        What survey persons ask each consumer of {product.name}. Set them here before creating the project; they are shared by
+        every project of this product and are saved as you change them.
+      </p>
+      <QuestionsTab key={product.id} product={product} onChanged={onChanged} onNotice={onNotice} readOnly={readOnly} />
+    </section>
+  );
+}
 
 /* "About this product": a few short bullets per part, enough to understand the product. */
 // A short list ("+9 more" opens the rest, "Show less" folds it again).
@@ -1292,15 +1414,17 @@ function EditProjectPage({ projectId }) {
   const [summary, setSummary] = useState({ loading: true, data: null, error: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const loadSummary = (p) => getProductSummary(p.product.id, p.product_version)
+    .then((d) => setSummary({ loading: false, data: d, error: "" }))
+    .catch((e) => setSummary({ loading: false, data: null, error: orgError(e, "The product overview couldn't be loaded.") }));
   useEffect(() => {
     getProject(projectId).then((p) => {
       setProject(p);
       setForm({ project_name: p.project_name, description: p.description || "", total: p.total_target != null ? String(p.total_target) : "" });
-      getProductSummary(p.product.id, p.product_version)
-        .then((d) => setSummary({ loading: false, data: d, error: "" }))
-        .catch((e) => setSummary({ loading: false, data: null, error: orgError(e, "The product overview couldn't be loaded.") }));
+      loadSummary(p);
     }).catch((e) => setError(orgError(e, "The project couldn't be loaded.")));
-  }, [projectId]);
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!project) return error ? <ErrorPanel text={error} /> : <Loading />;
   const submit = async () => {
     if (form.project_name.trim().length < 2) return setError("Enter the project name (at least 2 characters).");
@@ -1369,13 +1493,16 @@ function EditProjectPage({ projectId }) {
                 : "Not below the responses already collected or planned. Raised after a completed survey, that survey reopens for the extra responses."}
             </span>
           </label>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="add-project-actions">
-            <button type="button" className="btn btn-secondary" onClick={() => go(`projects/${project.id}`)}>Cancel</button>
-            <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? "Saving…" : "Save changes"}</button>
-          </div>
         </section>
         <ProductOverview summary={summary} chosen />
+      </div>
+      <Notice notice={notice} onClose={() => setNotice(null)} />
+      <ProjectQuestionsStep product={{ id: project.product.id, name: project.product.name }} onNotice={setNotice}
+        onChanged={() => loadSummary(project)} readOnly={project.closed} />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="add-project-actions add-project-footer">
+        <button type="button" className="btn btn-secondary" onClick={() => go(`projects/${project.id}`)}>Cancel</button>
+        <button type="button" className="btn btn-primary" onClick={submit} disabled={busy}>{busy ? "Saving…" : "Save changes"}</button>
       </div>
     </section>
   );
@@ -1569,8 +1696,8 @@ function ProjectPage({ projectId }) {
         )}
         {live && (
           <div className="org-callout">
-            <span>Survey {plan.round.number} is collecting responses. See them and end the survey on the product's Surveys tab.</span>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => go(`products/${project.product.id}/rounds`)}>Open surveys</button>
+            <span>Survey {plan.round.number} is collecting responses. See them and end the survey on the product's Survey runs tab.</span>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => go(`products/${project.product.id}/rounds`)}>Open survey runs</button>
           </div>
         )}
       </section>

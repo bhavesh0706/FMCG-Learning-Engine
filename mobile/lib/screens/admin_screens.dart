@@ -34,7 +34,7 @@ class AdminShell extends StatefulWidget {
 
 class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
   int _tab = 0;
-  static const _titles = ['Overview', 'Survey history', 'Projects', 'Catalog', 'Team'];
+  static const _titles = ['Overview', 'Survey history', 'Projects', 'Categories', 'Team'];
 
   @override
   void initState() {
@@ -100,7 +100,7 @@ class _AdminShellState extends State<AdminShell> with WidgetsBindingObserver {
           NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.history), selectedIcon: Icon(Icons.history), label: 'History'),
           NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Projects'),
-          NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Catalog'),
+          NavigationDestination(icon: Icon(Icons.category_outlined), selectedIcon: Icon(Icons.category), label: 'Categories'),
           NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: 'Team'),
         ],
       ),
@@ -373,7 +373,7 @@ class _AdminCatalogPageState extends State<AdminCatalogPage> {
             ),
             const SizedBox(height: 10),
             TextField(
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search products or SKUs'),
+              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search products or product codes'),
               onChanged: (v) => setState(() => _query = v),
             ),
             const SizedBox(height: 10),
@@ -493,7 +493,7 @@ class _ProductDetailsTab extends StatelessWidget {
         child: Column(children: [
           row('Product name', str(p['name'])),
           row('Category', str(p['category_name'])),
-          row('SKU', str(p['sku'])),
+          row('Product code', str(p['sku'])),
           row('Description', str(p['description'])),
           row('Survey questions', '${intOf(p['question_count'])}'),
           row('Recipe', p['has_recipe'] == true ? '${intOf(p['recipe_steps'])} steps' : 'Not added'),

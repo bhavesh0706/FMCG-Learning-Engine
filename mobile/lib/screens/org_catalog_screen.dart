@@ -127,7 +127,7 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
             ),
             if (selected != null) _CategoryHeader(category: selected, onChanged: reload),
             TextField(
-              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search products or SKUs'),
+              decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Search products or product codes'),
               onChanged: (v) => setState(() => _query = v),
             ),
             const SizedBox(height: 10),
@@ -135,7 +135,7 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
               EmptyNote(
                 icon: Icons.inventory_2_outlined,
                 title: q.isEmpty ? 'No products here yet' : 'No matches',
-                text: q.isEmpty ? 'Add a product to start collecting feedback on it.' : 'Try a different name or SKU.',
+                text: q.isEmpty ? 'Add a product to start collecting feedback on it.' : 'Try a different name or product code.',
               ),
             for (final p in products) ...[
               _ProductTile(product: p, categories: data.categories, onChanged: reload),
@@ -361,7 +361,6 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
   late final TextEditingController _sku = TextEditingController(text: str(widget.product?['sku']));
   late final TextEditingController _description = TextEditingController(text: str(widget.product?['description']));
   // New products only: the first recipe version number (1; higher if versions existed before the app)
-  final TextEditingController _startVersion = TextEditingController(text: '1');
   // New products only, while the organization has no recording passkey yet (one for all
   // products; the server keeps only its hash)
   final TextEditingController _passkey = TextEditingController();
@@ -390,7 +389,6 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
     _name.dispose();
     _sku.dispose();
     _description.dispose();
-    _startVersion.dispose();
     _passkey.dispose();
     super.dispose();
   }
@@ -416,11 +414,6 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
       setState(() => _error = 'Enter the product name and choose its category.');
       return;
     }
-    final startVersion = int.tryParse(_startVersion.text.trim());
-    if (_isNew && (startVersion == null || startVersion < 1 || startVersion > 999)) {
-      setState(() => _error = 'Recipe version: enter a whole number from 1 to 999.');
-      return;
-    }
     if (_askPasskey && _passkey.text.replaceAll(RegExp(r'[\s-]'), '').length < 8) {
       setState(() => _error = 'Recording passkey: generate one, or type at least 8 characters.');
       return;
@@ -430,7 +423,6 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
       'category_id': _categoryId,
       'sku': _sku.text.trim().isEmpty ? null : _sku.text.trim(),
       'description': _description.text.trim().isEmpty ? null : _description.text.trim(),
-      if (_isNew) 'start_version': startVersion,
       if (_askPasskey) 'recording_passkey': _passkey.text.trim(),
     };
     await _run(() async {
@@ -490,18 +482,9 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
           const SizedBox(height: 12),
           TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Product name'), hintText: 'Aam (Mango) Jelly')),
           const SizedBox(height: 12),
-          TextField(controller: _sku, decoration: const InputDecoration(labelText: 'SKU (optional)', hintText: 'FOOD-AAM-JELLY')),
+          TextField(controller: _sku, decoration: const InputDecoration(labelText: 'Product code (optional)', hintText: 'FOOD-AAM-JELLY')),
           const SizedBox(height: 12),
           if (_isNew) ...[
-            TextField(
-              controller: _startVersion,
-              keyboardType: TextInputType.number,
-              decoration: InputDecoration(label: requiredLabel('Recipe version'),
-                prefixText: 'v',
-                helperText: 'The first recipe saved gets this number; keep 1 for a new product.',
-              ),
-            ),
-            const SizedBox(height: 10),
             if (_askPasskey)
             TextField(
               controller: _passkey,

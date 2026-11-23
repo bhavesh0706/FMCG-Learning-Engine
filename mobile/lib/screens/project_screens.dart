@@ -9,6 +9,7 @@ import '../services/org_api.dart';
 import '../services/recording_vault.dart';
 import '../widgets/design.dart';
 import '../widgets/search_dropdown.dart';
+import 'org_product_screens.dart' show ProductQuestionsTab;
 import 'org_screens.dart' show EmptyNote, Panel, Pill, showMessage;
 
 /* ============================================================
@@ -178,8 +179,20 @@ class _AddProjectPageState extends State<AddProjectPage> {
   int? _category;
   int? _product;
   int? _version;
+  int? _questionCount; // active survey questions of the chosen product (null: not loaded)
   bool _busy = false;
   String? _error;
+
+  Future<void> _loadQuestions() async {
+    final id = _product;
+    if (id == null) return;
+    try {
+      final n = await activeQuestionCount(id);
+      if (mounted && _product == id) setState(() => _questionCount = n);
+    } catch (_) {
+      // the card still opens the editor; Create project checks again on the server
+    }
+  }
 
   @override
   void initState() {
@@ -213,7 +226,9 @@ class _AddProjectPageState extends State<AddProjectPage> {
         ? 'Enter the project name.'
         : _product == null || _version == null
             ? 'Choose the category, product and recipe.'
-            : _wholeProblem(_target.text, 'Total consumer responses');
+            : _questionCount != null && (_questionCount! < 5 || _questionCount! > 10)
+                ? 'Set 5–10 survey questions for this product first (Survey questions).'
+                : _wholeProblem(_target.text, 'Total consumer responses');
     if (problem != null) return setState(() => _error = problem);
     setState(() {
       _busy = true;
@@ -267,11 +282,15 @@ class _AddProjectPageState extends State<AddProjectPage> {
                 value: _product,
                 decoration: InputDecoration(label: requiredLabel('Product')),
                 items: [for (final p in _products) DropdownMenuItem(value: intOf(p['id']), child: Text(str(p['name'])))],
-                onChanged: (v) => setState(() {
-                  _product = v;
-                  final vs = _versions;
-                  _version = vs.isEmpty ? null : vs.last;
-                }),
+                onChanged: (v) {
+                  setState(() {
+                    _product = v;
+                    _questionCount = null;
+                    final vs = _versions;
+                    _version = vs.isEmpty ? null : vs.last;
+                  });
+                  _loadQuestions();
+                },
               ),
               const SizedBox(height: 10),
               SearchDropdownField<int>(
@@ -292,6 +311,16 @@ class _AddProjectPageState extends State<AddProjectPage> {
                   decoration: InputDecoration(label: requiredLabel('Total consumer responses'), hintText: 'e.g. 100', helperText: 'The survey plans share this target.'),
                 ),
               ),
+              // Survey questions are set before the project is created (5-10, shared by the product's projects)
+              if (_product != null) ...[
+                const SizedBox(height: 16),
+                QuestionsCard(
+                  productId: _product!,
+                  productName: str(_products.firstWhere((p) => intOf(p['id']) == _product, orElse: () => <String, dynamic>{})['name']),
+                  count: _questionCount,
+                  onClosed: _loadQuestions,
+                ),
+              ],
               if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: TextStyle(color: AppColors.neg))],
             ]),
       bottomNavigationBar: SafeArea(
@@ -589,7 +618,7 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
       ],
       if (live && !widget.admin) ...[
         const SizedBox(height: 8),
-        Text('Survey ${intOf(round['number'])} is collecting. End it from the product\'s Surveys tab.', style: TextStyle(color: AppColors.muted)),
+        Text('Survey ${intOf(round['number'])} is collecting. End it from the product\'s Survey runs tab.', style: TextStyle(color: AppColors.muted)),
       ],
     ];
   }
@@ -696,6 +725,12 @@ class _EditProjectPageState extends State<EditProjectPage> {
               ? 'This project has ended: its total can\'t change.'
               : 'Not below the responses already collected or planned. Raised after a completed survey, that survey reopens for the extra responses.',
           style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+        ),
+        const SizedBox(height: 16),
+        QuestionsCard(
+          productId: intOf(asJson(widget.project['product'])['id']),
+          productName: str(asJson(widget.project['product'])['name']),
+          readOnly: _closed,
         ),
         if (_error != null) ...[const SizedBox(height: 12), Text(_error!, style: TextStyle(color: AppColors.neg))],
       ]),
@@ -1473,6 +1508,93 @@ class _AdminPasskeyPanelState extends State<AdminPasskeyPanel> {
             child: Text(_busy ? 'Sending…' : 'Send to ${_plural(_chosen.length, 'survey person')}'),
           ),
         ],
+      ]),
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------- survey questions (Add / Edit project)
+
+/// Active survey questions of a product (a survey needs 5-10).
+Future<int> activeQuestionCount(int productId) async =>
+    (await OrgApi.questions(productId)).where((q) => q['is_active'] != false).length;
+
+/// The product's survey questions, set while creating (or editing) its project: one shared set per
+/// product. Shows how many there are and opens the full editor (add, edit, remove, reorder).
+class QuestionsCard extends StatefulWidget {
+  const QuestionsCard({super.key, required this.productId, required this.productName, this.count, this.onClosed, this.readOnly = false});
+
+  final int productId;
+  final String productName;
+  /// Known count (Add project keeps it to check Create); null: the card loads it itself.
+  final int? count;
+  final VoidCallback? onClosed;
+  final bool readOnly;
+
+  @override
+  State<QuestionsCard> createState() => _QuestionsCardState();
+}
+
+class _QuestionsCardState extends State<QuestionsCard> {
+  int? _own;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.count == null) _reload();
+  }
+
+  @override
+  void didUpdateWidget(QuestionsCard old) {
+    super.didUpdateWidget(old);
+    if (old.productId != widget.productId && widget.count == null) _reload();
+  }
+
+  Future<void> _reload() async {
+    try {
+      final n = await activeQuestionCount(widget.productId);
+      if (mounted) setState(() => _own = n);
+    } catch (_) {}
+  }
+
+  Future<void> _open() async {
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => Scaffold(
+          backgroundColor: AppColors.bg,
+          appBar: AppBar(title: Text('Survey questions · ${widget.productName}', overflow: TextOverflow.ellipsis)),
+          body: ProductQuestionsTab(productId: widget.productId),
+        )));
+    widget.onClosed?.call();
+    if (widget.count == null) _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final n = widget.count ?? _own;
+    final ok = n != null && n >= 5 && n <= 10;
+    final line = n == null
+        ? 'Loading…'
+        : ok
+            ? '$n of 5–10 questions · ready'
+            : n < 5
+                ? '$n of 5–10 questions · add ${5 - n} more before creating the project'
+                : '$n questions · keep at most 10';
+    return Panel(
+      onTap: _open,
+      child: Row(children: [
+        Icon(Icons.quiz_outlined, color: ok ? AppColors.brand : AppColors.neg),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Survey questions', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+            const SizedBox(height: 2),
+            Text(line, style: TextStyle(fontSize: 12.5, color: ok ? AppColors.muted : AppColors.neg)),
+            const SizedBox(height: 2),
+            Text('Shared by every project of ${widget.productName}. ${widget.readOnly ? 'View them.' : 'Add, edit or reorder them.'}',
+                style: TextStyle(fontSize: 12, color: AppColors.muted)),
+          ]),
+        ),
+        Icon(Icons.chevron_right, color: AppColors.muted),
       ]),
     );
   }

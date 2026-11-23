@@ -60,6 +60,13 @@ def _latest_version(db: Session, product_id: int) -> Optional[int]:
     return v[0] if v else None
 
 
+def _latest_code(db: Session, product_id: int):
+    """The recipe code (RCP-####) of the product's latest saved version, or None."""
+    row = (db.query(RecipeVersion.recipe_code).filter(RecipeVersion.product_id == product_id)
+           .order_by(RecipeVersion.version.desc()).first())
+    return row[0] if row else None
+
+
 def recipe_extras(db: Session, product: Product) -> dict:
     """Costing, standards, attachments and earlier steps (read-only) for one product."""
     recipe = product.recipe or None
@@ -79,6 +86,7 @@ def recipe_extras(db: Session, product: Product) -> dict:
         "attachments": [_attachment_out(a) for a in files],
         "legacy_steps": legacy,  # steps of an earlier version, shown read-only
         "latest_version": _latest_version(db, product.id),  # (not "version": a save returns its own)
+        "recipe_code": _latest_code(db, product.id),  # RCP-#### of the latest version
         # Active standards that apply to this product (its own, its category's, all products'):
         # the recipe must meet every one to be saved. Known before the first recipe too.
         "standards_count": sum(1 for r in rules if r.applies_to_all or r.product_id == product.id

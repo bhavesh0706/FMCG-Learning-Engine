@@ -2020,7 +2020,7 @@ function HomeDashboard({
             <input
               type="search"
               className="search"
-              placeholder="Search products, categories or SKUs"
+              placeholder="Search products, categories or product codes"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               aria-label="Search products"
@@ -2373,7 +2373,7 @@ function ProductHistory({ onOpenProduct, onOpenUnlinked, onOpenFeedback, tab = "
       <>
       <section className="panel home-products">
         <div className="table-toolbar">
-          <input type="search" className="search" placeholder="Search products, categories or SKUs" value={q}
+          <input type="search" className="search" placeholder="Search products, categories or product codes" value={q}
             onChange={(e) => setQ(e.target.value)} aria-label="Search products" />
           <Select className="input toolbar-select" value={categoryId} onChange={(e) => setCategoryId(e.target.value)} aria-label="Filter by category">
             <option value="all">All categories</option>
@@ -3863,7 +3863,7 @@ function ClientSummary({ stats, narrative, n, report, product, forClient = false
       </div>
       {!tagged && !forClient && (
         <p className="client-tip no-print">
-          Tip: in <strong>Catalog → product → Survey questions</strong>, set "Use in the client report as" (preference, price,
+          Tip: in <strong>Projects → project → Survey questions</strong>, set "Use in the client report as" (preference, price,
           score, improvement…) to get preference by location, the ideal price and the other client tables here.
         </p>
       )}
@@ -4631,7 +4631,7 @@ const ROLE_PAGES = {
 const ROLE_START = { admin: "home", executive: "survey" };
 const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine: "my-surveys", history: "survey-history", projects: "projects", catalog: "catalog", team: "team" };
 const SLUG_PAGE = Object.fromEntries(Object.entries(PAGE_SLUG).map(([k, v]) => [v, k]));
-const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", projects: "Projects", catalog: "Catalog", team: "Team" };
+const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", projects: "Projects", catalog: "Categories", team: "Team" };
 
 const roleOf = (user) => (user?.role === "admin" ? "admin" : user?.role === "client" ? "client" : "executive");
 const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Super Admin" };
@@ -5364,7 +5364,7 @@ function AppContent({ user }) {
     else if (view === "survey") page = "Take survey";
     else if (view === "home") page = "Home";
     else if (view === "team") page = "Team";
-    else if (view === "catalog") page = "Catalog";
+    else if (view === "catalog") page = "Categories";
     else if (view === "projects") page = "Projects";
     else if (view === "mine") page = "My surveys";
     else if (busy) page = "Analyzing…";
@@ -5477,7 +5477,7 @@ function AppContent({ user }) {
                   onClick={goCatalog}
                 >
                   <NavIcon name="catalog" />
-                  Catalog
+                  Categories
                 </button>
               )}
               {allowedPages.includes("team") && (

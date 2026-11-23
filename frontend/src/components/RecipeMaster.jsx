@@ -95,7 +95,7 @@ export default function RecipeMaster({ onOpenProduct }) {
             </button>
           ))}
         </div>
-        <input className="input search sv-search" type="search" placeholder="Search product, SKU or category" value={q}
+        <input className="input search sv-search" type="search" placeholder="Search product, product code or category" value={q}
           onChange={(e) => setQ(e.target.value)} aria-label="Search recipes" />
       </div>
       {state.loading ? <p className="muted">Loading…</p> : rows.length === 0 ? (

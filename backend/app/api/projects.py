@@ -316,6 +316,18 @@ def create_project(body: ProjectIn, request: Request, db: Session = Depends(get_
     if version not in numbers:
         raise HTTPException(status_code=400, detail=f"{product.name} has no version {version} "
                                                     f"(versions: {', '.join(f'v{n}' for n in numbers)}).")
+    # The survey questions are set before the project is created (Add project page): a project
+    # starts only with a product that has 5-10 active questions, as every survey needs them.
+    from app.database.models import SurveyQuestion
+    from app.api.surveys import MAX_QUESTIONS, MIN_QUESTIONS
+    asked = db.query(SurveyQuestion).filter(SurveyQuestion.product_id == product.id, SurveyQuestion.is_active == 1).count()
+    if not MIN_QUESTIONS <= asked <= MAX_QUESTIONS:
+        raise HTTPException(status_code=400, detail={
+            "code": "questions_not_ready", "questions": asked,
+            "message": (f"{product.name} has {asked} survey question{'s' if asked != 1 else ''}: add "
+                        f"{MIN_QUESTIONS}-{MAX_QUESTIONS} survey questions before creating its project."
+                        if asked < MIN_QUESTIONS else
+                        f"{product.name} has {asked} survey questions: keep at most {MAX_QUESTIONS} before creating its project.")})
     existing = db.query(Project).filter(Project.product_id == product.id, Project.product_version == version).first()
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"{product.name} v{version} already has a project: {existing.project_code} "

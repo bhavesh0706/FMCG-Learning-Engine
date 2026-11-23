@@ -245,6 +245,7 @@ def version_out(v: RecipeVersion, viewer_role: Optional[str] = None) -> dict:
         by_name = "Research team"  # the organization doesn't see the names of the research team's admins
     return {
         "version": v.version,
+        "recipe_code": v.recipe_code,
         "recipe": v.recipe,
         "changes": v.changes or [],
         "changed_by_name": by_name,
@@ -269,6 +270,7 @@ def latest_changes(db: Session, product_ids=None) -> dict:
     return {
         r.product_id: {
             "version": r.version,
+            "code": r.recipe_code,
             "by_name": r.changed_by_name,
             "by_role": r.changed_by_role,
             "at": r.created_at.isoformat(timespec="seconds") + "Z" if r.created_at else None,

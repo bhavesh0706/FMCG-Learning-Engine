@@ -3,7 +3,7 @@ import { TrapFocus } from "./ConfirmDialog";
 
 /* Compact dialog used by Catalog and Team: title, body, footer buttons.
    Escape or a click outside closes it; the first field gets focus. */
-export default function Modal({ title, subtitle, onClose, children, footer }) {
+export default function Modal({ title, subtitle, onClose, children, footer, size = null }) {
   useEffect(() => {
     const onKey = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -19,7 +19,7 @@ export default function Modal({ title, subtitle, onClose, children, footer }) {
   }, []);
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <TrapFocus className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" lockScroll>
+      <TrapFocus className={`modal${size ? ` modal-${size}` : ""}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" lockScroll>
         <div className="modal-head">
           <div>
             <h2 id="modal-title">{title}</h2>

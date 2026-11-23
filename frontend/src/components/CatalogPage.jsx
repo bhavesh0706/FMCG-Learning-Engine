@@ -1,5 +1,4 @@
-import { ActionPlansSection, PlanFields, planBody, planForm, planProblem } from "./ActionPlans";
-import { saveProjectPlan } from "../services/orgApi";
+import { ActionPlansSection } from "./ActionPlans";
 import MastersDialog from "./MastersDialog";
 import KpiIcon from "./KpiIcon";
 import { onLovLoaded, patchMap } from "../services/lov";
@@ -110,7 +109,6 @@ function CategoryDialog({ category, onClose, onSaved }) {
   const [description, setDescription] = useState(category?.description || "");
   // Unique per category; empty on a new category = the next PRJ-#### is generated.
   const [projectId, setProjectId] = useState(category?.project_id || "");
-  const [plan, setPlan] = useState(planForm(category?.default_plan)); // default recipe plan of its products
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const pid = projectId.trim();
@@ -122,17 +120,9 @@ function CategoryDialog({ category, onClose, onSaved }) {
     setBusy(true);
     setError("");
     try {
-      const problem = planProblem(plan);
-      if (problem) {
-        setError(problem);
-        setBusy(false);
-        return;
-      }
       const body = { name: name.trim(), description: description.trim() || null };
-      if (!category) body.default_plan = planBody(plan);
       if (pid) body.project_id = pid;
       const saved = category ? await updateCategory(category.id, body) : await createCategory(body);
-      if (category) await saveProjectPlan(category.id, planBody(plan));
       onSaved(saved, category ? "Category updated." : `Category "${saved.name}" created. Now add its products.`);
     } catch (err) {
       setError(catalogError(err, "The category couldn't be saved."));
@@ -171,10 +161,6 @@ function CategoryDialog({ category, onClose, onSaved }) {
         <textarea className="input" rows={2} value={description} placeholder="Optional"
           onChange={(e) => setDescription(e.target.value)} />
       </label>
-      <details className="ap-details">
-        <summary>Default recipe plan for this category's products (optional)</summary>
-        <PlanFields value={plan} onChange={setPlan} idPrefix="project-plan" />
-      </details>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -220,21 +206,13 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
     name: "",
     sku: "",
     description: "",
-    start_version: "1", // the first recipe version number (higher if versions existed before the app)
   });
-  // Recipe plan: starts from the project's default plan until the Super Admin edits it
-  const projectPlan = (cid) => planForm(categories.find((c) => String(c.id) === String(cid))?.default_plan);
-  const [plan, setPlan] = useState(() => projectPlan(form.category_id));
-  const [planEdited, setPlanEdited] = useState(false);
-  useEffect(() => {
-    if (!planEdited) setPlan(projectPlan(form.category_id));
-  }, [form.category_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The recipe version is automatic (the first saved recipe is v1), and survey targets,
+  // dates and cities are set in each project's survey plans, not on the product.
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
-  const startVersion = Number(form.start_version);
-  const versionOk = Number.isInteger(startVersion) && startVersion >= 1 && startVersion <= 999;
-  const valid = form.name.trim().length >= 2 && form.category_id && versionOk && !planProblem(plan);
+  const valid = form.name.trim().length >= 2 && form.category_id;
 
   // Survey questions and the recipe are added by the organization in its portal,
   // so a new product starts without them (the server refuses starting questions).
@@ -258,8 +236,6 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         description: form.description.trim() || null,
-        start_version: startVersion,
-        recipe_plan: planBody(plan),
       });
       onCreated(p);
     } catch (err) {
@@ -293,32 +269,14 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
         <input className="input" value={form.name} autoFocus placeholder="e.g. Aam (Mango) Jelly" onChange={set("name")} />
       </label>
       <label className="field">
-        <span className="field-label">SKU</span>
+        <span className="field-label">Product code</span>
         <input className="input" value={form.sku} placeholder="e.g. FOOD-AAM-JELLY" onChange={set("sku")} />
-      </label>
-      <label className="field">
-        <span className="field-label">Recipe version <span className="req" aria-hidden="true">*</span></span>
-        <div className="version-input">
-          <span aria-hidden="true">v</span>
-          <input className="input" type="number" inputMode="numeric" min="1" max="999" step="1" value={form.start_version}
-            onChange={set("start_version")} aria-describedby="start-version-help" />
-        </div>
-        <span id="start-version-help" className={versionOk ? "muted small" : "form-error small"}>
-          {versionOk
-            ? `The first recipe saved becomes v${startVersion}; later changes continue from it. Keep 1 for a new product.`
-            : "Enter a whole number from 1 to 999."}
-        </span>
       </label>
       <label className="field">
         <span className="field-label">Description</span>
         <textarea className="input" rows={2} value={form.description} placeholder="Pack size, variant… (optional)" onChange={set("description")} />
       </label>
-      <details className="ap-details" open>
-        <summary>Recipe plan: responses, team, dates, cities</summary>
-        <p className="muted small">The defaults of this product's action plans; you can add more plans per survey later.</p>
-        <PlanFields value={plan} onChange={(v) => { setPlan(v); setPlanEdited(true); }} idPrefix="product-plan" />
-        {planProblem(plan) && <p className="form-error small">{planProblem(plan)}</p>}
-      </details>
+      <p className="muted small">The recipe version is automatic: the first recipe saved is v1, each change continues from it.</p>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Modal>
   );
@@ -571,7 +529,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
     return (
       <section className="catalog" aria-labelledby="product-title">
         <nav className="breadcrumb" aria-label="Breadcrumb">
-          <button type="button" className="link-btn" onClick={() => setProductId(null)}>Catalog</button>
+          <button type="button" className="link-btn" onClick={() => setProductId(null)}>Categories</button>
           <span aria-hidden="true">›</span>
           <button type="button" className="link-btn" onClick={() => { setCategoryId(product.category_id); setProductId(null); }}>
             {product.category_name || "Category"}
@@ -619,7 +577,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
     <section className="catalog" aria-labelledby="catalog-title">
       <header className="home-head">
         <div className="page-heading">
-          <h1 id="catalog-title">Catalog</h1>
+          <h1 id="catalog-title">Categories</h1>
           <p className="home-sub">
             {canManage
               ? "Your categories and products. The research team is notified of every change."
@@ -651,7 +609,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
       )}
 
       {!loading && (
-        <section className={`setup-guide${setupDone ? " is-done" : ""}`} aria-label="Catalog setup">
+        <section className={`setup-guide${setupDone ? " is-done" : ""}`} aria-label="Categories setup">
           {steps.map((st) => (
             <div key={st.title} className={`setup-step kpi-card tone-${st.tone}${st.done ? " is-done" : ""}`}>
               <KpiIcon name={st.icon} />
@@ -746,7 +704,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           </div>
 
           <div className="table-toolbar">
-            <input type="search" className="search" placeholder="Search products or SKUs" value={query}
+            <input type="search" className="search" placeholder="Search products or product codes" value={query}
               onChange={(e) => setQuery(e.target.value)} aria-label="Search products" />
           </div>
 
@@ -755,7 +713,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           ) : visible.length === 0 ? (
             <div className="catalog-empty">
               <strong>{query ? "No products match your search" : category ? `No products in ${category.name} yet` : "No products yet"}</strong>
-              <p>{query ? "Try a different name or SKU." : canManage
+              <p>{query ? "Try a different name or product code." : canManage
                 ? "Add a product to start collecting feedback on it."
                 : "The Super Admin adds products in their portal."}</p>
               {!query && canManage && (!category || category.is_active) && (
@@ -787,7 +745,7 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
                             <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); openProduct(p.id); }}>
                               {p.name}
                             </button>
-                            <span>{p.sku || "No SKU"}</span>
+                            <span>{p.sku || "No product code"}</span>
                           </div>
                         </td>
                         {categoryId === "all" && <td className="col-category">{p.category_name}</td>}
@@ -856,7 +814,7 @@ function ProductPage({ product, categories, startTab, onChanged, notify, onDelet
     : [
         ["details", "Product details"],
         ["access", "Survey team"],
-        ["rounds", product.live_round ? `Surveys · Survey ${product.live_round.number} live` : "Surveys"],
+        ["rounds", product.live_round ? `Survey runs · Survey ${product.live_round.number} live` : "Survey runs"],
       ];
   return (
     <>
@@ -981,7 +939,7 @@ function DetailsTab({ product, categories, onChanged, notify, onDeleted, readOnl
         </label>
       </div>
       <label className="field">
-        <span className="field-label">SKU</span>
+        <span className="field-label">Product code</span>
         <input className="input" value={form.sku} onChange={set("sku")} placeholder="e.g. FOOD-AAM-JELLY" />
       </label>
       <label className="field">
