@@ -270,32 +270,71 @@ function Notice({ notice, onClose }) {
 }
 
 const UPDATE_ICON = { recipe: "edit", round_started: "round", round_completed: "check" };
-const UPDATE_TONE = { recipe: "is-act", round_started: "is-brand", round_completed: "is-ok" };
 
 function updateLink(u) {
   if (u.tab === "report" && u.round) return `products/${u.product_id}/report/${u.round}`;
   return `products/${u.product_id}/${u.tab || "report"}`;
 }
 
-function UpdatesList({ items, showOpen = false }) {
-  if (!items.length) return <p className="muted org-feed-empty">Nothing has happened yet. Updates appear here as surveys run and recipes change.</p>;
+const UPDATE_KIND_LABEL = { recipe: "Recipe change", round_started: "Survey started", round_completed: "Report" };
+
+// "Today", "Yesterday", or the date: the day heading an update is listed under.
+function dayLabel(iso) {
+  const d = toDate(iso);
+  if (!d) return "Earlier";
+  const start = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((start(new Date()) - start(d)) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return d.toLocaleDateString(undefined, { weekday: days < 7 ? "long" : undefined, day: "numeric", month: "short", year: days > 300 ? "numeric" : undefined });
+}
+
+/* The feed as a timeline: a coloured marker per kind on a line, the product as a tag,
+   "New" on what came in since the last visit. `grouped`: under day headings. */
+function UpdatesList({ items, grouped = false, compact = false }) {
+  if (!items.length) {
+    return (
+      <div className="tl-empty">
+        <span className="tl-empty-icon"><Icon name="round" size={22} /></span>
+        <strong>Nothing yet</strong>
+        <span className="muted">Updates appear here as surveys run and recipes change.</span>
+      </div>
+    );
+  }
+  const groups = [];
+  for (const u of items) {
+    const label = grouped ? dayLabel(u.at) : "";
+    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, items: [] });
+    groups[groups.length - 1].items.push(u);
+  }
   return (
-    <ul className="org-feed">
-      {items.map((u, i) => (
-        <li key={`${u.kind}-${u.product_id}-${u.at}-${i}`}>
-          <button type="button" className={`org-feed-item${u.unread ? " is-unread" : ""}`} onClick={() => go(updateLink(u))}>
-            <span className={`org-feed-icon ${UPDATE_TONE[u.kind] || ""}`}><Icon name={UPDATE_ICON[u.kind] || "check"} size={20} /></span>
-            <span className="org-feed-text">
-              <strong>{u.title}</strong>
-              <span className="muted">
-                {[u.text, ago(u.at)].filter(Boolean).join(" · ")}
-                {showOpen && <span className="org-feed-open"> · Open</span>}
-              </span>
-            </span>
-          </button>
-        </li>
+    <div className={`tl${compact ? " is-compact" : ""}`}>
+      {groups.map((g, gi) => (
+        <section key={`${g.label}-${gi}`} className="tl-group" aria-label={g.label || "Updates"}>
+          {g.label && <h3 className="tl-day">{g.label}</h3>}
+          <ol className="tl-list">
+            {g.items.map((u, i) => (
+              <li key={`${u.kind}-${u.product_id}-${u.at}-${i}`} className={`tl-item kind-${u.kind}${u.unread ? " is-unread" : ""}`}>
+                <span className="tl-marker" aria-hidden="true"><Icon name={UPDATE_ICON[u.kind] || "check"} size={compact ? 15 : 17} /></span>
+                <button type="button" className="tl-card" onClick={() => go(updateLink(u))}>
+                  <span className="tl-top">
+                    <span className="tl-kind">{UPDATE_KIND_LABEL[u.kind] || "Update"}</span>
+                    {u.unread && <span className="tl-new">New</span>}
+                    <span className="tl-time">{ago(u.at)}</span>
+                  </span>
+                  <strong className="tl-title">{u.title}</strong>
+                  {u.text && <span className="tl-text">{u.text}</span>}
+                  <span className="tl-foot">
+                    {u.product_name && <span className="tl-product">{u.product_name}</span>}
+                    <span className="tl-open">Open <Icon name="chevron" size={14} /></span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </section>
       ))}
-    </ul>
+    </div>
   );
 }
 
@@ -628,12 +667,18 @@ function OverviewPage() {
           )}
         </section>
 
-        <section className="panel org-panel" aria-labelledby="org-updates-title">
+        <section className="panel org-panel org-updates-panel" aria-labelledby="org-updates-title">
           <div className="org-panel-head">
-            <h2 id="org-updates-title">Latest updates</h2>
+            <div>
+              <h2 id="org-updates-title">Latest updates</h2>
+              <p className="muted small org-panel-sub">Recipes, surveys and reports</p>
+            </div>
             <button type="button" className="link-btn" onClick={() => go("updates")}>See all <Icon name="chevron" /></button>
           </div>
-          <UpdatesList items={updates} />
+          {/* Fills the height of the products table beside it; scrolls if there are more. */}
+          <div className="org-updates-scroll">
+            <UpdatesList items={updates} compact />
+          </div>
         </section>
       </div>
     </section>
@@ -2208,17 +2253,28 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
    Updates
    ================================================================ */
 
+const UPDATE_FILTERS = [
+  ["all", "All"],
+  ["recipe", "Recipe changes"],
+  ["round_started", "Surveys started"],
+  ["round_completed", "Reports"],
+];
+
 function UpdatesPage({ onSeen }) {
   const [state, reload] = useData(() => getUpdates(200), []);
+  const [kind, setKind] = useState("all");
   useEffect(() => {
     markUpdatesSeen().then(onSeen).catch(() => {});
   }, [onSeen]);
+  const all = state.data?.updates || [];
+  const count = (k) => all.filter((u) => u.kind === k).length;
+  const shown = kind === "all" ? all : all.filter((u) => u.kind === kind);
   return (
     <section aria-labelledby="org-updates-page">
       <header className="home-head">
         <div className="page-heading">
           <h1 id="org-updates-page">Updates</h1>
-          <p className="home-sub">Everything on your products, newest first.</p>
+          <p className="home-sub">Everything that happened on your products, newest first.</p>
         </div>
       </header>
       {state.loading && !state.data ? (
@@ -2226,9 +2282,19 @@ function UpdatesPage({ onSeen }) {
       ) : state.error ? (
         <ErrorPanel text={state.error} onRetry={reload} />
       ) : (
-        <section className="panel org-panel">
-          <UpdatesList items={state.data.updates} showOpen />
-        </section>
+        <>
+          <section className="panel tl-panel" aria-label="All updates">
+            <div className="chip-filters" role="tablist" aria-label="Show">
+              {UPDATE_FILTERS.map(([k, label]) => (
+                <button key={k} type="button" role="tab" aria-selected={kind === k} className={`chip-filter${kind === k ? " is-on" : ""}`}
+                  onClick={() => setKind(k)}>
+                  {label}<span className="chip-count">{k === "all" ? all.length : count(k)}</span>
+                </button>
+              ))}
+            </div>
+            <UpdatesList items={shown} grouped compact />
+          </section>
+        </>
       )}
     </section>
   );

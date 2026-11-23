@@ -53,6 +53,21 @@ model = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
 
 SAMPLE_RATE = 16000
 
+# Decoding that can't get stuck. Whisper sometimes loops on one syllable ("પે પે પે ...");
+# by default it then retries the whole 30-second window at 6 temperatures, each up to 448
+# tokens, which took ~4 minutes per window on CPU and looked like a frozen analysis.
+# No repeated 3-token phrases, a mild repetition penalty, 3 fallback temperatures and a
+# token cap per window keep every pass to seconds.
+LOOP_SAFE = {
+    "no_repeat_ngram_size": 3,
+    "repetition_penalty": 1.1,
+    "temperature": [0.0, 0.4, 0.8],
+    "max_new_tokens": 224,
+}
+# The repair step re-transcribes at most this many lines, within this many seconds.
+REPAIR_MAX_LINES = int(os.environ.get("FMCG_REPAIR_MAX_LINES", "8"))
+REPAIR_MAX_SECONDS = float(os.environ.get("FMCG_REPAIR_MAX_SECONDS", "60"))
+
 # Display names for languages Whisper can recognise (used in messages too,
 # so an unsupported language can be named, e.g. "Yoruba").
 LANGUAGE_NAMES = {
@@ -404,7 +419,7 @@ def retry_transcription(audio, task: str) -> list[dict]:
         beam_size=8,
         vad_filter=False,
         condition_on_previous_text=True,
-        temperature=0.0,
+        **{**LOOP_SAFE, "temperature": 0.0},
     )
     results = []
     for s in segments:
@@ -431,6 +446,13 @@ def _run(audio, language: str, task: str, use_hints: bool = True) -> list[dict]:
     if task == "transcribe" and SCRIPT_PROMPTS.get(language):
         use_hints = False
     segments = _transcribe_once(audio, language, task, HOTWORDS if use_hints else None)
+    # Whisper sometimes just copies the end of the starting hint (e.g. "છે." from the Gujarati
+    # hint) and skips the speech that follows: then transcribe once more without the hint.
+    if task == "transcribe" and SCRIPT_PROMPTS.get(language) and _echoes_prompt(segments, language):
+        print("Transcript copied the starting hint; transcribing again without it.")
+        plain = _transcribe_once(audio, language, task, None, prompt="")
+        if sum(len(s["text"]) for s in plain) > sum(len(s["text"]) for s in segments):
+            segments = plain
     if task == "transcribe" and language:
         segments = _repair_segments(audio, segments, language)
     if use_hints and HOTWORDS and looks_like_hint_echo(segments):
@@ -444,7 +466,20 @@ def _run(audio, language: str, task: str, use_hints: bool = True) -> list[dict]:
     return kept
 
 
-def _transcribe_once(audio, language: str, task: str, hotwords, vad: bool = True) -> list[dict]:
+def _echoes_prompt(segments: list[dict], lang: str) -> bool:
+    """A line that is only a piece of the language's starting hint (not real speech)."""
+    import re as _re
+
+    hint = _re.sub(r"[\W_]+", "", SCRIPT_PROMPTS.get(lang, ""))
+    for seg in segments:
+        text = _re.sub(r"[\W_]+", "", str(seg.get("text", "")))
+        if text and len(text) <= 12 and text in hint:
+            return True
+    return False
+
+
+def _transcribe_once(audio, language: str, task: str, hotwords, vad: bool = True, prompt: Optional[str] = None) -> list[dict]:
+    """prompt: "" = no starting hint; None = the language's script hint (SCRIPT_PROMPTS)."""
     global _last_language
     segments, info = model.transcribe(
         audio,
@@ -455,7 +490,8 @@ def _transcribe_once(audio, language: str, task: str, hotwords, vad: bool = True
         condition_on_previous_text=False,  # stops repeated / invented lines
         hotwords=hotwords or None,  # brand names to listen for
         # Keeps Whisper writing the speaker's own language and script (see SCRIPT_PROMPTS).
-        initial_prompt=SCRIPT_PROMPTS.get(language) if task == "transcribe" else None,
+        initial_prompt=prompt if prompt is not None else (SCRIPT_PROMPTS.get(language) if task == "transcribe" else None),
+        **LOOP_SAFE,
     )
     results = []
     for s in segments:
@@ -521,6 +557,18 @@ def _repair_segments(audio, segments: list[dict], lang: str) -> list[dict]:
     """
     if not segments or not SCRIPT_PROMPTS.get(lang):
         return segments
+    # Most lines in another script: the whole transcript is written that way (e.g. Gujarati
+    # speech in Devanagari letters). Re-transcribing line by line can't change that and only
+    # costs minutes, so keep it as it is; the translation step works from it.
+    drifted = sum(1 for seg in segments if _segment_broken(seg, lang) == "drifted out of the language")
+    if drifted > len(segments) / 2:
+        print(f"Transcript check ({LANGUAGE_NAMES.get(lang, lang)}): {drifted} of {len(segments)} lines are in another "
+              "script; kept as they are (no line-by-line repair).")
+        return segments
+    import time as _time
+
+    started = _time.monotonic()
+    tried = 0
     total = len(audio) / SAMPLE_RATE
     out: list[dict] = []
     repaired = dropped = 0
@@ -532,7 +580,9 @@ def _repair_segments(audio, segments: list[dict], lang: str) -> list[dict]:
         start = max(0.0, float(seg["start"]) - 0.3)
         end = min(total, float(seg["end"]) + 0.3)
         redo = []
-        if end - start >= 0.5:
+        out_of_budget = tried >= REPAIR_MAX_LINES or _time.monotonic() - started > REPAIR_MAX_SECONDS
+        if end - start >= 0.5 and not out_of_budget:
+            tried += 1
             piece = audio[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)]
             try:
                 redo = _transcribe_once(piece, lang, "transcribe", None, vad=False)

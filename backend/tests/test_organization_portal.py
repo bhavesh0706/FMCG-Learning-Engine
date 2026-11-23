@@ -280,7 +280,7 @@ def test_updates_feed_and_unread_count(client, db, admin, org, product):
     own = next(u for u in feed["updates"] if u["product_id"] == product.id)
     assert own["title"].startswith("You saved recipe v2") and not own["unread"]
     overview = client.get("/org/overview", headers=auth(org)).json()
-    assert overview["numbers"]["products"] >= 1 and len(overview["updates"]) <= 4
+    assert overview["numbers"]["products"] >= 1 and len(overview["updates"]) <= 8
     # The front page lists the 10 most recently added products, newest first.
     listed = overview["products"]
     assert len(listed) <= 10 and [p["created_at"] for p in listed] == sorted((p["created_at"] for p in listed), reverse=True)

@@ -158,6 +158,7 @@ def _updates(db: Session, viewer_user: Optional[User], viewer: str, limit: int =
             else f"{R.RESEARCH_TEAM} updated the recipe of {name} (v{v.version})",
             "text": ", ".join(changes[:2]) + (f" and {len(changes) - 2} more" if len(changes) > 2 else ""),
             "product_id": v.product_id,
+            "product_name": name,
             "tab": "recipe",
             "round": None,
         })
@@ -182,6 +183,7 @@ def _updates(db: Session, viewer_user: Optional[User], viewer: str, limit: int =
                 "text": f"Recipe v{r.recipe_version} · {r.target} consumers"
                 + (f" · wanted by {r.due_date.strftime('%d %b %Y')}" if r.due_date else ""),
                 "product_id": r.product_id,
+                "product_name": name,
                 "tab": "rounds",
                 "round": r.number,
             })
@@ -202,6 +204,7 @@ def _updates(db: Session, viewer_user: Optional[User], viewer: str, limit: int =
                 "title": title,
                 "text": text,
                 "product_id": r.product_id,
+                "product_name": name,
                 "tab": "report",
                 "round": r.number,
             })
@@ -261,7 +264,8 @@ def overview(request: Request, db: Session = Depends(get_db)):
         },
         # The front page lists the 10 most recently added products (numbers above count all).
         "products": sorted(rows, key=lambda r: (r["created_at"] or "", r["id"]), reverse=True)[:10],
-        "updates": items[:4],
+        # Enough to fill the Latest updates card beside the products table (it scrolls past that).
+        "updates": items[:8],
         "unread": sum(1 for e in items if e["unread"]),
     }
 

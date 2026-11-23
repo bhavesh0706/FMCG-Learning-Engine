@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import KpiIcon from "./KpiIcon";
 import { getFeedbackById } from "../services/feedbackApi";
 import { errorText, getOrgSurvey, listOrgSurveys, REPORT_LABELS, REPORT_TONES, reviewOrgSurvey } from "../services/nextApi";
 
@@ -93,6 +94,16 @@ function Detail({ id, onChanged, onFeedback, compact = false }) {
 
 const PAGE = 20; // surveys shown at a time
 
+// Rating badge colour: green from 4, amber from 3, red below.
+const ratingTone = (r) => (r == null ? "none" : r >= 4 ? "good" : r >= 3 ? "mid" : "low");
+// The report's overall sentiment (ai_service: Praise / Suggestion / Mixed / Neutral / Question).
+const SENTIMENT = {
+  praise: ["Praise", "is-ok"], positive: ["Positive", "is-ok"], suggestion: ["Suggestion", "is-act"], mixed: ["Mixed", "is-act"],
+  complaint: ["Complaint", "is-neg"], negative: ["Negative", "is-neg"], neutral: ["Neutral", "is-neutral"], question: ["Question", "is-neutral"],
+};
+const POSITIVE = new Set(["praise", "positive"]);
+const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
+
 export default function OrgSurveys() {
   const [filter, setFilter] = useState("");
   const [q, setQ] = useState("");
@@ -110,6 +121,18 @@ export default function OrgSurveys() {
   }, [filter]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { setShown(PAGE); }, [filter, q]);
+  const kpis = useMemo(() => {
+    const rated = state.surveys.filter((s) => s.rating != null);
+    const withMood = state.surveys.filter((s) => s.sentiment);
+    const positive = withMood.filter((s) => POSITIVE.has(String(s.sentiment).toLowerCase())).length;
+    return {
+      total: state.surveys.length,
+      analyzed: rated.length,
+      avg: rated.length ? rated.reduce((a, s) => a + Number(s.rating), 0) / rated.length : null,
+      positive: withMood.length ? Math.round((100 * positive) / withMood.length) : null,
+      people: new Set(state.surveys.map((s) => s.executive_name).filter(Boolean)).size,
+    };
+  }, [state.surveys]);
   if (page) return <SurveyPage id={page} onBack={() => setPage(null)} onChanged={load} />;
   const needle = q.trim().toLowerCase();
   const rows = state.surveys.filter((s) => !needle || [s.product_name, s.executive_name, s.customer, s.city, s.country].join(" ").toLowerCase().includes(needle));
@@ -121,39 +144,93 @@ export default function OrgSurveys() {
           <p>Every survey in the application, by every survey person, with its report and review status.</p>
         </div>
       </div>
-      <div className="segmented page-tabs" role="tablist" aria-label="Survey filter">
-        {FILTERS.map(([key, label]) => (
-          <button key={key || "all"} type="button" role="tab" aria-selected={filter === key} className={filter === key ? "is-on" : ""} onClick={() => setFilter(key)}>
-            {label}{key === "forwarded" && state.counts.forwarded ? <span className="seg-count"> {state.counts.forwarded}</span> : null}
-            {key === "" && state.counts.total != null ? <span className="seg-count"> {state.counts.total}</span> : null}
-          </button>
-        ))}
+      {!state.loading && !state.error && (
+        <div className="home-stats page-kpis">
+          <div className="h-stat kpi-card tone-brand">
+            <KpiIcon name="responses" />
+            <span className="h-stat-label">Surveys</span>
+            <span className="h-stat-value">{kpis.total}</span>
+            <span className="h-stat-note">by {kpis.people} survey {kpis.people === 1 ? "person" : "persons"}</span>
+          </div>
+          <div className="h-stat kpi-card tone-teal">
+            <KpiIcon name="analyzed" />
+            <span className="h-stat-label">Analyzed</span>
+            <span className="h-stat-value">{kpis.analyzed}</span>
+            <span className="h-stat-note">{kpis.total - kpis.analyzed ? `${kpis.total - kpis.analyzed} still in analysis` : "all have a report"}</span>
+          </div>
+          <div className="h-stat kpi-card tone-act">
+            <KpiIcon name="rating" />
+            <span className="h-stat-label">Average rating</span>
+            <span className="h-stat-value">{kpis.avg == null ? "—" : kpis.avg.toFixed(1)}</span>
+            <span className="h-stat-note">out of 5</span>
+          </div>
+          <div className="h-stat kpi-card tone-pos">
+            <KpiIcon name="sentiment" />
+            <span className="h-stat-label">Praise</span>
+            <span className="h-stat-value">{kpis.positive == null ? "—" : `${kpis.positive}%`}</span>
+            <span className="h-stat-note">of consumers mainly praised the product</span>
+          </div>
+        </div>
+      )}
+      <div className="sv-toolbar">
+        <div className="chip-filters" role="tablist" aria-label="Survey filter">
+          {FILTERS.map(([key, label]) => (
+            <button key={key || "all"} type="button" role="tab" aria-selected={filter === key} className={`chip-filter${filter === key ? " is-on" : ""}`} onClick={() => setFilter(key)}>
+              {label}
+              {key === "" && state.counts.total != null && <span className="chip-count">{state.counts.total}</span>}
+              {key === "forwarded" && state.counts.forwarded ? <span className="chip-count is-alert">{state.counts.forwarded}</span> : null}
+            </button>
+          ))}
+        </div>
+        <input className="input search sv-search" type="search" placeholder="Search product, survey person, customer, city" value={q}
+          onChange={(e) => setQ(e.target.value)} aria-label="Search surveys" />
       </div>
-      <input className="input search" type="search" placeholder="Search product, survey person, customer, city" value={q} onChange={(e) => setQ(e.target.value)} />
       {state.error && <p className="form-error" role="alert">{state.error}</p>}
       {state.loading ? <p className="muted">Loading…</p> : rows.length === 0 ? (
-        <div className="panel pc-empty"><strong>No surveys</strong></div>
+        <div className="panel sv-empty"><KpiIcon name="responses" /><strong>No surveys here</strong><span className="muted">Try another filter or search.</span></div>
       ) : (
         <>
         <p className="muted small pc-count">
           Showing {Math.min(shown, rows.length)} of {rows.length} {rows.length === 1 ? "survey" : "surveys"}, newest first
         </p>
-        <div className="pc-list">
-          {rows.slice(0, shown).map((s) => (
-            <article key={s.response_id} className="panel pc-card">
-              <header className="pc-head">
-                <div>
-                  <strong>Survey #{s.response_id} · {s.product_name}</strong>
-                  <span className="muted">{[s.category_name, s.executive_name && `by ${s.executive_name}`, [s.city, s.country].filter(Boolean).join(", "), when(s.created_at)].filter(Boolean).join(" · ")}</span>
+        <div className="sv-grid">
+          {rows.slice(0, shown).map((s) => {
+            const mood = SENTIMENT[String(s.sentiment || "").toLowerCase()];
+            const open = () => { setPage(s.response_id); window.scrollTo(0, 0); };
+            return (
+              <article key={s.response_id} className={`sv-card rating-${ratingTone(s.rating)}`}>
+                <div className="sv-rating" aria-label={s.rating != null ? `Rating ${Number(s.rating).toFixed(1)} out of 5` : "Not rated yet"}>
+                  <strong>{s.rating != null ? Number(s.rating).toFixed(1) : "—"}</strong>
+                  <span>{s.rating != null ? "/ 5" : "no rating"}</span>
                 </div>
-                <span className={`status-chip is-${REPORT_TONES[s.report_status] || "neutral"}`}>{REPORT_LABELS[s.report_status] || (s.status === "analyzed" ? "Analyzed" : "Not analyzed yet")}</span>
-              </header>
-              <p className="pc-line">{s.rating != null && <strong>{Number(s.rating).toFixed(1)} / 5 · </strong>}{s.summary || <span className="muted">No report yet.</span>}</p>
-              <button type="button" className="link-btn" onClick={() => { setPage(s.response_id); window.scrollTo(0, 0); }}>
-                Open survey and report
-              </button>
-            </article>
-          ))}
+                <div className="sv-body">
+                  <header className="sv-head">
+                    <div className="sv-title">
+                      <strong>{s.product_name}</strong>
+                      <span className="sv-id">Survey #{s.response_id}</span>
+                    </div>
+                    <span className={`status-chip is-${REPORT_TONES[s.report_status] || "neutral"}`}>{REPORT_LABELS[s.report_status] || (s.status === "analyzed" ? "Analyzed" : "Not analyzed yet")}</span>
+                  </header>
+                  <div className="sv-tags">
+                    {mood && <span className={`status-chip ${mood[1]}`}>{mood[0]}</span>}
+                    {s.recipe_version && <span className="sv-tag">Recipe v{s.recipe_version}</span>}
+                    {s.category_name && <span className="sv-tag">{s.category_name}</span>}
+                  </div>
+                  <p className="sv-summary">{s.summary || <span className="muted">The report appears here once the recording is analyzed.</span>}</p>
+                  <footer className="sv-foot">
+                    <span className="sv-person">
+                      <span className="sv-avatar" aria-hidden="true">{initials(s.executive_name)}</span>
+                      <span>
+                        <strong>{s.executive_name || "Survey person"}</strong>
+                        <span className="muted">{[[s.city, s.country].filter(Boolean).join(", "), when(s.created_at)].filter(Boolean).join(" · ")}</span>
+                      </span>
+                    </span>
+                    <button type="button" className="btn btn-secondary btn-sm sv-open" onClick={open}>Open report</button>
+                  </footer>
+                </div>
+              </article>
+            );
+          })}
         </div>
         {rows.length > shown && (
           <div className="pc-more">
