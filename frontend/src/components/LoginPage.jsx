@@ -359,7 +359,7 @@ export default function LoginPage({ apiBase, onSignedIn }) {
       <aside className="login-brand" aria-hidden={false}>
         <div className="login-brand-top">
           <span className="login-logo has-logo" aria-hidden="true">
-            <img src="/favicon.svg" alt="" width="40" height="40" />
+            <img src="/fmcg-logo.svg" alt="" width="40" height="40" />
           </span>
           <span className="login-brand-name">FMCG Video Learning Engine</span>
         </div>

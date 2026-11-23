@@ -5401,7 +5401,7 @@ function AppContent({ user }) {
       <header className="topbar">
         <div className="topbar-inner">
           <button type="button" className="brand" onClick={goStart} aria-label="FMCG Video Learning Engine, go to the start page">
-            <img className="brand-mark brand-logo" src="/favicon.svg" alt="" aria-hidden="true" width="32" height="32" />
+            <img className="brand-mark brand-logo" src="/fmcg-logo.svg" alt="" aria-hidden="true" width="32" height="32" />
             <span className="brand-name">FMCG Video Learning Engine</span>
           </button>
 

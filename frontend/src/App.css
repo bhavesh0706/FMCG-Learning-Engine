@@ -11978,7 +11978,7 @@ h1 {
 .version-input { display: flex; align-items: center; gap: 6px; max-width: 160px; }
 .version-input > span { font-weight: 800; color: var(--muted); }
 
-/* The application logo (public/favicon.svg) in the header and on the sign-in page */
+/* The application logo (public/fmcg-logo.svg) in the header and on the sign-in page */
 .brand-mark.brand-logo { background: none; padding: 0; border-radius: 8px; width: 32px; height: 32px; }
 .login-logo.has-logo { background: none; padding: 0; }
 .login-logo.has-logo img { display: block; width: 40px; height: 40px; border-radius: 10px; }
