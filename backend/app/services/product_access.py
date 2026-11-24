@@ -99,9 +99,9 @@ def visible_product_ids(db: Session, user) -> Optional[Set[int]]:
         return started_product_ids(db)
     if not getattr(user, "is_active", 1):
         return set()
-    # Only ACTIVE products whose collecting survey assigns this person (never products assigned to
-    # nobody, nor inactive ones). Their history stays in My surveys.
-    rounds = current_rounds(db)
+    # Only ACTIVE products whose survey is collecting now (live) and assigns this person: never
+    # finished surveys, products assigned to nobody, nor inactive ones. Their history stays in My surveys.
+    rounds = live_rounds(db)
     active = {pid for (pid,) in db.query(Product.id).filter(Product.is_active == 1)}
     people = _people_by_round(db, [r.id for r in rounds.values()])
     return {pid for pid, r in rounds.items() if pid in active and user.id in people.get(r.id, set())}
@@ -126,6 +126,8 @@ def round_for_survey(db: Session, user, product_id: int) -> Optional[SurveyRound
     if user is None or role == "client" or not getattr(user, "is_active", 1):
         return None
     current = current_round_of(db, product_id)
+    if role != "admin" and current is not None and current.status != LIVE:
+        current = None  # a survey person surveys only a collecting (live) survey; a finished one isn't current
     if current is None:
         latest = (db.query(SurveyRound).filter(SurveyRound.product_id == product_id)
                   .order_by(SurveyRound.number.desc()).first())
@@ -216,4 +218,3 @@ def visible_count(db: Session, user, product_ids) -> Optional[int]:
 def refusal_reason(db: Session, product_id) -> str:
     """Why a survey person can't survey a product."""
     return "This product isn't assigned to you. Ask your admin."
-

@@ -57,11 +57,37 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
             .toList();
         final selected = data.categories.where((c) => intOf(c['id']) == _category).firstOrNull;
 
+        // A new product opens in its own screen, at its recipe standards, then the recipe (setup workflow)
+        Future<void> addProductTo(List<Json> categories, int? categoryId) async {
+          final ok = await showModalBottomSheet<Object>(
+            context: context,
+            isScrollControlled: true,
+            useSafeArea: true,
+            builder: (_) => ProductEditorSheet(categories: categories, categoryId: categoryId),
+          );
+          if (ok is int) {
+            await reload();
+            if (context.mounted) {
+              await Navigator.of(context).push(MaterialPageRoute(builder: (_) => OrgProductPage(productId: ok, name: '', initialTab: 'standards')));
+            }
+            await reload();
+          } else if (ok == true) {
+            await reload();
+          }
+        }
+
         Future<void> addCategory() async {
           final ok = await _categorySheet(context);
-          if (ok == true) {
+          if (ok is int) {
+            // Setup workflow: a new category goes straight on to its first product (category preselected)
             await reload();
-            if (context.mounted) showMessage(context, 'Category added.');
+            final cats = (await OrgApi.categories()).where((c) => intOf(c['id']) == ok).toList();
+            if (!context.mounted || cats.isEmpty) return;
+            showMessage(context, 'Category created. Now add its first product.');
+            await addProductTo(cats, ok);
+          } else if (ok == true) {
+            await reload();
+            if (context.mounted) showMessage(context, 'Category saved.');
           }
         }
 
@@ -71,16 +97,7 @@ class _OrgCatalogPageState extends State<OrgCatalogPage> {
             showMessage(context, 'Add a category first.');
             return;
           }
-          final ok = await showModalBottomSheet<bool>(
-            context: context,
-            isScrollControlled: true,
-            useSafeArea: true,
-            builder: (_) => ProductEditorSheet(categories: active, categoryId: _category),
-          );
-          if (ok == true) {
-            await reload();
-            if (context.mounted) showMessage(context, 'Product added. Add its survey questions and recipe in Products.');
-          }
+          await addProductTo(active, _category);
         }
 
         return ListView(
@@ -266,8 +283,9 @@ class _CategoryHeader extends StatelessWidget {
   }
 }
 
-Future<bool?> _categorySheet(BuildContext context, {Json? category}) {
-  return showModalBottomSheet<bool>(
+/// true after an edit; the new category's id after creating one.
+Future<Object?> _categorySheet(BuildContext context, {Json? category}) {
+  return showModalBottomSheet<Object>(
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
@@ -307,15 +325,16 @@ class _CategorySheetState extends State<_CategorySheet> {
       _error = null;
     });
     try {
+      int? created;
       if (widget.category == null) {
-        await OrgApi.createCategory(_name.text.trim(), _description.text.trim());
+        created = intOf((await OrgApi.createCategory(_name.text.trim(), _description.text.trim()))['id']);
       } else {
         await OrgApi.updateCategory(intOf(widget.category!['id']), {
           'name': _name.text.trim(),
           'description': _description.text.trim().isEmpty ? null : _description.text.trim(),
         });
       }
-      if (mounted) Navigator.of(context).pop(true);
+      if (mounted) Navigator.of(context).pop(created ?? true);
     } catch (e) {
       if (mounted) setState(() {
         _saving = false;
@@ -357,6 +376,7 @@ class ProductEditorSheet extends StatefulWidget {
 }
 
 class _ProductEditorSheetState extends State<ProductEditorSheet> {
+  int? _createdId; // the new product (opened in its own screen after saving)
   late final TextEditingController _name = TextEditingController(text: str(widget.product?['name']));
   late final TextEditingController _sku = TextEditingController(text: str(widget.product?['sku']));
   late final TextEditingController _description = TextEditingController(text: str(widget.product?['description']));
@@ -400,7 +420,7 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
     });
     try {
       await action();
-      if (mounted) Navigator.of(context).pop(true);
+      if (mounted) Navigator.of(context).pop(_createdId ?? true);
     } catch (e) {
       if (mounted) setState(() {
         _saving = false;
@@ -427,7 +447,7 @@ class _ProductEditorSheetState extends State<ProductEditorSheet> {
     };
     await _run(() async {
       if (_isNew) {
-        await OrgApi.createProduct(body);
+        _createdId = intOf((await OrgApi.createProduct(body))['id']);
       } else {
         await OrgApi.updateProduct(intOf(widget.product!['id']), body);
       }

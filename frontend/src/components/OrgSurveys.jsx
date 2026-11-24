@@ -101,7 +101,6 @@ const SENTIMENT = {
   praise: ["Praise", "is-ok"], positive: ["Positive", "is-ok"], suggestion: ["Suggestion", "is-act"], mixed: ["Mixed", "is-act"],
   complaint: ["Complaint", "is-neg"], negative: ["Negative", "is-neg"], neutral: ["Neutral", "is-neutral"], question: ["Question", "is-neutral"],
 };
-const POSITIVE = new Set(["praise", "positive"]);
 const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
 
 export default function OrgSurveys() {
@@ -123,13 +122,9 @@ export default function OrgSurveys() {
   useEffect(() => { setShown(PAGE); }, [filter, q]);
   const kpis = useMemo(() => {
     const rated = state.surveys.filter((s) => s.rating != null);
-    const withMood = state.surveys.filter((s) => s.sentiment);
-    const positive = withMood.filter((s) => POSITIVE.has(String(s.sentiment).toLowerCase())).length;
     return {
       total: state.surveys.length,
       analyzed: rated.length,
-      avg: rated.length ? rated.reduce((a, s) => a + Number(s.rating), 0) / rated.length : null,
-      positive: withMood.length ? Math.round((100 * positive) / withMood.length) : null,
       people: new Set(state.surveys.map((s) => s.executive_name).filter(Boolean)).size,
     };
   }, [state.surveys]);
@@ -158,18 +153,21 @@ export default function OrgSurveys() {
             <span className="h-stat-value">{kpis.analyzed}</span>
             <span className="h-stat-note">{kpis.total - kpis.analyzed ? `${kpis.total - kpis.analyzed} still in analysis` : "all have a report"}</span>
           </div>
-          <div className="h-stat kpi-card tone-act">
-            <KpiIcon name="rating" />
-            <span className="h-stat-label">Average rating</span>
-            <span className="h-stat-value">{kpis.avg == null ? "—" : kpis.avg.toFixed(1)}</span>
-            <span className="h-stat-note">out of 5</span>
-          </div>
-          <div className="h-stat kpi-card tone-pos">
-            <KpiIcon name="sentiment" />
-            <span className="h-stat-label">Praise</span>
-            <span className="h-stat-value">{kpis.positive == null ? "—" : `${kpis.positive}%`}</span>
-            <span className="h-stat-note">of consumers mainly praised the product</span>
-          </div>
+          {/* What needs attention: reports forwarded to the Super Admin, and reports the Admin hasn't reviewed */}
+          <button type="button" className={`h-stat kpi-card kpi-btn ${state.counts.forwarded ? "tone-act" : "tone-pos"}`}
+            onClick={() => setFilter("forwarded")} aria-label={`Show the ${state.counts.forwarded || 0} reports waiting for your review`}>
+            <KpiIcon name="draft" />
+            <span className="h-stat-label">Waiting for your review</span>
+            <span className="h-stat-value">{state.counts.forwarded ?? 0}</span>
+            <span className="h-stat-note">{state.counts.forwarded ? "reports the Admin forwarded to you" : "nothing forwarded to you"}</span>
+          </button>
+          <button type="button" className="h-stat kpi-card kpi-btn tone-brand"
+            onClick={() => setFilter("pending_admin")} aria-label={`Show the ${state.counts.pending_admin || 0} reports pending the Admin's review`}>
+            <KpiIcon name="coverage" />
+            <span className="h-stat-label">Pending Admin review</span>
+            <span className="h-stat-value">{state.counts.pending_admin ?? 0}</span>
+            <span className="h-stat-note">reports the Admin hasn't reviewed yet</span>
+          </button>
         </div>
       )}
       <div className="sv-toolbar">

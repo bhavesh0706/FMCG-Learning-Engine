@@ -2,13 +2,13 @@ import 'package:flutter/material.dart';
 
 import '../main.dart';
 import '../widgets/design.dart';
-import '../services/api_service.dart' show ApiException;
 import '../services/org_api.dart';
 import 'org_screens.dart';
 import 'report_screens.dart' show ToneBar;
 import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads, ActionPlansView;
 import '../widgets/search_dropdown.dart';
 import 'survey_snapshot.dart';
+import 'project_screens.dart' show ProductSetupBar, openProjectFor;
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
@@ -80,7 +80,11 @@ class _OrgProductPageState extends State<OrgProductPage> {
             ? ErrorRetry(message: _error!, onRetry: _load)
             : _detail == null
                 ? const Center(child: CircularProgressIndicator())
-                : TabBarView(children: [
+                : Column(children: [
+                    // the product's setup steps, and Done -> project creation (rebuilt after every reload)
+                    ProductSetupBar(key: ValueKey('${intOf(_detail?['latest_version'])}-${asJsonList(_detail?['rounds']).length}'), productId: widget.productId),
+                    Expanded(
+                      child: TabBarView(children: [
                     // This product's recipe standards (results, add / edit / remove)
                     // Standards, Recipe, Questions: the current setup, or (chosen above) what a survey used.
                     SurveyScoped(
@@ -102,6 +106,7 @@ class _OrgProductPageState extends State<OrgProductPage> {
                     ActionPlansView(productId: widget.productId),
                     _RoundsTab(productId: widget.productId, detail: _detail!, onChanged: _load),
                     RoundCompareView(productId: widget.productId),
+                  ])),
                   ]),
       ),
     );
@@ -944,22 +949,10 @@ class _RoundsTab extends StatelessWidget {
     final past = rounds.where((r) => str(r['status']) != 'live').toList();
     final canStart = detail['can_start_round'] == true;
 
+    // Surveys start from the project of the recipe version, where its readiness is checked
     Future<void> start() async {
-      final started = await showModalBottomSheet<bool>(
-        context: context,
-        isScrollControlled: true,
-        useSafeArea: true,
-        builder: (_) => _StartRoundSheet(
-          productId: productId,
-          number: (rounds.isEmpty ? 0 : intOf(rounds.first['number'])) + 1,
-          recipeVersion: intOf(detail['latest_version']),
-          defaultTarget: intOf(detail['default_target'], 30),
-        ),
-      );
-      if (started == true) {
-        await onChanged();
-        if (context.mounted) showMessage(context, 'Survey started. Survey persons can now collect responses.');
-      }
+      await openProjectFor(context, productId, intOf(detail['latest_version']));
+      await onChanged();
     }
 
     Future<void> end() async {
@@ -1067,7 +1060,7 @@ class _RoundsTab extends StatelessWidget {
             StandardsBlocked(failures: asJsonList(detail['standards_failed']), version: intOf(detail['latest_version'])),
             const SizedBox(height: 8),
           ],
-          FilledButton.icon(onPressed: canStart ? start : null, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Start new survey')),
+          FilledButton.icon(onPressed: canStart ? start : null, icon: const Icon(Icons.play_arrow_rounded), label: const Text('Open project to start')),
           if (!canStart && live.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 6),
@@ -1076,91 +1069,6 @@ class _RoundsTab extends StatelessWidget {
             ),
         ],
       ),
-    );
-  }
-}
-
-class _StartRoundSheet extends StatefulWidget {
-  const _StartRoundSheet({required this.productId, required this.number, required this.recipeVersion, required this.defaultTarget});
-
-  final int productId;
-  final int number;
-  final int recipeVersion;
-  final int defaultTarget;
-
-  @override
-  State<_StartRoundSheet> createState() => _StartRoundSheetState();
-}
-
-class _StartRoundSheetState extends State<_StartRoundSheet> {
-  late final TextEditingController _target = TextEditingController(text: '${widget.defaultTarget}');
-  final TextEditingController _note = TextEditingController();
-  bool _saving = false;
-  List<Map<String, dynamic>> _failures = const []; // recipe standards that stopped the round
-  String? _error;
-
-  @override
-  void dispose() {
-    _target.dispose();
-    _note.dispose();
-    super.dispose();
-  }
-
-  Future<void> _start() async {
-    final target = int.tryParse(_target.text.trim());
-    if (target == null || target < 1) {
-      setState(() => _error = 'Enter how many consumers to survey (1 or more).');
-      return;
-    }
-    setState(() {
-      _saving = true;
-      _error = null;
-    });
-    try {
-      await OrgApi.startRound(widget.productId, target: target, note: _note.text);
-      if (mounted) Navigator.of(context).pop(true);
-    } on ApiException catch (e) {
-      // The server checks every recipe standard again when a round is started
-      if (mounted) {
-        setState(() {
-          _saving = false;
-          _failures = e.failedStandards;
-          _error = e.failedStandards.isEmpty ? e.message : null;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _saving = false;
-          _error = '$e';
-        });
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + MediaQuery.of(context).viewInsets.bottom),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
-        Text('Start Survey ${widget.number}', style: TextStyle(fontFamily: kDisplayFont, fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.ink)),
-        const SizedBox(height: 4),
-        Text(widget.recipeVersion > 0 ? 'Consumers taste recipe v${widget.recipeVersion}.' : 'Add a recipe first to compare surveys by recipe.',
-            style: TextStyle(color: AppColors.muted)),
-        const SizedBox(height: 14),
-        TextField(
-          controller: _target,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Consumers to survey'),
-        ),
-        const SizedBox(height: 12),
-        TextField(controller: _note, decoration: const InputDecoration(labelText: 'Note for the research team (optional)', hintText: 'Less sugar')),
-        if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
-        if (_failures.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 10), child: StandardsBlocked(failures: _failures, version: widget.recipeVersion)),
-        const SizedBox(height: 14),
-        FilledButton(onPressed: _saving ? null : _start, child: Text(_saving ? 'Starting…' : 'Start Survey ${widget.number}')),
-        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-      ]),
     );
   }
 }

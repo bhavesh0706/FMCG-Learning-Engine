@@ -503,6 +503,83 @@ def _version_rounds(db: Session, project: Project, product: Optional[Product]) -
     return q.order_by(SurveyRound.number).all()
 
 
+def _step(key: str, label: str, done: bool, detail: str, action: Optional[dict] = None, optional: bool = False) -> dict:
+    """One setup step: what it is, whether its saved data is complete, and where to complete it."""
+    return {"key": key, "label": label, "done": bool(done), "detail": detail, "action": None if done else action, "optional": optional}
+
+
+def recipe_steps(db: Session, product: Product, version: Optional[int]) -> list:
+    """The product's own setup for a recipe version, in order: category, product, recipe standards,
+    recipe. Recipe standards come first (the recipe is then made to meet them); they are optional
+    (none may apply), but every standard that applies must be met by the recipe."""
+    from sqlalchemy import or_
+
+    from app.database.models import RecipeStandard
+    category = db.get(Category, product.category_id)
+    saved = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id, RecipeVersion.version == version).first()
+             if version else None)
+    ingredients = [i for i in ((saved.recipe if saved else None) or {}).get("ingredients") or [] if (i.get("name") or "").strip()]
+    applicable = (db.query(RecipeStandard).filter(
+        RecipeStandard.is_active == 1,
+        or_(RecipeStandard.product_id == product.id, RecipeStandard.category_id == product.category_id,
+            RecipeStandard.applies_to_all == 1)).count())
+    failed = R.standards_failures(db, product, version) if (saved and ingredients) else []
+    tab = lambda t: {"kind": "product_tab", "product_id": product.id, "tab": t}  # noqa: E731
+    std_detail = ("Set the recipe standards first: the recipe is then saved only when it meets them (optional)." if not applicable else
+                  f"{applicable} recipe standard{'s' if applicable != 1 else ''}, all met." if ingredients and not failed else
+                  f"{applicable} recipe standard{'s' if applicable != 1 else ''} set: the recipe is checked against them." if not ingredients else
+                  f"{len(failed)} of {applicable} not met: " + ", ".join(f["name"] for f in failed[:3]) + ("…" if len(failed) > 3 else ""))
+    return [
+        _step("category", "Category", bool(category and category.is_active),
+              f"{category.name}{f' · {category.project_id}' if category.project_id else ''}" if category else "Category missing.",
+              {"kind": "categories"}),
+        _step("product", "Product", bool(product.is_active), f"{product.name}{f' · {product.sku}' if product.sku else ''}",
+              {"kind": "categories"}),
+        _step("standards", "Recipe standards", bool(applicable) and not failed, std_detail, tab("standards"), optional=not applicable),
+        _step("recipe", "Recipe", bool(ingredients),
+              f"Recipe v{version} · {saved.recipe_code or ''} · {len(ingredients)} ingredient{'s' if len(ingredients) != 1 else ''}".replace(" ·  ·", " ·")
+              if ingredients else "No recipe saved yet: add its ingredients (the recipe code is given when it is saved).",
+              tab("recipe")),
+    ]
+
+
+def _project_checks(db: Session, project: Project, product: Optional[Product], drafts: list, available: Optional[int]) -> list:
+    """Everything a project needs before its survey can start, from saved data only."""
+    from app.api.surveys import MAX_QUESTIONS, MIN_QUESTIONS
+    from app.database.models import SurveyQuestion
+    if product is None:
+        return [_step("product", "Product", False, "The product of this project no longer exists.")]
+    steps = recipe_steps(db, product, project.product_version)
+    asked = db.query(SurveyQuestion).filter(SurveyQuestion.product_id == product.id, SurveyQuestion.is_active == 1).count()
+    planned = sum(p.target or 0 for p in drafts)
+    members = P.members_of(db, [p.id for p in drafts])
+    unallocated = [p for p in drafts if not P.allocation_state(p, members.get(p.id, []))["allocation_complete"]]
+    project_action = {"kind": "project", "project_id": project.id}
+    steps += [
+        _step("project", "Project", True, f"{project.project_code} · {project.project_name}"),
+        _step("questions", "Survey questions", MIN_QUESTIONS <= asked <= MAX_QUESTIONS,
+              f"{asked} question{'s' if asked != 1 else ''} (a survey needs {MIN_QUESTIONS}-{MAX_QUESTIONS}).",
+              {"kind": "edit_project", "project_id": project.id}),
+        _step("target", "Response target", bool(project.total_target),
+              f"{project.total_target} consumer responses." if project.total_target else "Set the total consumer responses.",
+              {"kind": "edit_project", "project_id": project.id}),
+        _step("plan", "Survey plan", bool(drafts),
+              f"{len(drafts)} survey plan{'s' if len(drafts) != 1 else ''}." if drafts else "Add a survey plan: how many consumers, where and when.",
+              project_action),
+        # For information only (never block the start): the Super Admin starts the survey as soon as
+        # one survey plan exists; more plans can follow and the Admin allocates each team afterwards.
+        _step("plans_cover", "Plans cover the target", bool(drafts) and available is not None and planned >= available,
+              f"The plans add up to {planned} of the {available} responses (more plans can be added later)." if available is not None
+              else "Set the response target first.", project_action, optional=True),
+        _step("allocation", "Team allocated", bool(drafts) and not unallocated,
+              "Every plan's responses are shared among its survey persons." if drafts and not unallocated else
+              ("The Admin allocates the team of " + ", ".join(f"“{p.name}”" for p in unallocated) + " (also after the survey starts)."
+               if unallocated else "Add a survey plan first."),
+              project_action, optional=True),
+    ]
+    return steps
+
+
 def _plans_state(db: Session, project: Project) -> dict:
     """The Survey plan page: the project's plans and what can be done now."""
     product = db.get(Product, project.product_id)
@@ -565,6 +642,13 @@ def _plans_state(db: Session, project: Project) -> dict:
     if drafts and not problem and available is not None and target > available:
         problem = (f"The plans add up to {target} consumers, more than the {available} the project's response target leaves"
                    f"{' after the earlier survey' if used else ''}. Lower a plan, or raise the response target.")
+    # Survey readiness: every saved setup step must be complete (recipe, standards, questions, target,
+    # plans covering the target, team allocated). The first missing one is what blocks the start.
+    checklist = _project_checks(db, project, product, drafts, available) if reopened else []
+    if not problem:
+        missing = next((c for c in checklist if not c["done"] and not c.get("optional")), None)
+        if missing is not None:
+            problem = f"{missing['label']}: {missing['detail']}"
     return {"stage": "ended" if last else "draft", "round": round_info(last) if last else None,
             # Each project is independent: an older recipe's project keeps its own plans and survey
             # (a newer recipe has its own project), so it is managed the same way.
@@ -576,6 +660,7 @@ def _plans_state(db: Session, project: Project) -> dict:
             # Survey numbers run across the product (all its recipes): the number Start survey gives.
             "next_number": ((R.latest_round(db, project.product_id).number if R.latest_round(db, project.product_id) else 0) + 1),
             "can_start": problem is None, "start_problem": problem, "target": target,
+            "checklist": checklist, "ready": problem is None,
             "total_target": total, "used": used, "available": available, "reopen_above": reopen_above, "can_end": bool(rounds),
             **counts,
             "planned": target, "surveys": [round_info(r) for r in rounds]}

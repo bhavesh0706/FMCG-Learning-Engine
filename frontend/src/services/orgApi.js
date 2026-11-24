@@ -95,3 +95,5 @@ export const getProductSummary = (productId, version) =>
 export const getProjectPlans = (id) => data(api.get(`/org/projects/${id}/plans`));
 export const addProjectPlan = (id, plan) => data(api.post(`/org/projects/${id}/plans`, plan));
 export const startProjectSurvey = (id, body) => data(api.post(`/org/projects/${id}/start`, body));
+// Pending setup (Dashboard) and the readiness of every product and project (api/setup.py)
+export const getSetup = () => data(api.get("/org/setup"));

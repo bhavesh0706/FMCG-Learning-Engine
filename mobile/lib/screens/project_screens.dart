@@ -9,7 +9,8 @@ import '../services/org_api.dart';
 import '../services/recording_vault.dart';
 import '../widgets/design.dart';
 import '../widgets/search_dropdown.dart';
-import 'org_product_screens.dart' show ProductQuestionsTab;
+import 'org_catalog_screen.dart' show OrgCatalogPage;
+import 'org_product_screens.dart' show OrgProductPage, ProductQuestionsTab;
 import 'org_screens.dart' show EmptyNote, Panel, Pill, showMessage;
 
 /* ============================================================
@@ -165,7 +166,11 @@ class _ProjectsPageState extends State<ProjectsPage> {
 // ---------------------------------------------------------------- add project (Super Admin)
 
 class AddProjectPage extends StatefulWidget {
-  const AddProjectPage({super.key});
+  /// From a product's setup: its category and product are chosen (and fixed); the recipe version too.
+  const AddProjectPage({super.key, this.productId, this.version});
+
+  final int? productId;
+  final int? version;
 
   @override
   State<AddProjectPage> createState() => _AddProjectPageState();
@@ -180,6 +185,7 @@ class _AddProjectPageState extends State<AddProjectPage> {
   int? _product;
   int? _version;
   int? _questionCount; // active survey questions of the chosen product (null: not loaded)
+  bool _fixed = false; // category and product come from the product's setup
   bool _busy = false;
   String? _error;
 
@@ -198,7 +204,25 @@ class _AddProjectPageState extends State<AddProjectPage> {
   void initState() {
     super.initState();
     _api('GET', '/org/projects/options').then((d) {
-      if (mounted) setState(() => _categories = asJsonList(d['categories']));
+      if (!mounted) return;
+      final cats = asJsonList(d['categories']);
+      setState(() => _categories = cats);
+      final want = widget.productId;
+      if (want == null) return;
+      for (final c in cats) {
+        final prod = asJsonList(c['products']).where((p) => intOf(p['id']) == want).toList();
+        if (prod.isEmpty) continue;
+        final vs = ((prod.first['versions'] as List?) ?? const []).map((v) => intOf(v)).toList();
+        setState(() {
+          _category = intOf(c['id']);
+          _product = want;
+          _version = widget.version != null && vs.contains(widget.version) ? widget.version : (vs.isEmpty ? null : vs.last);
+          _fixed = true;
+        });
+        _loadQuestions();
+        return;
+      }
+      setState(() => _error = "This product's recipe already has a project (or the product isn't active). Open it from Projects.");
     }).catchError((e) {
       if (mounted) setState(() => _error = '$e');
     });
@@ -264,34 +288,48 @@ class _AddProjectPageState extends State<AddProjectPage> {
               const SizedBox(height: 10),
               TextField(controller: _description, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Description (optional)')),
               const SizedBox(height: 10),
-              SearchDropdownField<int>(
-                value: _category,
-                decoration: InputDecoration(label: requiredLabel('Category')),
-                items: [
-                  for (final c in _categories ?? const <Json>[])
-                    DropdownMenuItem(value: intOf(c['id']), enabled: asJsonList(c['products']).isNotEmpty, child: Text(str(c['name']))),
-                ],
-                onChanged: (v) => setState(() {
-                  _category = v;
-                  _product = null;
-                  _version = null;
-                }),
-              ),
-              const SizedBox(height: 10),
-              SearchDropdownField<int>(
-                value: _product,
-                decoration: InputDecoration(label: requiredLabel('Product')),
-                items: [for (final p in _products) DropdownMenuItem(value: intOf(p['id']), child: Text(str(p['name'])))],
-                onChanged: (v) {
-                  setState(() {
-                    _product = v;
-                    _questionCount = null;
-                    final vs = _versions;
-                    _version = vs.isEmpty ? null : vs.last;
-                  });
-                  _loadQuestions();
-                },
-              ),
+              if (_fixed) ...[
+                // From the product's setup: shown, not changeable (a project can't go to another product)
+                InputDecorator(
+                  decoration: InputDecoration(label: requiredLabel('Category'), enabled: false),
+                  child: Text(str((_categories ?? const <Json>[]).firstWhere((c) => intOf(c['id']) == _category, orElse: () => <String, dynamic>{})['name'])),
+                ),
+                const SizedBox(height: 10),
+                InputDecorator(
+                  decoration: InputDecoration(label: requiredLabel('Product'), enabled: false),
+                  child: Text(str(_products.firstWhere((p) => intOf(p['id']) == _product, orElse: () => <String, dynamic>{})['name'])),
+                ),
+              ] else ...[
+                SearchDropdownField<int>(
+                  value: _category,
+                  decoration: InputDecoration(label: requiredLabel('Category')),
+                  items: [
+                    // only categories with a product recipe still to plan (one project per product recipe)
+                    for (final c in (_categories ?? const <Json>[]).where((c) => asJsonList(c['products']).isNotEmpty))
+                      DropdownMenuItem(value: intOf(c['id']), child: Text(str(c['name']))),
+                  ],
+                  onChanged: (v) => setState(() {
+                    _category = v;
+                    _product = null;
+                    _version = null;
+                  }),
+                ),
+                const SizedBox(height: 10),
+                SearchDropdownField<int>(
+                  value: _product,
+                  decoration: InputDecoration(label: requiredLabel('Product')),
+                  items: [for (final p in _products) DropdownMenuItem(value: intOf(p['id']), child: Text(str(p['name'])))],
+                  onChanged: (v) {
+                    setState(() {
+                      _product = v;
+                      _questionCount = null;
+                      final vs = _versions;
+                      _version = vs.isEmpty ? null : vs.last;
+                    });
+                    _loadQuestions();
+                  },
+                ),
+              ],
               const SizedBox(height: 10),
               SearchDropdownField<int>(
                 value: _version,
@@ -553,6 +591,13 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
           style: TextStyle(color: AppColors.muted)),
       if (str(p['description']).isNotEmpty) ...[const SizedBox(height: 10), Text(str(p['description']), style: TextStyle(color: AppColors.ink2))],
       const SizedBox(height: 16),
+      if (str(plan['stage']) == 'draft' && asJsonList(plan['checklist']).isNotEmpty && !widget.admin) ...[
+        ReadinessPanel(plan: plan, onAction: (a) async {
+          await openSetupAction(context, a);
+          await _load();
+        }),
+        const SizedBox(height: 16),
+      ],
       Row(children: [
         Text('Survey plan', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: AppColors.ink)),
         const SizedBox(width: 8),
@@ -1596,6 +1641,269 @@ class _QuestionsCardState extends State<QuestionsCard> {
         ),
         Icon(Icons.chevron_right, color: AppColors.muted),
       ]),
+    );
+  }
+}
+
+
+// ---------------------------------------------------------------- setup workflow (backend: api/setup.py)
+
+/// Opens where a setup step is completed (the action comes from the server).
+Future<void> openSetupAction(BuildContext context, Json action) async {
+  final nav = Navigator.of(context);
+  switch (str(action['kind'])) {
+    case 'product_tab':
+      await nav.push(MaterialPageRoute(builder: (_) => OrgProductPage(
+          productId: intOf(action['product_id']), name: '', initialTab: str(action['tab'], 'recipe'))));
+    case 'add_project':
+      final id = await nav.push<int>(MaterialPageRoute(builder: (_) => AddProjectPage(
+          productId: intOf(action['product_id']), version: action['version'] == null ? null : intOf(action['version']))));
+      if (id != null) await nav.push(MaterialPageRoute(builder: (_) => ProjectDetailPage(projectId: id, admin: false)));
+    case 'project':
+      await nav.push(MaterialPageRoute(builder: (_) => ProjectDetailPage(projectId: intOf(action['project_id']), admin: false)));
+    case 'edit_project':
+      final p = asJson(await _api('GET', '/org/projects/${intOf(action['project_id'])}'));
+      await nav.push(MaterialPageRoute(builder: (_) => EditProjectPage(project: p)));
+    case 'categories':
+      await nav.push(MaterialPageRoute(builder: (_) => Scaffold(
+          backgroundColor: AppColors.bg, appBar: AppBar(title: const Text('Categories')), body: const OrgCatalogPage())));
+  }
+}
+
+/// The project of this product version (its survey starts there), or Add project with the product preselected.
+Future<void> openProjectFor(BuildContext context, int productId, int version) async {
+  final list = asJsonList(asJson(await _api('GET', '/org/projects'))['projects']);
+  final mine = list.where((p) => intOf(asJson(p['product'])['id']) == productId && intOf(p['product_version']) == version).toList();
+  if (!context.mounted) return;
+  await openSetupAction(context, mine.isNotEmpty
+      ? {'kind': 'project', 'project_id': intOf(mine.first['id'])}
+      : {'kind': 'add_project', 'product_id': productId, 'version': version});
+}
+
+class _StepRow extends StatelessWidget {
+  const _StepRow({required this.step, this.onAction});
+
+  final Json step;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final done = step['done'] == true;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(done ? Icons.check_circle : Icons.radio_button_unchecked, size: 20, color: done ? AppColors.pos : AppColors.muted),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${str(step['label'])}${step['optional'] == true ? ' (optional)' : ''}',
+                style: TextStyle(fontWeight: FontWeight.w700, color: done ? AppColors.muted : AppColors.ink)),
+            Text(str(step['detail']), style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+          ]),
+        ),
+        if (!done && onAction != null) TextButton(onPressed: onAction, child: const Text('Complete')),
+      ]),
+    );
+  }
+}
+
+/// Project screen: everything its survey needs before it can start (the server's checklist).
+class ReadinessPanel extends StatelessWidget {
+  const ReadinessPanel({super.key, required this.plan, required this.onAction});
+
+  final Json plan;
+  final Future<void> Function(Json action) onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final steps = asJsonList(plan['checklist']);
+    final ready = plan['ready'] == true;
+    final done = steps.where((s) => s['done'] == true).length;
+    return Panel(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text('Survey readiness', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: AppColors.ink))),
+          Pill(ready ? 'Ready to start' : 'Not ready', tone: ready ? 'ok' : 'warn'),
+        ]),
+        const SizedBox(height: 4),
+        Text(ready ? 'Everything is set: start the survey below.' : '$done of ${steps.length} steps done. The survey starts once every step is complete.',
+            style: TextStyle(fontSize: 12.5, color: AppColors.muted)),
+        const SizedBox(height: 6),
+        for (final s in steps)
+          _StepRow(
+            step: s,
+            // steps completed on this screen (plans, allocation) have no link
+            onAction: s['action'] != null && str(asJson(s['action'])['kind']) != 'project' ? () => onAction(asJson(s['action'])) : null,
+          ),
+      ]),
+    );
+  }
+}
+
+/// Overview: every product and project whose setup isn't finished, resumed from its next step.
+class SetupPendingList extends StatefulWidget {
+  const SetupPendingList({super.key});
+
+  @override
+  State<SetupPendingList> createState() => _SetupPendingListState();
+}
+
+class _SetupPendingListState extends State<SetupPendingList> {
+  List<Json>? _items;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final d = asJson(await _api('GET', '/org/setup'));
+      if (mounted) setState(() => _items = asJsonList(d['items']));
+    } catch (_) {
+      if (mounted) setState(() => _items = const []);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    if (items == null || items.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const SizedBox(height: 18),
+      Text('Complete your setup', style: TextStyle(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+      const SizedBox(height: 2),
+      Text('Continue where you stopped.', style: TextStyle(color: AppColors.muted)),
+      const SizedBox(height: 8),
+      for (final it in items) ...[
+        Panel(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                child: Text(str(asJson(it['product'])['name']), style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+              ),
+              Pill(str(it['status']), tone: str(it['status']) == 'Ready to start' ? 'ok' : 'warn'),
+            ]),
+            Text(
+              '${str(asJson(it['category'])['name'])} · recipe v${intOf(it['version'])}'
+              '${it['project'] != null ? ' · ${str(asJson(it['project'])['code'])}' : ''}',
+              style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(99),
+              child: LinearProgressIndicator(
+                minHeight: 6,
+                value: intOf(it['total']) == 0 ? 0 : intOf(it['done']) / intOf(it['total']),
+                backgroundColor: AppColors.line,
+                color: AppColors.brand,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${intOf(it['done'])} of ${intOf(it['total'])} steps done'
+              '${it['next'] != null ? ' · next: ${str(asJson(it['next'])['label'])}. ${str(asJson(it['next'])['detail'])}' : ''}',
+              style: TextStyle(fontSize: 12.5, color: AppColors.muted),
+            ),
+            if (it['next'] != null && asJson(it['next'])['action'] != null) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.tonal(
+                  onPressed: () async {
+                    await openSetupAction(context, asJson(asJson(it['next'])['action']));
+                    await _load();
+                  },
+                  child: const Text('Continue'),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        const SizedBox(height: 8),
+      ],
+    ]);
+  }
+}
+
+/// Product screen: the product's setup steps, and Done -> Add project (category and product preselected).
+class ProductSetupBar extends StatefulWidget {
+  const ProductSetupBar({super.key, required this.productId});
+
+  final int productId;
+
+  @override
+  State<ProductSetupBar> createState() => _ProductSetupBarState();
+}
+
+class _ProductSetupBarState extends State<ProductSetupBar> {
+  Json? _item;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final mine = asJsonList(asJson(await _api('GET', '/org/setup'))['items'])
+          .where((i) => intOf(asJson(i['product'])['id']) == widget.productId)
+          .toList();
+      final own = mine.where((i) => i['project'] == null).toList();
+      if (mounted) setState(() => _item = own.isNotEmpty ? own.first : (mine.isNotEmpty ? mine.first : null));
+    } catch (_) {
+      if (mounted) setState(() => _item = null);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final it = _item;
+    if (it == null) return const SizedBox.shrink();
+    final steps = asJsonList(it['steps']);
+    final project = it['project'] == null ? null : asJson(it['project']);
+    final ready = steps.where((s) => str(s['key']) != 'project' && s['optional'] != true).every((s) => s['done'] == true);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      child: Panel(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(project == null ? 'Product setup · ${intOf(it['done'])} of ${intOf(it['total'])} steps done'
+              : 'Project ${str(project['code'])}: ${str(it['status']).toLowerCase()}',
+              style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink)),
+          if (project == null) ...[
+            const SizedBox(height: 6),
+            Wrap(spacing: 10, runSpacing: 4, children: [
+              for (final s in steps)
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(s['done'] == true ? Icons.check_circle : Icons.radio_button_unchecked, size: 16,
+                      color: s['done'] == true ? AppColors.pos : AppColors.muted),
+                  const SizedBox(width: 4),
+                  Text(str(s['label']), style: TextStyle(fontSize: 12.5, color: s['done'] == true ? AppColors.ink : AppColors.muted)),
+                ]),
+            ]),
+          ],
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              onPressed: project != null
+                  ? () async {
+                      await openSetupAction(context, {'kind': 'project', 'project_id': intOf(project['id'])});
+                      await _load();
+                    }
+                  : ready
+                      ? () async {
+                          await openSetupAction(context, {'kind': 'add_project', 'product_id': widget.productId, 'version': intOf(it['version'])});
+                          await _load();
+                        }
+                      : null,
+              child: Text(project != null ? 'Open project' : 'Done · Continue to project creation'),
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }

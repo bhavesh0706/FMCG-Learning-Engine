@@ -11715,10 +11715,10 @@ input[type="radio"] {
 
 .recipe-card.is-legacy { background: var(--bg); }
 
-/* Ingredient editor: name, quantity, unit, cost per kg, purpose, remove */
+/* Ingredient editor: name, quantity (with its unit), cost per kg, purpose, remove */
 .ing-edit-head,
 .ing-edit-row {
-  grid-template-columns: minmax(0, 2fr) minmax(0, 0.8fr) minmax(0, 0.7fr) minmax(0, 0.9fr) minmax(0, 1.8fr) 32px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.8fr) 32px;
 }
 
 .report-status {
@@ -13093,3 +13093,34 @@ details.team-help > summary:hover {
 .project-questions-note { margin: 0 0 6px; }
 .add-project-footer { margin-top: 18px; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; }
 .add-project-why { margin-right: auto; }
+
+/* Setup workflow: Dashboard pending setup, product setup bar, project readiness */
+.wf-panel { margin-top: 0; }
+.wf-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.wf-item { border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; background: var(--surface); }
+.wf-item-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.wf-progress { height: 6px; border-radius: 99px; background: var(--line); margin: 10px 0 8px; overflow: hidden; }
+.wf-progress > span { display: block; height: 100%; background: var(--brand); border-radius: 99px; }
+.wf-next { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wf-next-actions { display: inline-flex; gap: 10px; align-items: center; }
+.wf-steps { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.wf-step { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: start; }
+.wf-step p { margin: 2px 0 0; }
+.wf-dot { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line-strong, var(--line)); font-size: 12px; font-weight: 800; flex: none; }
+.is-done > .wf-dot, .wf-stepper .is-done .wf-dot { background: var(--pos, #2e7d4f); border-color: var(--pos, #2e7d4f); color: #fff; }
+.wf-step.is-done strong { color: var(--muted); }
+.wf-bar-panel { margin: 0 0 14px; padding: 14px 16px; }
+.wf-bar-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.wf-stepper { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.wf-stepper li { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
+.wf-stepper .is-todo { color: var(--muted); }
+.wf-bar { margin: 0 0 14px; }
+.project-readiness { margin-bottom: 20px; }
+
+/* Overview: the setup box sits in the left column, above the products table (same width) */
+.org-left { display: flex; flex-direction: column; gap: var(--space-section); min-width: 0; }
+.org-left > .panel { margin: 0; }
+
+/* Surveys page: number cards that open their filter */
+button.kpi-btn { font: inherit; color: inherit; text-align: left; cursor: pointer; width: 100%; }
+button.kpi-btn:hover { box-shadow: var(--shadow-md, 0 6px 18px rgba(0,0,0,.08)); }

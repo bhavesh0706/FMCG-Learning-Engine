@@ -89,7 +89,10 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
     if locked:  # no recipe change (and no new version) while consumers test the current one
         raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
     recipe = body.model_dump()
-    recipe["ingredients"] = [i for i in recipe["ingredients"] if i["name"]]
+    from app.services.recipe_tools import normalize_ingredients
+
+    # "65 kg" typed in Quantity -> 65 + kg; a number without a unit is kg
+    recipe["ingredients"] = normalize_ingredients([i for i in recipe["ingredients"] if i["name"]])
     # Batch weight: the ingredients must add up to exactly the batch size
     from app.services.recipe_tools import batch_check
 

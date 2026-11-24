@@ -239,6 +239,11 @@ def staff_project(client, db, project_id):
 
 
 def start_project(client, db, project_id, headers, json=None):
-    """Staffs the project's plans (staff_project), then the Super Admin starts its survey."""
+    """What the screens require before Start survey: a response target (set to the planned total when
+    missing), the plans staffed (staff_project); then the Super Admin starts the survey."""
+    state = client.get(f"/org/projects/{project_id}/plans", headers=headers).json()
+    if state.get("total_target") is None and state.get("planned"):
+        client.put(f"/org/projects/{project_id}/target", headers=headers,
+                   json={"total_target": (state.get("used") or 0) + state["planned"]})
     staff_project(client, db, project_id)
     return client.post(f"/org/projects/{project_id}/start", headers=headers, json=json if json is not None else {})

@@ -8,7 +8,7 @@ import 'home_screens.dart' show MobileSettingsPage;
 import 'org_catalog_screen.dart';
 import 'org_product_screens.dart';
 import 'next_update_screens.dart' show AnalyticsPage, OrgSurveysPage, RecipeMasterPage, SuperAdminsPage;
-import 'project_screens.dart' show OrgPasskeyCard, ProjectsPage;
+import 'project_screens.dart' show OrgPasskeyCard, ProjectsPage, SetupPendingList;
 
 /* ============================================================
    Organization (client role) in the app
@@ -217,8 +217,22 @@ class Pill extends StatelessWidget {
   }
 }
 
-void openOrgProduct(BuildContext context, int id, String name, {String tab = 'report'}) {
-  Navigator.of(context).push(MaterialPageRoute(builder: (_) => OrgProductPage(productId: id, name: name, initialTab: tab)));
+/// Opens a product. Without a tab, a product whose setup isn't finished opens on the next step to
+/// fill (Recipe standards, then Recipe); otherwise on its report.
+Future<void> openOrgProduct(BuildContext context, int id, String name, {String? tab}) async {
+  var open = tab ?? 'report';
+  if (tab == null) {
+    try {
+      final items = asJsonList((await OrgApi.request('GET', '/org/setup'))['items']);
+      final mine = items.where((i) => intOf(asJson(i['product'])['id']) == id && i['project'] == null).toList();
+      final next = mine.isEmpty || mine.first['next'] == null ? null : asJson(asJson(mine.first['next'])['action']);
+      if (next != null && str(next['kind']) == 'product_tab' && intOf(next['product_id']) == id) open = str(next['tab'], 'report');
+    } catch (_) {
+      // the report is a safe place to land
+    }
+  }
+  if (!context.mounted) return;
+  await Navigator.of(context).push(MaterialPageRoute(builder: (_) => OrgProductPage(productId: id, name: name, initialTab: open)));
 }
 
 // ---------------------------------------------------------------- shell
@@ -368,12 +382,14 @@ class OrgOverviewPage extends StatelessWidget {
                 note: intOf(n['open_rounds']) > 0 ? 'Collecting responses now' : 'No survey running',
               ),
             ]),
+            // Products and projects whose setup isn't finished: resume from the next step
+            const SetupPendingList(),
             const SizedBox(height: 18),
             Text('Recently added products', style: TextStyle(fontFamily: kDisplayFont, fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
             const SizedBox(height: 8),
             if (products.isEmpty)
               const EmptyNote(icon: Icons.inventory_2_outlined, title: 'No products yet', text: 'Add your first product in Categories.'),
-            for (final p in products) ...[
+            for (final p in products.take(5)) ...[  // the 5 newest
               _ProductRow(p: p),
               const SizedBox(height: 8),
             ],

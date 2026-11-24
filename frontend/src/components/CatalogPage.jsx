@@ -139,7 +139,7 @@ function CategoryDialog({ category, onClose, onSaved }) {
         <>
           <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
           <button type="button" className="btn btn-primary" disabled={!valid || busy} onClick={save}>
-            {busy ? "Saving…" : category ? "Save" : "Create category"}
+            {busy ? "Saving…" : category ? "Save" : "Next"}
           </button>
         </>
       }
@@ -247,7 +247,7 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
   return (
     <Modal
       title="Add a product"
-      subtitle="The Super Admin then adds the survey questions and recipe in their portal."
+      subtitle="Next come its recipe standards and recipe; survey questions are set when its project is created."
       onClose={onClose}
       footer={
         <>
@@ -260,9 +260,14 @@ function ProductDialog({ categories, defaultCategoryId, lockCategory = false, on
     >
       <label className="field">
         <span className="field-label">Category <span className="req" aria-hidden="true">*</span></span>
-        <Select className="input" value={form.category_id} onChange={set("category_id")}>
-          {active.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </Select>
+        {lockCategory ? (
+          // Opened from a category: the product goes into it (shown, not changeable)
+          <input className="input" value={active[0]?.name || ""} disabled readOnly aria-readonly="true" />
+        ) : (
+          <Select className="input" value={form.category_id} onChange={set("category_id")}>
+            {active.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        )}
       </label>
       <label className="field">
         <span className="field-label">Product name <span className="req" aria-hidden="true">*</span></span>
@@ -479,12 +484,18 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
         <CategoryDialog
           category={dialog.category}
           onClose={() => setDialog(null)}
-          onSaved={(c, message) => {
+          onSaved={async (c, message) => {
             setDialog(null);
-            notify("ok", message);
             setCategoryId(c.id);
             setProductId(null);
-            load();
+            await load();
+            if (!dialog.category && canManage) {
+              // Setup workflow: a new category goes straight on to its first product (category preselected)
+              notify("ok", `Category "${c.name}" created. Now add its first product.`);
+              setDialog({ type: "product" });
+            } else {
+              notify("ok", message);
+            }
           }}
         />
       )}
@@ -514,8 +525,13 @@ export default function CatalogPage({ openRequest = null, onOpenRound = null, mo
           onNeedCategory={() => setDialog({ type: "category" })}
           onCreated={async (p) => {
             setDialog(null);
+            if (canManage) {
+              // Setup workflow: the new product opens in its own workspace, at its recipe standards (then the recipe)
+              window.location.hash = `#/products/${p.id}/standards`;
+              return;
+            }
             await load();
-            notify("ok", `"${p.name}" created. The Super Admin adds the survey questions and recipe in their portal.`);
+            notify("ok", `"${p.name}" created.`);
             openProduct(p.id, "details");
           }}
         />
@@ -1236,7 +1252,7 @@ export function batchCheck(recipe) {
   let total = 0, weighed = false;
   for (const ing of recipe?.ingredients || []) {
     const qty = Number(String(ing.quantity ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0]);
-    const unit = String(ing.unit || "").trim().toLowerCase();
+    const unit = unitOf(ing);
     if (ing.name?.trim() && Number.isFinite(qty) && WEIGHT_TO_KG[unit] !== undefined) { total += qty * WEIGHT_TO_KG[unit]; weighed = true; }
   }
   if (!batch || !weighed) return { checked: false, ok: true, message: "" };
@@ -1262,9 +1278,19 @@ const blankStep = () => ({ title: "", details: "", temperature: "", duration: ""
 // "82" + "kg" -> grams (mass) or millilitres (volume); null when it can't be compared.
 const UNIT_FACTORS = { mg: ["mass", 0.001], g: ["mass", 1], gm: ["mass", 1], gram: ["mass", 1], grams: ["mass", 1], kg: ["mass", 1000],
   ml: ["vol", 1], l: ["vol", 1000], litre: ["vol", 1000], liter: ["vol", 1000], ltr: ["vol", 1000] };
+// The quantity with its unit, as typed and shown in one field: "65 kg", "500 g"
+const qtyText = (i) => [i.quantity, i.unit].filter((x) => String(x ?? "").trim() !== "").join(" ");
+// "65 kg" -> 65 + kg; "65" -> 65 (kg is added when it's a plain number); other text stays as typed
+function splitQty(text) {
+  const m = String(text).match(/^\s*(\d+(?:[.,]\d*)?)\s*([a-zA-Z%]*)\s*$/);
+  return m ? { quantity: m[1], unit: m[2] } : { quantity: text, unit: "" };
+}
+// A plain number with no unit counts as kg (batches are weighed in kg)
+const unitOf = (i) => String(i.unit || "").trim().toLowerCase() || (Number.isFinite(parseFloat(String(i.quantity ?? "").replace(",", "."))) ? "kg" : "");
+
 function amountOf(i) {
   const q = parseFloat(String(i.quantity || "").replace(",", "."));
-  const u = UNIT_FACTORS[String(i.unit || "").trim().toLowerCase()];
+  const u = UNIT_FACTORS[unitOf(i)];
   return Number.isFinite(q) && u ? { kind: u[0], value: q * u[1] } : null;
 }
 
@@ -1378,9 +1404,28 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
   // Costing from the server (same numbers as before): matched to each ingredient by name
   const costing = extras?.costing;
   const costRows = costing?.ingredients || [];
-  const hasCosting = costRows.length > 0;
+  const hasCosting = (recipe?.ingredients || []).some((i) => (i.name || "").trim()); // always shown with ingredients
   const costByName = new Map(costRows.map((r) => [String(r.name || "").trim().toLowerCase(), r]));
   const costOf = (ing) => costByName.get(String(ing.name || "").trim().toLowerCase()) || null;
+  // Live costing from the recipe on screen (also before it's saved):
+  //   Cost in Use = Cost per KG × Usage % (the ingredient's share of the batch weight)
+  //   recipe cost per kg = sum of Cost in Use; batch cost = sum of (kg × Cost per KG)
+  const cpkOf = (ing) => {
+    const v = parseFloat(String(ing.cost_per_kg ?? "").replace(",", "."));
+    return Number.isFinite(v) && v >= 0 ? v : null;
+  };
+  const isMass = comparable && kinds.has("mass");
+  const live = recipe.ingredients.map((ing, i) => {
+    const cpk = cpkOf(ing);
+    const usage = comparable && total ? amounts[i].value / total : null; // share of the batch, 0-1
+    return { cpk, inUse: cpk != null && usage != null ? cpk * usage : null, kg: isMass ? amounts[i].value / 1000 : null };
+  });
+  const named = recipe.ingredients.filter((ing) => (ing.name || "").trim());
+  const missingCosts = named.filter((ing) => cpkOf(ing) == null).length;
+  const allCosted = named.length > 0 && missingCosts === 0;
+  const round2 = (v) => Math.round(v * 100) / 100;
+  const liveCostPerKg = allCosted && comparable ? round2(live.reduce((n, r) => n + (r.inUse || 0), 0)) : null;
+  const liveBatchCost = allCosted && isMass ? round2(live.reduce((n, r) => n + (r.kg || 0) * (r.cpk || 0), 0)) : null;
 
   return (
     <div className="recipe">
@@ -1437,9 +1482,9 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
             <p className="muted">What goes into the product, how much, why it's there, and its cost. Cost in Use = Cost per KG × share of the batch (its cost in 1 kg of product).</p>
           </div>
           <div className="recipe-card-actions">
-            {!editing.ingredients && costing?.ingredients?.length > 0 && (
-              <span className={`status-chip ${costing.complete ? "is-ok" : "is-warn"}`}>
-                {costing.complete ? "Costing complete" : `${costing.missing_costs.length} without a cost`}
+            {!editing.ingredients && named.length > 0 && (
+              <span className={`status-chip ${allCosted ? "is-ok" : "is-warn"}`}>
+                {allCosted ? "Costing complete" : `${missingCosts} without a cost`}
               </span>
             )}
             {!editing.ingredients && !readOnly && (
@@ -1453,16 +1498,18 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
         {editing.ingredients ? (
           <div className="ing-edit">
             <div className="ing-edit-head" aria-hidden="true">
-              <span>Ingredient</span><span>Quantity</span><span>Unit</span><span>Cost per KG (₹)</span><span>Purpose in the recipe</span><span />
+              <span>Ingredient</span><span>Quantity</span><span>Cost per KG (₹)</span><span>Purpose in the recipe</span><span />
             </div>
             {recipe.ingredients.map((ing, i) => (
               <div className="ing-edit-row" key={i}>
                 <input className="input" aria-label={`Ingredient ${i + 1}`} placeholder="e.g. Sugar" value={ing.name}
                   onChange={(e) => setList("ingredients", i, "name", e.target.value)} />
-                <input className="input" aria-label="Quantity" inputMode="decimal" placeholder="8" value={ing.quantity}
-                  onChange={(e) => setList("ingredients", i, "quantity", e.target.value)} />
-                <input className="input" aria-label="Unit" placeholder="kg" value={ing.unit}
-                  onChange={(e) => setList("ingredients", i, "unit", e.target.value)} />
+                {/* Quantity with its unit in one field ("65 kg", "500 g"); a plain number is kg */}
+                <input className="input" aria-label="Quantity" placeholder="e.g. 8 kg" value={qtyText(ing)}
+                  onChange={(e) => {
+                    const v = splitQty(e.target.value);
+                    setRecipe((r) => ({ ...r, ingredients: r.ingredients.map((row, k) => (k === i ? { ...row, ...v } : row)) }));
+                  }} />
                 <input className="input" aria-label="Cost per KG" inputMode="decimal" placeholder="e.g. 45" value={ing.cost_per_kg ?? ""}
                   onChange={(e) => setList("ingredients", i, "cost_per_kg", e.target.value.replace(/[^0-9.,]/g, ""))} />
                 <input className="input" aria-label="Purpose" placeholder="e.g. Sweetness" value={ing.notes}
@@ -1495,17 +1542,17 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
                   return (
                     <tr key={i}>
                       <td><strong>{ing.name}</strong></td>
-                      <td className="num-cell">{[ing.quantity, ing.unit].filter(Boolean).join(" ") || "—"}</td>
+                      <td className="num-cell">{qtyText({ ...ing, unit: unitOf(ing) }) || "—"}</td>
                       {comparable && (
                         <td>
                           <span className="share">
                             <span className="share-track"><span style={{ width: `${Math.max(2, share)}%` }} /></span>
-                            <span className="share-val">{share < 1 ? share.toFixed(1) : Math.round(share)}%</span>
+                            <span className="share-val">{+share.toFixed(1)}%</span>
                           </span>
                         </td>
                       )}
-                      {hasCosting && <td className="num-cell">{money(cost?.cost_per_kg)}</td>}
-                      {hasCosting && <td className="num-cell">{money(cost?.cost_in_use)}</td>}
+                      {hasCosting && <td className="num-cell">{money(live[i].cpk ?? cost?.cost_per_kg)}</td>}
+                      {hasCosting && <td className="num-cell">{money(live[i].inUse != null ? round2(live[i].inUse) : comparable ? null : cost?.cost_in_use)}</td>}
                       <td className="muted">{ing.notes || "—"}</td>
                     </tr>
                   );
@@ -1517,8 +1564,16 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
                     <td><strong>Total</strong></td>
                     <td className="num-cell"><strong>{comparable ? totalLabel : ""}</strong></td>
                     {comparable && <td><strong>100%</strong></td>}
-                    {hasCosting && <td className="num-cell muted">{costing.batch_cost != null ? `Batch: ${money(costing.batch_cost)}` : ""}</td>}
-                    {hasCosting && <td className="num-cell" title="Recipe cost per kg"><strong>{money(costing.cost_per_kg)}</strong><span className="muted cost-unit"> /kg</span></td>}
+                    {hasCosting && (
+                      <td className="num-cell muted">
+                        {(liveBatchCost ?? (comparable ? null : costing?.batch_cost)) != null ? `Batch: ${money(liveBatchCost ?? costing?.batch_cost)}` : ""}
+                      </td>
+                    )}
+                    {hasCosting && (
+                      <td className="num-cell" title={allCosted ? "Recipe cost per kg" : "Add a Cost per KG to every ingredient to see the recipe cost"}>
+                        <strong>{money(liveCostPerKg ?? (comparable ? null : costing?.cost_per_kg))}</strong><span className="muted cost-unit"> /kg</span>
+                      </td>
+                    )}
                     <td />
                   </tr>
                 </tfoot>

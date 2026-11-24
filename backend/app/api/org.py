@@ -572,6 +572,16 @@ def start_round_for(db: Session, request: Request, product_id: int, body: NewRou
     from app.services import audit
 
     product = _product_or_404(db, request, product_id)
+    # A recipe version with a project starts its survey only from the project, where its readiness
+    # (plans, team allocation ...) is checked: this route can't bypass it.
+    from app.services.action_plans import project_of
+    version = body.recipe_version or R.latest_version_number(db, product.id)
+    owner = project_of(db, product.id, version) if version else None
+    if owner is not None:
+        raise HTTPException(status_code=409, detail={
+            "code": "use_project", "project_id": owner.id,
+            "message": f"Recipe v{version} of {product.name} has project {owner.project_code}: start its survey from the "
+                       "project (Projects), where its readiness is checked."})
     try:
         previous = R.latest_round(db, product.id)
         r = R.start_round(db, product, account(request), body.recipe_version, body.target, body.due_date, body.note)

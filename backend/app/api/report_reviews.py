@@ -213,7 +213,8 @@ def org_surveys(request: Request, status: Optional[str] = None, report_status: O
     if q:
         needle = q.strip().lower()
         rows = [r for r in rows if needle in " ".join(str(r.get(k) or "") for k in ("product_name", "executive_name", "customer", "city", "country")).lower()]
-    counts = {"forwarded": db.query(SurveyResponse).filter(SurveyResponse.report_status == "forwarded").count(),
+    by_status = lambda s: db.query(SurveyResponse).filter(SurveyResponse.report_status == s).count()  # noqa: E731
+    counts = {"forwarded": by_status("forwarded"), "reviewed": by_status("reviewed"), "pending_admin": by_status("pending_admin"),
               "total": db.query(SurveyResponse).filter(SurveyResponse.status != "draft").count()}
     return {"counts": counts, "labels": LABELS, "surveys": rows}
 

@@ -36,6 +36,7 @@ import {
   deleteActionPlan,
   getProjectPlans,
   getProductSummary,
+  getSetup,
   setProjectTarget,
   startProjectSurvey,
   standardsFailures,
@@ -371,11 +372,15 @@ function PortalShell({ user, ReportView }) {
   }, [parts, user]);
 
   let body;
-  if (page === "products" && parts[1]) {
-    body = <ProductPage key={parts[1]} productId={Number(parts[1])} tab={parts[2] || "report"} round={parts[3] ? Number(parts[3]) : null} ReportView={ReportView} />;
+  if (page === "products" && parts[1] && !parts[2]) {
+    body = <ProductLanding key={parts[1]} productId={Number(parts[1])} />;
+  } else if (page === "products" && parts[1]) {
+    body = <ProductPage key={parts[1]} productId={Number(parts[1])} tab={parts[2]} round={parts[3] ? Number(parts[3]) : null} ReportView={ReportView} />;
   } else if (page === "products") body = <ProductsPage />;
   // Projects: one product each, showing its latest catalog setup; surveys start here
-  else if (page === "projects" && parts[1] === "new") body = <AddProjectPage />;
+  else if (page === "projects" && parts[1] === "new") {
+    body = <AddProjectPage key={parts.slice(2).join("/")} prefill={parts[2] ? { productId: Number(parts[2]), version: parts[3] ? Number(parts[3]) : null } : null} />;
+  }
   else if (page === "projects" && parts[1] && parts[2] === "edit") body = <EditProjectPage key={parts[1]} projectId={Number(parts[1])} />;
   else if (page === "projects" && parts[1]) {
     body = <ProjectPage key={parts[1]} projectId={Number(parts[1])} />;
@@ -662,12 +667,152 @@ function RecipeCodeDialog({ product, onClose }) {
   );
 }
 
+/* ---------------- Setup workflow (api/setup.py, api/projects.py _project_checks) ---------------- */
+
+// Where a setup step is completed (actions come from the server)
+const setupPath = (a) => {
+  if (!a) return null;
+  if (a.kind === "product_tab") return `products/${a.product_id}/${a.tab}`;
+  if (a.kind === "add_project") return `projects/new/${a.product_id}${a.version ? `/${a.version}` : ""}`;
+  if (a.kind === "project") return `projects/${a.project_id}`;
+  if (a.kind === "edit_project") return `projects/${a.project_id}/edit`;
+  if (a.kind === "categories") return "catalog";
+  return null;
+};
+const SETUP_ACTION = {
+  recipe: "Complete the recipe", standards: "Set the recipe standards", project: "Create the project", category: "Open Categories",
+  product: "Open Categories", questions: "Set the survey questions", target: "Set the response target", plan: "Add a survey plan",
+  plans_cover: "Complete the survey plan", allocation: "Open the project", start: "Open the project to start",
+};
+
+function SetupSteps({ steps, here = null }) {
+  return (
+    <ol className="wf-steps">
+      {steps.map((s) => (
+        <li key={s.key} className={`wf-step ${s.done ? "is-done" : "is-todo"}${s.optional ? " is-optional" : ""}`}>
+          <span className="wf-dot" aria-hidden="true">{s.done ? "✓" : ""}</span>
+          <div>
+            <strong>{s.label}</strong>{s.optional && <span className="muted small"> (optional)</span>}
+            <span className="visually-hidden">{s.done ? " done" : " pending"}</span>
+            <p className="muted small">{s.detail}</p>
+          </div>
+          {!s.done && setupPath(s.action) && setupPath(s.action) !== here && (
+            <button type="button" className="link-btn" onClick={() => go(setupPath(s.action))}>{SETUP_ACTION[s.key] || "Complete"}</button>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/* Dashboard: every product / project whose setup isn't finished, resumed from its next step */
+function SetupSection() {
+  const [state, reload] = useData(getSetup, []);
+  const [open, setOpen] = useState(null);
+  const items = state.data?.items || [];
+  if (state.loading && !state.data) return null;
+  if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
+  if (!items.length) return null;
+  return (
+    <section className="panel org-panel wf-panel" aria-labelledby="setup-title">
+      <div className="org-panel-head">
+        <div>
+          <h2 id="setup-title">Complete your setup</h2>
+          <p className="muted small org-panel-sub">
+            {items.length} product{items.length === 1 ? "" : "s"} or project{items.length === 1 ? "" : "s"} still being set up · continue where you stopped
+          </p>
+        </div>
+      </div>
+      <ul className="wf-list">
+        {items.map((it) => {
+          const pct = it.total ? Math.round((100 * it.done) / it.total) : 0;
+          return (
+            <li key={it.key} className="wf-item">
+              <div className="wf-item-head">
+                <div>
+                  <strong>{it.product.name}</strong>
+                  <span className="muted small"> · {it.category.name} · recipe v{it.version}{it.project ? ` · ${it.project.code} ${it.project.name}` : ""}</span>
+                </div>
+                <span className={`status-chip ${it.status === "Ready to start" ? "is-ok" : "is-warn"}`}>{it.status}</span>
+              </div>
+              <div className="wf-progress" role="progressbar" aria-valuemin={0} aria-valuemax={it.total} aria-valuenow={it.done}
+                aria-label={`${it.done} of ${it.total} setup steps done`}>
+                <span style={{ width: `${pct}%` }} />
+              </div>
+              <div className="wf-next">
+                <span className="muted small">{it.done} of {it.total} steps done{it.next ? ` · next: ${it.next.label}. ${it.next.detail}` : ""}</span>
+                <span className="wf-next-actions">
+                  <button type="button" className="link-btn" onClick={() => setOpen(open === it.key ? null : it.key)} aria-expanded={open === it.key}>
+                    {open === it.key ? "Hide steps" : "All steps"}
+                  </button>
+                  {it.next && setupPath(it.next.action) && (
+                    <button type="button" className="btn btn-primary btn-sm" onClick={() => go(setupPath(it.next.action))}>
+                      {SETUP_ACTION[it.next.key] || "Continue"}
+                    </button>
+                  )}
+                </span>
+              </div>
+              {open === it.key && <SetupSteps steps={it.steps} />}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/* Product workspace: its setup steps, and Done -> Project creation (category and product preselected) */
+function ProductSetupBar({ product, refreshKey }) {
+  const [item, setItem] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    getSetup().then((d) => {
+      if (!alive) return;
+      const mine = (d?.items || []).filter((i) => i.product.id === product.id);
+      setItem(mine.find((i) => !i.project) || mine[0] || null);
+    }).catch(() => alive && setItem(null));
+    return () => { alive = false; };
+  }, [product.id, refreshKey]);
+  if (!item) return null;
+  if (item.project) {
+    return (
+      <div className="org-callout wf-bar">
+        <span>Project <strong>{item.project.code}</strong> of recipe v{item.version}: {item.status.toLowerCase()} ({item.done} of {item.total} steps done).</span>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => go(`projects/${item.project.id}`)}>Open project</button>
+      </div>
+    );
+  }
+  const required = item.steps.filter((s) => s.key !== "project" && !s.optional);
+  const ready = required.every((s) => s.done);
+  return (
+    <section className="panel wf-bar-panel" aria-label="Product setup">
+      <div className="wf-bar-head">
+        <div>
+          <strong>Product setup</strong>
+          <span className="muted small"> · {item.done} of {item.total} steps done</span>
+        </div>
+        <button type="button" className="btn btn-primary btn-sm" disabled={!ready}
+          title={ready ? undefined : "Save the recipe and meet its recipe standards first."}
+          onClick={() => go(`projects/new/${product.id}/${item.version}`)}>Done · Continue to project creation</button>
+      </div>
+      <ol className="wf-stepper">
+        {item.steps.map((s) => (
+          <li key={s.key} className={s.done ? "is-done" : "is-todo"} title={s.detail}>
+            <span className="wf-dot" aria-hidden="true">{s.done ? "✓" : ""}</span>{s.label}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 function OverviewPage() {
   const [recipeOf, setRecipeOf] = useState(null); // the product whose recipe popup is open
   const [state, reload] = useData(getOverview, []);
   if (state.loading && !state.data) return <Loading />;
   if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
-  const { numbers, products, updates } = state.data;
+  const { numbers, products: allRecent, updates } = state.data;
+  const products = (allRecent || []).slice(0, 5); // the 5 newest products (the numbers above count all)
   return (
     <section aria-labelledby="org-overview-title">
       <header className="home-head">
@@ -699,11 +844,14 @@ function OverviewPage() {
       </div>
 
       <div className="org-two">
+        {/* Left column: setup still to finish (same width as the products table), then the products */}
+        <div className="org-left">
+          <SetupSection />
         <section className="panel org-panel" aria-labelledby="org-products-title">
           <div className="org-panel-head">
             <div>
               <h2 id="org-products-title">Recently added products</h2>
-              <p className="muted small org-panel-sub">The {Math.min(10, products.length) || 10} newest, latest first</p>
+              <p className="muted small org-panel-sub">The {products.length || 5} newest, latest first</p>
             </div>
             <button type="button" className="link-btn" onClick={() => go("products")}>All products <Icon name="chevron" /></button>
           </div>
@@ -723,10 +871,10 @@ function OverviewPage() {
                 </thead>
                 <tbody>
                   {products.map((p) => (
-                    <tr key={p.id} className="is-clickable" onClick={() => go(`products/${p.id}/report`)}>
+                    <tr key={p.id} className="is-clickable" onClick={() => go(`products/${p.id}`)}>
                       <td>
                         <div className="cell-product">
-                          <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); go(`products/${p.id}/report`); }}>{p.name}</button>
+                          <button type="button" className="row-link" onClick={(e) => { e.stopPropagation(); go(`products/${p.id}`); }}>{p.name}</button>
                           <span>{p.category_name}{p.created_at ? ` · added ${ago(p.created_at)}` : ""}</span>
                         </div>
                       </td>
@@ -756,6 +904,7 @@ function OverviewPage() {
           )}
         </section>
 
+        </div>
         <section className="panel org-panel org-updates-panel" aria-labelledby="org-updates-title">
           <div className="org-panel-head">
             <div>
@@ -825,7 +974,7 @@ function ProductsPage() {
           {visible.map((p) => {
             const r = p.current_round;
             return (
-              <button key={p.id} type="button" className="panel org-card" onClick={() => go(`products/${p.id}/report`)}>
+              <button key={p.id} type="button" className="panel org-card" onClick={() => go(`products/${p.id}`)}>
                 <span className="eyebrow">{p.category_name || "Product"}</span>
                 <strong className="org-card-name">{p.name}</strong>
                 <RoundChip round={r} />
@@ -958,6 +1107,25 @@ function SurveySnapshot({ product, survey, tab }) {
   return null;
 }
 
+/* A product opened without a tab: while its setup isn't finished it opens on the next step to
+   fill (Recipe standards, then Recipe); otherwise on its Consumer report. Replaces the address,
+   so Back still goes where it was. */
+function ProductLanding({ productId }) {
+  useEffect(() => {
+    let alive = true;
+    const open = (tab) => alive && window.location.replace(`#/products/${productId}/${tab}`);
+    getSetup()
+      .then((d) => {
+        const mine = (d?.items || []).find((i) => i.product.id === productId && !i.project);
+        const next = mine?.next?.action;
+        open(next?.kind === "product_tab" && next.product_id === productId ? next.tab : "report");
+      })
+      .catch(() => open("report"));
+    return () => { alive = false; };
+  }, [productId]);
+  return <Loading />;
+}
+
 function ProductPage({ productId, tab, round, ReportView, project = null, onProjectChanged }) {
   const [state, reload] = useData(() => getOrgProduct(productId), [productId]);
   // Inside a project the tabs stay in the project's address (#/projects/3/recipe)
@@ -1024,6 +1192,7 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
         </div>
       </header>
 
+      {!project && <ProductSetupBar product={product} refreshKey={detail} />}
       <div className="page-tabs-u" role="tablist" aria-label={project ? project.project_name : product.name}>
         {tabs.map(([key, label]) => (
           <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? "is-on" : ""}
@@ -1043,8 +1212,7 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
       {snapTab && <SurveyBox survey={snapRound} rounds={rounds} latest={detail.latest_version} />}
       {snapTab && snapRound && <SurveySnapshot product={product} survey={snapRound} tab={tab} />}
       {tab === "recipe" && !snapRound && (
-        <RecipeSection product={product} detail={detail} onNotice={onNotice} onSaved={() => reload({ silent: true })}
-          onStart={() => openProjectOf(product.id, detail.latest_version)} />
+        <RecipeSection product={product} onNotice={onNotice} onSaved={() => reload({ silent: true })} />
       )}
       {tab === "standards" && !snapRound && <StandardsSection product={product} onChanged={() => reload({ silent: true })} />}
       {tab === "questions" && !snapRound && <QuestionsSection product={product} onNotice={onNotice} />}
@@ -1172,7 +1340,7 @@ function ProjectsPage() {
 /* Add a project: a page (not a popup), the form on the left and, once a product and its
    recipe are chosen, a short overview of that product recipe on the right: what's in the
    recipe, its standards, survey questions, plan and earlier surveys. */
-function AddProjectPage() {
+function AddProjectPage({ prefill = null }) {
   const [options, setOptions] = useState(null);
   const [form, setForm] = useState({ project_name: "", description: "", category_id: "", product_id: "", product_version: "", total_target: "" });
   const [targetTouched, setTargetTouched] = useState(false);
@@ -1182,8 +1350,21 @@ function AddProjectPage() {
   const [questionsKey, setQuestionsKey] = useState(0); // new value = the overview (question count) reloads
   const [notice, setNotice] = useState(null);
   useEffect(() => {
-    projectOptions().then((d) => setOptions(d.categories)).catch((e) => setError(orgError(e, "The categories couldn't be loaded.")));
-  }, []);
+    projectOptions().then((d) => {
+      setOptions(d.categories);
+      if (!prefill?.productId) return;
+      // From the product's setup: its category and product are chosen (and fixed) already
+      const cat = d.categories.find((c) => c.products.some((p) => p.id === prefill.productId));
+      const prod = cat?.products.find((p) => p.id === prefill.productId);
+      if (!prod) {
+        setError("This product's recipe already has a project (or the product isn't active). Open it from Projects.");
+        return;
+      }
+      const v = prefill.version && prod.versions.includes(prefill.version) ? prefill.version : prod.versions[prod.versions.length - 1];
+      setForm((f) => ({ ...f, category_id: String(cat.id), product_id: String(prod.id), product_version: v ? String(v) : "" }));
+    }).catch((e) => setError(orgError(e, "The categories couldn't be loaded.")));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const fixedChoice = Boolean(prefill?.productId);
   const category = (options || []).find((c) => String(c.id) === String(form.category_id));
   const product = (category?.products || []).find((p) => String(p.id) === String(form.product_id));
   useEffect(() => {
@@ -1250,18 +1431,17 @@ function AddProjectPage() {
           <div className="field-row is-three">
           <div className="field">
             <span className="field-label" id="ap-cat">Category <span className="req" aria-hidden="true">*</span></span>
-            <Select className="select" value={form.category_id} onChange={set("category_id")} disabled={!options} aria-labelledby="ap-cat">
+            <Select className="select" value={form.category_id} onChange={set("category_id")} disabled={!options || fixedChoice} aria-labelledby="ap-cat">
               <option value="">{options ? "Choose a category" : "Loading…"}</option>
-              {(options || []).map((c) => (
-                <option key={c.id} value={c.id} disabled={!c.products.length}>
-                  {c.name}{c.products.length ? ` (${c.products.length})` : " · every recipe has a project"}
-                </option>
+              {/* only categories with a product recipe still to plan (one project per product recipe) */}
+              {(options || []).filter((c) => c.products.length).map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.products.length})</option>
               ))}
             </Select>
           </div>
             <div className="field">
               <span className="field-label" id="ap-prod">Product <span className="req" aria-hidden="true">*</span></span>
-              <Select className="select" value={form.product_id} onChange={set("product_id")} disabled={!category} aria-labelledby="ap-prod">
+              <Select className="select" value={form.product_id} onChange={set("product_id")} disabled={!category || fixedChoice} aria-labelledby="ap-prod">
                 <option value="">{category ? "Choose a product" : "Choose a category first"}</option>
                 {(category?.products || []).map((p) => <option key={p.id} value={p.id}>{p.name}{p.sku ? ` · ${p.sku}` : ""}</option>)}
               </Select>
@@ -1274,7 +1454,9 @@ function AddProjectPage() {
               </Select>
             </div>
           </div>
-          <p className="field-hint">Only recipes without a project are listed: each product recipe has one project.</p>
+          <p className="field-hint">
+            {fixedChoice ? "Category and product come from the product's setup." : "Only recipes without a project are listed: each product recipe has one project."}
+          </p>
           <label className="field add-project-target">
             <span className="field-label">Total consumer responses <span className="req" aria-hidden="true">*</span></span>
             <input className={`input${targetProblem ? " is-invalid" : ""}`} type="text" inputMode="numeric" autoComplete="off" value={form.total_target}
@@ -1636,6 +1818,22 @@ function ProjectPage({ projectId }) {
         </dl>
       </section>
 
+      {plan.stage === "draft" && plan.checklist?.length > 0 && (
+        <section className="panel project-readiness" aria-labelledby="readiness-title">
+          <div className="ap-head">
+            <div>
+              <h2 id="readiness-title" className="report-h">Survey readiness</h2>
+              <p className="muted small">
+                {plan.ready ? "Everything is set: start the survey below."
+                  : `${plan.checklist.filter((c) => c.done).length} of ${plan.checklist.length} steps done. The survey starts once every step is complete.`}
+              </p>
+            </div>
+            <span className={`status-chip ${plan.ready ? "is-ok" : "is-warn"}`}>{plan.ready ? "Ready to start" : "Not ready"}</span>
+          </div>
+          <SetupSteps steps={plan.checklist} here={`projects/${project.id}`} />
+        </section>
+      )}
+
       <section className="panel" aria-labelledby="recipe-plan-title">
         <div className="ap-head">
           <div>
@@ -1947,17 +2145,11 @@ function StandardsSection({ product, onChanged }) {
   );
 }
 
-function RecipeSection({ product, detail, onNotice, onSaved, onStart }) {
-  const latest = detail.versions[0];
-  const untested = latest && !latest.rounds?.length && !detail.live_round;
+// The next step (project creation / Open project) is in the setup bar and the page header,
+// so the recipe needs no separate "start it in its project" box.
+function RecipeSection({ product, onNotice, onSaved }) {
   return (
     <div className="org-recipe">
-      {untested && (
-        <div className="callout org-callout" role="status">
-          <span>Recipe <strong>v{latest.version}</strong> hasn't been tested with consumers yet.</span>
-          <button type="button" className="btn btn-primary btn-sm" onClick={onStart}>Plan and start it in its project</button>
-        </div>
-      )}
       <section className="panel product-panel">
         <p className="muted org-recipe-note">
           The report's recommendations refer to these ingredients. Saving a change creates a new version and tells the

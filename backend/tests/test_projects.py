@@ -1,10 +1,10 @@
 """Projects (Super Admin): one project per product VERSION, made by hand on the Add project page
 (never automatically), status from the survey rounds of that version, linked to the catalog."""
 
-from conftest import start_project, staff_project  # noqa: F401
+from conftest import open_round, start_project, staff_project  # noqa: F401
 from conftest import _unique, auth, make_user
 
-from app.database.models import Project, RecipeVersion
+from app.database.models import Product, Project, RecipeVersion
 
 RECIPE = {"batch_size": "100 kg", "ingredients": [{"name": "Water", "quantity": "100", "unit": "kg"}]}
 SWEETER = {"batch_size": "100 kg", "ingredients": [{"name": "Water", "quantity": "98", "unit": "kg"},
@@ -79,7 +79,7 @@ def test_status_follows_the_rounds_of_the_projects_own_version(client, db):
     org = make_user(db, role="client")
     cid, _, pid = _setup(client, org)
     [v1] = _projects(db, pid)
-    assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 3}).status_code == 201
+    open_round(db, db.get(Product, pid), number=1, recipe_version=1, target=3)
     now = client.get(f"/org/projects/{v1.id}", headers=auth(org)).json()
     assert now["status"] == "ongoing" and now["live_round"]["number"] == 1 and now["live_round"]["target"] == 3
     assert now["linked"]["questions"] == 5
@@ -89,7 +89,7 @@ def test_status_follows_the_rounds_of_the_projects_own_version(client, db):
     _, v2 = _projects(db, pid)
     assert client.get(f"/org/projects/{v1.id}", headers=auth(org)).json()["status"] == "completed"
     assert client.get(f"/org/projects/{v2.id}", headers=auth(org)).json()["status"] == "draft"
-    assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 4}).status_code == 201
+    open_round(db, db.get(Product, pid), number=2, recipe_version=2, target=4)
     two = client.get(f"/org/projects/{v2.id}", headers=auth(org)).json()
     one = client.get(f"/org/projects/{v1.id}", headers=auth(org)).json()
     assert two["status"] == "ongoing" and two["live_round"]["number"] == 2 and two["rounds"] == 1
@@ -107,7 +107,7 @@ def test_a_version_deleted_by_mistake_takes_its_draft_project_and_editing_in_pla
     assert client.delete(f"/products/{pid}/recipe/versions/2", headers=auth(org)).status_code == 200
     assert [p.product_version for p in _projects(db, pid)] == [1]
     # While v1's survey collects, its recipe can't change: no new version, no new project.
-    client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 3})
+    open_round(db, db.get(Product, pid), number=1, recipe_version=1, target=3)
     r = client.put(f"/products/{pid}/recipe", headers=auth(org), json=SWEETER)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "survey_ongoing"
     assert [p.product_version for p in _projects(db, pid)] == [1]
@@ -181,9 +181,14 @@ def test_recipe_plan_then_start_the_survey_from_the_project(client, db):
     assert a.status_code == 201, a.text
     b = client.post(f"/org/projects/{v1.id}/plans", headers=auth(org), json={**PLAN, "name": "Pune team", "target": 8, "cities": ["Pune"]}).json()
     assert [p["name"] for p in b["plans"]] == ["Delhi team", "Pune team"] and b["target"] == 20
-    assert b["can_start"] is True, "the Super Admin doesn't wait for the Admin's team allocation"
+    assert b["can_start"] is False and "Response target" in b["start_problem"], "a response target is required"
+    client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 20})
+    c = client.get(f"/org/projects/{v1.id}/plans", headers=auth(org)).json()
+    assert c["can_start"] is True, "the Super Admin doesn't wait for the Admin's team allocation"
+    assert {s["key"]: s["optional"] for s in c["checklist"]}["allocation"] is True, "allocation is shown, not required"
     plan_id = b["plans"][0]["id"]
-    # Planned plans can be edited and deleted before the survey starts.
+    # Planned plans can be edited and deleted before the survey starts (within the response target).
+    client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 23})
     r = client.put(f"/action-plans/{plan_id}", headers=auth(org), json={**PLAN, "target": 15})
     assert r.status_code == 200 and r.json()["plan"]["target"] == 15 and r.json()["plan"]["round_id"] is None
     assert db.query(SurveyRound).filter_by(product_id=pid).count() == 0, "nothing starts until Start survey"
@@ -197,7 +202,8 @@ def test_recipe_plan_then_start_the_survey_from_the_project(client, db):
     rnd = db.query(SurveyRound).filter_by(product_id=pid).one()
     assert rnd.recipe_version == 1 and rnd.status == "live"
     assert {p.round_id for p in db.query(ActionPlan).filter_by(product_id=pid)} == {rnd.id}
-    # While it runs, a new plan joins the live survey and raises its target.
+    # While it runs, a new plan joins the live survey and raises its target (after raising the project's).
+    client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 28})
     more = client.post(f"/org/projects/{v1.id}/plans", headers=auth(org), json={**PLAN, "name": "Extra", "target": 5}).json()
     assert more["round"]["target"] == 28 and len(more["plans"]) == 3
     assert client.get(f"/org/projects/{v1.id}", headers=auth(org)).json()["status"] == "ongoing"
@@ -329,7 +335,7 @@ def test_an_older_recipes_survey_reopens_from_its_own_project(client, db):
     _, _, pid = _setup(client, org)
     [v1] = _projects(db, pid)
     client.put(f"/org/projects/{v1.id}/target", headers=auth(org), json={"total_target": 5})
-    assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5}).status_code == 201
+    open_round(db, db.get(Product, pid), number=1, recipe_version=1, target=5)
     assert client.post(f"/org/products/{pid}/rounds/1/end", headers=auth(org)).status_code == 200
     client.put(f"/products/{pid}/recipe", headers=auth(org), json=SWEETER)  # version 2
     state = client.get(f"/org/projects/{v1.id}/plans", headers=auth(org)).json()
@@ -513,9 +519,8 @@ def test_surveys_are_compared_as_separate_surveys_never_with_themselves(client, 
     can't be compared with itself, and several can be compared side by side, each with its own results."""
     org = make_user(db, role="client")
     _, _, pid = _setup(client, org)
-    for _ in range(3):
-        assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 3}).status_code == 201
-        n = max(r["number"] for r in client.get(f"/org/products/{pid}", headers=auth(org)).json()["rounds"])
+    for n in (1, 2, 3):
+        open_round(db, db.get(Product, pid), number=n, recipe_version=1, target=3)
         client.post(f"/org/products/{pid}/rounds/{n}/end", headers=auth(org))
     two = client.get(f"/org/products/{pid}/compare?a=1&b=2", headers=auth(org)).json()
     assert two["same_recipe"] is True and two["a"]["number"] == 1 and two["b"]["number"] == 2

@@ -69,6 +69,33 @@ def batch_weight_kg(batch_size) -> Optional[float]:
     return None
 
 
+_QTY_WITH_UNIT = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*([a-zA-Z%]+)\s*$")
+
+
+def normalize_ingredients(ingredients: list) -> list:
+    """Quantity and unit as the recipe stores them: "65 kg" typed in Quantity becomes 65 + kg, and a
+    number without a unit is kg (batches are weighed in kg). Other text is kept as it is."""
+    out = []
+    for ing in ingredients or []:
+        ing = dict(ing)
+        qty, unit = str(ing.get("quantity") or "").strip(), str(ing.get("unit") or "").strip()
+        m = _QTY_WITH_UNIT.match(qty)
+        if m and not unit:
+            qty, unit = m.group(1).replace(",", "."), m.group(2).lower()
+        if not unit and _number(qty) is not None and re.fullmatch(r"\d+(?:[.,]\d+)?", qty):
+            unit = "kg"
+        ing["quantity"], ing["unit"] = qty, unit
+        out.append(ing)
+    return out
+
+
+def _unit_of(ing: dict) -> str:
+    """The ingredient's unit; a plain number with no unit counts as kg (recipes saved before units
+    were filled in automatically)."""
+    unit = str(ing.get("unit") or "").strip().lower()
+    return unit or ("kg" if _number(ing.get("quantity")) is not None else "")
+
+
 def batch_check(recipe: Optional[dict]) -> dict:
     """Do the weighed ingredients fit the batch: at least the batch size, at most its tolerance over?"""
     recipe = recipe or {}
@@ -78,7 +105,7 @@ def batch_check(recipe: Optional[dict]) -> dict:
     for ing in recipe.get("ingredients") or []:
         if not str(ing.get("name") or "").strip():
             continue
-        qty, unit = _number(ing.get("quantity")), str(ing.get("unit") or "").strip().lower()
+        qty, unit = _number(ing.get("quantity")), _unit_of(ing)
         if qty is not None and unit in TO_KG:
             grams += round(qty * TO_KG[unit] * 1000, 3)
             weighed = True
@@ -108,7 +135,7 @@ def costing(recipe: Optional[dict]) -> dict:
     rows, kg = [], {}
     percent_given = {}
     for i, ing in enumerate(ingredients):
-        qty, unit = _number(ing.get("quantity")), str(ing.get("unit") or "").strip().lower()
+        qty, unit = _number(ing.get("quantity")), _unit_of(ing)
         if qty is not None and unit == "%":
             percent_given[i] = qty
         elif qty is not None and unit in TO_KG:
@@ -141,9 +168,22 @@ def costing(recipe: Optional[dict]) -> dict:
     }
 
 
+def _plain(text: str) -> str:
+    """A name without text in brackets: "Wheat Flour (Maida)" -> "wheat flour"."""
+    return re.sub(r"\s+", " ", re.sub(r"\([^)]*\)", " ", (text or "").lower())).strip()
+
+
 def _find(rows: list, name: str) -> list:
+    """Ingredients named like `name`; text in brackets is optional on either side, so a standard for
+    "Wheat Flour (Maida)" finds "Wheat Flour" and the other way round."""
     name = (name or "").strip().lower()
-    return [r for r in rows if name and name in str(r.get("name") or "").lower()]
+    plain = _plain(name)
+    found = []
+    for r in rows:
+        have = str(r.get("name") or "").lower()
+        if name and (name in have or (plain and (plain in have or plain == _plain(have)))):
+            found.append(r)
+    return found
 
 
 KINDS = ("required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg")

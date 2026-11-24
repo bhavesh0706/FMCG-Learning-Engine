@@ -30,6 +30,7 @@ from app.api.org_accounts import router as org_accounts_router
 from app.api.action_plans import router as action_plans_router
 from app.api.projects import admin_router as admin_projects_router
 from app.api.projects import router as projects_router
+from app.api.setup import router as setup_router
 from app.api.access import install_access_control
 from app.api.observability import install_observability
 from app.services.audit import install_audit
@@ -210,7 +211,8 @@ app.include_router(
 # Next update: Recipe Master, master lists, survey form approval, report review chain, exports,
 # action plans, and Projects (Super Admin portal: /org/projects)
 for _router in (recipe_master_router, masters_router, lov_router, report_reviews_router, report_exports_router,
-                custom_reports_router, org_accounts_router, action_plans_router, projects_router, admin_projects_router):
+                custom_reports_router, org_accounts_router, action_plans_router, projects_router, admin_projects_router,
+                setup_router):
     app.include_router(_router)
 
 # Encrypted recordings: public key, passkey-authorised playback, recording passkeys

@@ -240,17 +240,23 @@ def _existing_product(client, db, org, admin):
 
 
 def test_survey_persons_see_only_products_assigned_to_them(client, db, org, admin):
-    """Even an older product (surveyed before rounds existed) is shown only to the survey persons its
-    Admin assigned: nobody else, and never once it is inactive."""
+    """A survey person sees (and surveys) a product only while its survey is collecting and assigns
+    them: an older product whose surveys are all complete is not offered, even when assigned; nobody
+    else sees it, and never once it is inactive."""
     pid = _existing_product(client, db, org, admin)
     riya, amit = make_user(db, name="Riya Field"), make_user(db, name="Amit Field")
     assert pid not in _ids(client, riya) and pid not in _ids(client, amit) and pid in _ids(client, admin)
     assert _survey(client, db, riya, pid).status_code == 403, "not assigned: can't survey it"
     assert client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]}).status_code == 200
+    assert pid not in _ids(client, riya), "its surveys are all complete: nothing is collecting"
+    # (a survey recorded offline may still upload within LATE_UPLOAD_GRACE of the round closing)
+    # the Super Admin starts a new survey and the Admin assigns Riya: now it's offered to her only
+    assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5}).status_code == 201
+    client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]})
     assert pid in _ids(client, riya) and pid not in _ids(client, amit)
     assert _survey(client, db, amit, pid).status_code == 403
     made = _survey(client, db, riya, pid)
-    assert made.status_code == 201 and made.json()["round"] == 1
+    assert made.status_code == 201 and made.json()["round"] == 2
     from app.database.models import Product
 
     db.get(Product, pid).is_active = 0
@@ -262,7 +268,7 @@ def test_a_new_recipe_version_needs_the_super_admin_to_start_its_round(client, d
     pid = _existing_product(client, db, org, admin)
     riya = make_user(db)
     client.put(f"/admin/products/{pid}/executives", headers=auth(admin), json={"user_ids": [riya.id]})
-    assert pid in _ids(client, riya)
+    assert pid not in _ids(client, riya), "its surveys are complete: nothing to survey until a new one starts"
     assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=RECIPE_V2).status_code == 200
     assert pid not in _ids(client, riya), "no survey of the new version is collecting yet"
     assert client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={"target": 5}).status_code == 201
