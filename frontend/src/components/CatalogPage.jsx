@@ -12,6 +12,7 @@ import Modal from "./Modal";
 import {
   catalogError,
   createCategory,
+  nextCategoryCode,
   createProduct,
   createQuestion,
   deleteCategoryPermanently,
@@ -107,13 +108,18 @@ function productStatus(p) {
 function CategoryDialog({ category, onClose, onSaved }) {
   const [name, setName] = useState(category?.name || "");
   const [description, setDescription] = useState(category?.description || "");
-  // Unique per category; empty on a new category = the next PRJ-#### is generated.
-  const [projectId, setProjectId] = useState(category?.project_id || "");
+  // The category code is automatic: a new category gets the lowest free CAT-#### (shown here,
+  // given by the server when it is saved); an existing category keeps its own.
+  const [code, setCode] = useState(category?.project_id || "");
+  useEffect(() => {
+    if (category) return undefined;
+    let alive = true;
+    nextCategoryCode().then((d) => alive && setCode(d?.code || "")).catch(() => {});
+    return () => { alive = false; };
+  }, [category]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const pid = projectId.trim();
-  const pidOk = !pid || /^[A-Za-z0-9][A-Za-z0-9_\-/.]*$/.test(pid);
-  const valid = name.trim().length >= 2 && pidOk && (!category || pid);
+  const valid = name.trim().length >= 2;
 
   const save = async () => {
     if (!valid) return;
@@ -121,7 +127,6 @@ function CategoryDialog({ category, onClose, onSaved }) {
     setError("");
     try {
       const body = { name: name.trim(), description: description.trim() || null };
-      if (pid) body.project_id = pid;
       const saved = category ? await updateCategory(category.id, body) : await createCategory(body);
       onSaved(saved, category ? "Category updated." : `Category "${saved.name}" created. Now add its products.`);
     } catch (err) {
@@ -150,11 +155,9 @@ function CategoryDialog({ category, onClose, onSaved }) {
           onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
       </label>
       <label className="field">
-        <span className="field-label">Category code{category ? <> <span className="req" aria-hidden="true">*</span></> : ""}</span>
-        <input className="input" value={projectId} maxLength={50}
-          placeholder={category ? "e.g. CAT-0001" : "Leave empty to create one (CAT-0001, CAT-0002 …)"}
-          onChange={(e) => setProjectId(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} />
-        {!pidOk && <span className="form-error">Use letters, numbers and - _ / . only (no spaces).</span>}
+        <span className="field-label">Category code</span>
+        <input className="input" value={code} readOnly disabled aria-readonly="true" placeholder="CAT-0001" />
+        <span className="muted small">{category ? "Fixed for this category." : "Given automatically: the next free number."}</span>
       </label>
       <label className="field">
         <span className="field-label">Description</span>

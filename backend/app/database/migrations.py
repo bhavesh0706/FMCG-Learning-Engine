@@ -185,6 +185,7 @@ def category_project_id() -> None:
                 moved += 1
         if moved:
             print(f"Database updated: {moved} category code(s) PRJ-#### renamed to CAT-#### (PRJ- codes are for projects now)")
+    category_codes_unique()
     if not _has_index("categories", "ix_categories_project_id"):
         try:
             with engine.begin() as conn:
@@ -749,3 +750,43 @@ def recipe_codes() -> None:
             highest += 1
             conn.execute(text("UPDATE recipe_versions SET recipe_code = :c WHERE record_no = :r"), {"c": f"RCP-{highest:04d}", "r": rid})
     print(f"Database updated: {len(missing)} recipe version(s) got a recipe code (RCP-####)")
+
+
+def category_codes_unique() -> None:
+    """Every category has its own CAT-#### number. Codes in another form (CAT-5, CAT-005) become
+    CAT-0005; when two categories share a number (e.g. a hand-typed CAT-005 next to CAT-0005), the
+    older category keeps it and the newer one gets the lowest free number. Safe to repeat."""
+    import re as _re
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT record_no, name, project_id FROM categories WHERE project_id IS NOT NULL "
+                                 "ORDER BY record_no")).all()
+        number_of = {}
+        for rid, _name, code in rows:
+            m = _re.fullmatch(r"(?i)CAT-0*(\d+)", (code or "").strip())
+            if m and int(m.group(1)) > 0:
+                number_of[rid] = int(m.group(1))
+        kept, duplicates = {}, []
+        for rid, name, code in rows:
+            n = number_of.get(rid)
+            if n is None:
+                continue
+            if n in kept.values():
+                duplicates.append((rid, name, code))
+            else:
+                kept[rid] = n
+        used = set(kept.values())
+        changes = []
+        for rid, name, code in duplicates:  # first move the duplicates to free numbers
+            n = 1
+            while n in used:
+                n += 1
+            used.add(n)
+            conn.execute(text("UPDATE categories SET project_id = :p WHERE record_no = :r"), {"p": f"CAT-{n:04d}", "r": rid})
+            changes.append(f"{name}: {code} -> CAT-{n:04d} (its number was used by an older category)")
+        for rid, name, code in rows:  # then write the others in the standard form
+            if rid in kept and code != f"CAT-{kept[rid]:04d}":
+                conn.execute(text("UPDATE categories SET project_id = :p WHERE record_no = :r"), {"p": f"CAT-{kept[rid]:04d}", "r": rid})
+                changes.append(f"{name}: {code} -> CAT-{kept[rid]:04d}")
+    if changes:
+        print("Database updated: category codes made unique (CAT-####): " + "; ".join(changes))

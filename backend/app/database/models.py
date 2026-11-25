@@ -690,16 +690,21 @@ PROJECT_ID_PREFIX = "CAT-"  # category codes ("PRJ-" codes belong to projects)
 
 
 def next_project_id(connection, taken=()) -> str:
-    """The next free PRJ-#### (one higher than the highest one in use or in `taken`)."""
+    """The category code a new category gets: the lowest free CAT-#### number (not in use and not in
+    `taken`). A deleted category's number is given again: with CAT-0001..CAT-0005 in use, the next
+    is CAT-0006, also after CAT-0006 was deleted; a gap (CAT-0003 deleted) is filled first."""
     from sqlalchemy import select
 
-    highest = 0
+    used = set()
     stored = connection.execute(select(Category.project_id).where(Category.project_id.like(f"{PROJECT_ID_PREFIX}%"))).scalars()
     for value in [*stored, *taken]:
-        digits = value[len(PROJECT_ID_PREFIX):]
+        digits = (value or "")[len(PROJECT_ID_PREFIX):]
         if digits.isdigit():
-            highest = max(highest, int(digits))
-    return f"{PROJECT_ID_PREFIX}{highest + 1:04d}"
+            used.add(int(digits))
+    number = 1
+    while number in used:
+        number += 1
+    return f"{PROJECT_ID_PREFIX}{number:04d}"
 
 
 def _set_category_project_id(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy event signature)

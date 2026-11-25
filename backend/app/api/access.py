@@ -153,6 +153,7 @@ CLIENT_ALLOWED = [
     ({"PUT", "PATCH", "DELETE"}, r"^/questions/\d+$"),
     # Catalog: read it (the Catalog page) and manage products and categories (ORG_CATALOG)
     ({"GET"}, r"^/categories(/\d+)?$"),
+    ({"GET"}, r"^/categories/next-code$"),  # the code a new category gets (Add category)
     ({"GET"}, r"^/products(/\d+)?$"),
 ] + ORG_CATALOG
 

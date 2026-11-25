@@ -28,6 +28,8 @@ export function catalogError(err, fallback = "Something went wrong. Try again.")
 export const listCategories = (includeInactive = true) =>
   data(api.get("/categories", { params: { include_inactive: includeInactive } }));
 export const createCategory = (body) => change(api.post("/categories", body));
+// The code the next new category gets (the lowest free CAT-####)
+export const nextCategoryCode = () => data(api.get("/categories/next-code"));
 export const updateCategory = (id, body) => change(api.put(`/categories/${id}`, body));
 
 // Products

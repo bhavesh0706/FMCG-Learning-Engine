@@ -6,6 +6,7 @@ for a product or question keeps its meaning. Pass include_inactive=true to see
 deactivated items, and PUT is_active=true to restore them.
 """
 
+import re
 from datetime import date
 from typing import List, Literal, Optional
 
@@ -343,14 +344,22 @@ def _get_or_404(db: Session, model, obj_id: int, label: str):
     if not obj:
         raise HTTPException(status_code=404, detail=f"{label} not found.")
     return obj
+def canonical_category_code(code: Optional[str]) -> Optional[str]:
+    """CAT-5, cat-005 and CAT-0005 are the same code: written CAT-0005. Other codes stay as typed."""
+    m = re.fullmatch(r"(?i)CAT-0*(\d+)", (code or "").strip())
+    return f"CAT-{int(m.group(1)):04d}" if m and int(m.group(1)) > 0 else code
+
+
 def _project_id_free(db: Session, project_id: Optional[str], category_id: Optional[int] = None) -> None:
-    """409 when another category already has this project ID (compared without case)."""
+    """409 when another category already has this code: compared without case and by number for
+    CAT- codes (CAT-005 and CAT-0005 are the same code)."""
     if not project_id:
         return
-    q = db.query(Category).filter(func.lower(Category.project_id) == project_id.lower())
+    wanted = (canonical_category_code(project_id) or "").lower()
+    q = db.query(Category).filter(Category.project_id.isnot(None))
     if category_id is not None:
         q = q.filter(Category.id != category_id)
-    other = q.first()
+    other = next((c for c in q if (canonical_category_code(c.project_id) or "").lower() == wanted), None)
     if other is not None:
         raise HTTPException(status_code=409, detail=f'Category code "{project_id}" is already used by the category "{other.name}".')
 
@@ -427,8 +436,9 @@ def _tell_admins(db: Session, request: Request, entity: str, action: str, name: 
 
 @router.post("/categories", status_code=201)
 def create_category(body: CategoryIn, request: Request, db: Session = Depends(get_db)):
-    _project_id_free(db, body.project_id)
-    category = Category(name=body.name, description=body.description, project_id=body.project_id)
+    code = canonical_category_code(body.project_id)
+    _project_id_free(db, code)
+    category = Category(name=body.name, description=body.description, project_id=code)
     if body.default_plan:  # the default recipe plan of this project's products
         from app.services.action_plans import PlanError, clean_plan
 
@@ -442,6 +452,15 @@ def create_category(body: CategoryIn, request: Request, db: Session = Depends(ge
     audit.note(request, target_id=category.id, summary=f"Added category #{category.id} ({category.name})")
     _tell_admins(db, request, "category", "added", category.name, category_id=category.id)
     return _category_out(category)
+
+
+@router.get("/categories/next-code")
+def next_category_code(db: Session = Depends(get_db)):
+    """The code the next new category gets (shown in the Add category dialog; the server assigns
+    it when the category is saved)."""
+    from app.database.models import next_project_id
+
+    return {"code": next_project_id(db.connection())}
 
 
 @router.get("/categories/{category_id}")
@@ -466,6 +485,7 @@ def update_category(category_id: int, body: CategoryUpdate, request: Request, db
     before = {"name": category.name, "description": category.description, "project_id": category.project_id,
               "is_active": bool(category.is_active)}
     if data.get("project_id"):
+        data["project_id"] = canonical_category_code(data["project_id"])
         _project_id_free(db, data["project_id"], category.id)
         category.project_id = data["project_id"]
     if "name" in data and data["name"]:
