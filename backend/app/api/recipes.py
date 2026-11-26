@@ -102,14 +102,16 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
                 "message": (f"Recipe v{latest.version} has no consumer responses yet: edit it directly. "
                             "A new version is added only after consumers have tested the current one.")
                 if latest is not None else "Save the first recipe first."})
-        live = live_survey_lock(db, [product.id])
-        if live:  # the version being tested stays the product's current recipe until its survey ends
-            raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": live})
     elif is_locked:
         raise HTTPException(status_code=409, detail={
             "code": "recipe_version_locked", "version": latest.version,
             "message": f"Recipe v{latest.version} has consumer responses, so it is locked. "
                        "Use Add new recipe version to change the recipe."})
+    # While a survey is collecting, the recipe it tests can't change at all (in place or as a new
+    # version): consumers must all taste the same recipe. The lock ends when that survey ends.
+    live = live_survey_lock(db, [product.id])
+    if live:
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": live})
     recipe = body.model_dump()
     for extra in ("new_version", "approve_financials", "recommendation_decisions"):
         recipe.pop(extra, None)

@@ -9,6 +9,9 @@ from conftest import _unique, auth, make_user
 
 from app.database.models import AuditLog, Category, Notification, Product, SurveyRound
 
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
+
 LASSI = [("Set curd / dahi", 55, 68), ("Mango pulp, Alphonso", 20, 125), ("Toned milk", 14.5, 56), ("Sugar (refined)", 8.5, 46),
          ("Potable water", 1.62, 0.5), ("Pectin, high-methoxyl", 0.3, 1850), ("Cardamom powder", 0.05, 2600), ("Saffron extract", 0.03, 9500)]
 

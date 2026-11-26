@@ -16,6 +16,9 @@ from conftest import _unique, answers_payload, auth, make_user
 
 from app.database.models import ProductAssignment, SurveyRound, SurveyResponse
 
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
+
 RECIPE = {"batch_size": "10 L", "ingredients": [{"name": "Lemon juice", "quantity": "10", "unit": "L"}]}
 RECIPE_V2 = {**RECIPE, "ingredients": [{"name": "Lemon juice", "quantity": "9.2", "unit": "L"}, {"name": "Water", "quantity": "0.8", "unit": "L"}]}
 

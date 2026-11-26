@@ -1,6 +1,11 @@
 """A product's first recipe version number, chosen when the product is added."""
 
+import pytest
+
 from conftest import _unique, auth, make_user
+
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
 
 RECIPE = {"batch_size": "10 kg", "ingredients": [{"name": "Milk", "quantity": "8", "unit": "kg"}, {"name": "Sugar", "quantity": "2", "unit": "kg"}]}
 

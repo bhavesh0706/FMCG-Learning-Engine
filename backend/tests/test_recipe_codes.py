@@ -1,8 +1,13 @@
 """Every saved recipe version gets a recipe code RCP-0001, RCP-0002 ... (shown in the portal)."""
 
+import pytest
+
 import re
 
 from conftest import _unique, auth, make_user
+
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
 
 CODE = re.compile(r"^RCP-\d{4}$")
 

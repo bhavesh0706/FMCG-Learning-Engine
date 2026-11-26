@@ -1,10 +1,15 @@
 """Projects (Super Admin): one project per product VERSION, made by hand on the Add project page
 (never automatically), status from the survey rounds of that version, linked to the catalog."""
 
+import pytest
+
 from conftest import open_round, start_project, staff_project  # noqa: F401
 from conftest import _unique, auth, make_user
 
 from app.database.models import Product, Project, RecipeVersion
+
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
 
 RECIPE = {"batch_size": "100 kg", "ingredients": [{"name": "Water", "quantity": "100", "unit": "kg"}]}
 SWEETER = {"batch_size": "100 kg", "ingredients": [{"name": "Water", "quantity": "98", "unit": "kg"},

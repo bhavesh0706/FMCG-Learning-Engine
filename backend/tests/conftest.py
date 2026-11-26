@@ -287,3 +287,40 @@ def _recipe_change(client, db, headers, product_id, body, RecipeVersion, Respond
             db.delete(stand_in)
             db.delete(who)
             db.commit()
+
+@pytest.fixture()
+def legacy_recipe_versions(monkeypatch):
+    """For tests written when every recipe change made a new version.
+
+    Today a version is corrected in place until a consumer has responded to it, and only
+    "Add new recipe version" (new_version: true) makes the next one (tests/test_recipe_version_lock.py).
+    With this fixture, changing a recipe that already has a version does what a person does once
+    consumers have tested it: it saves with new_version: true while that version counts as tested
+    (no survey data is invented). A test that sends new_version itself is left alone.
+    """
+    import re as _re
+
+    from app.services import recipe_versions as rv
+
+    real_put = TestClient.put
+
+    def put(self, url, *args, **kwargs):
+        body = kwargs.get("json")
+        m = _re.fullmatch(r"/products/(\d+)/recipe", str(url))
+        if not m or not isinstance(body, dict) or "new_version" in body:
+            return real_put(self, url, *args, **kwargs)
+        s = SessionLocal()
+        try:
+            has_version = rv.latest_version_row(s, int(m.group(1))) is not None
+        finally:
+            s.close()
+        if not has_version:
+            return real_put(self, url, *args, **kwargs)
+        real_locked = rv.version_locked
+        rv.version_locked = lambda *a, **k: True
+        try:
+            return real_put(self, url, *args, **{**kwargs, "json": {**body, "new_version": True, "approve_financials": True}})
+        finally:
+            rv.version_locked = real_locked
+
+    monkeypatch.setattr(TestClient, "put", put)

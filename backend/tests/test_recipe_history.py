@@ -7,9 +7,14 @@ Versions saved by admins before that rule exist in older databases: they are
 created here directly in the database (_legacy_admin_version).
 """
 
+import pytest
+
 from conftest import auth, make_user, open_round
 
 from app.database.models import Notification, Product, RecipeVersion
+
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
 
 BASE = {
     "batch_size": "10 trays",

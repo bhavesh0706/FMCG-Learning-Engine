@@ -20,6 +20,9 @@ from app.database.models import (
     User,
 )
 
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
+
 RECIPE = {
     "batch_size": "10 trays",
     "ingredients": [{"name": "Oats", "quantity": "6", "unit": "kg"}, {"name": "Sugar", "quantity": "0.8", "unit": "kg"}],

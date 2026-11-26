@@ -1,9 +1,14 @@
 """Permanently deleting a product created by mistake removes everything that belongs only to it."""
 
+import pytest
+
 from conftest import _unique, auth, make_user
 
 from app.database.models import (ActionPlan, ActionPlanMember, Product, ProductAssignment, RecipeAttachment, RecipeStandard,
                                   RecipeVersion, SurveyQuestion, SurveyRound)
+
+# Written for "every recipe change is a new version" (see conftest.legacy_recipe_versions).
+pytestmark = pytest.mark.usefixtures("legacy_recipe_versions")
 
 RECIPE = {"batch_size": "100 kg", "ingredients": [{"name": "Curd", "quantity": "80", "unit": "kg"}, {"name": "Mango", "quantity": "20", "unit": "kg"}]}
 
