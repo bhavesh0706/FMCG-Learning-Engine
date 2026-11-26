@@ -20,8 +20,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-TO_KG = {"kg": 1.0, "kgs": 1.0, "g": 0.001, "gm": 0.001, "gms": 0.001, "gram": 0.001, "grams": 0.001,
-         "mg": 0.000001, "l": 1.0, "ltr": 1.0, "litre": 1.0, "liter": 1.0, "ml": 0.001}
+# Units of measure and their factors come from Other Master > Measurement unit (services/units.py):
+# a live, read-only mapping {unit or spelling: kg per unit}. No unit is listed in code.
+from app.services.units import TO_KG  # noqa: E402
 
 
 def _number(value) -> Optional[float]:
@@ -53,18 +54,15 @@ def _band_limit(batch_kg: float) -> str:
     return f"batches over {TOLERANCE_BANDS[-1][0]} kg"
 
 
-_BATCH_UNITS = {"kg": 1.0, "kgs": 1.0, "kilo": 1.0, "kilos": 1.0, "kilogram": 1.0, "kilograms": 1.0,
-                "g": 0.001, "gm": 0.001, "gms": 0.001, "gram": 0.001, "grams": 0.001,
-                "t": 1000.0, "ton": 1000.0, "tons": 1000.0, "tonne": 1000.0, "tonnes": 1000.0,
-                "quintal": 100.0, "quintals": 100.0, "l": 1.0, "ltr": 1.0, "litre": 1.0, "liter": 1.0}
 
 
 def batch_weight_kg(batch_size) -> Optional[float]:
     """The batch weight from its text: the first number with a weight unit
     ("100 kg batch = 500 bottles" -> 100; "1.5 tonnes" -> 1500). None if there is none."""
-    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([a-z]+)", str(batch_size or "").lower().replace(",", "")):
-        if m.group(2) in _BATCH_UNITS:
-            value = float(m.group(1)) * _BATCH_UNITS[m.group(2)]
+    # The unit: letters, including µ (µg, µL); its factor from the Measurement unit master.
+    for m in re.finditer(r"(\d+(?:\.\d+)?)\s*([^\W\d_]+)", str(batch_size or "").lower().replace(",", "")):
+        if m.group(2) in TO_KG:
+            value = float(m.group(1)) * TO_KG[m.group(2)]
             return value if value > 0 else None
     return None
 
@@ -149,6 +147,7 @@ def costing(recipe: Optional[dict]) -> dict:
         cost = float(cost) if isinstance(cost, (int, float)) else _number(cost)
         rows.append({
             "name": ing.get("name"),
+            "kg": round(kg[i], 9) if i in kg else None,  # its weight in the batch (custom quantity rules; µg-precise)
             "usage_pct": round(usage, 2) if usage is not None else None,
             "cost_per_kg": cost,
             "cost_in_use": round(cost * usage / 100, 2) if cost is not None and usage is not None else None,
@@ -186,7 +185,7 @@ def _find(rows: list, name: str) -> list:
     return found
 
 
-KINDS = ("required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg")
+KINDS = ("required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg", "custom")
 
 
 def applies(rule, product_id: Optional[int], category_id: Optional[int]) -> bool:
@@ -205,11 +204,24 @@ def _money(v) -> str:
     return f"₹{v:,.2f}"
 
 
+def unit_factor(unit: Optional[str]) -> tuple:
+    """(kg per one `unit`, the unit's name as shown). None/unknown = kg (rules before UOMs)."""
+    u = (unit or "").strip()
+    factor = TO_KG.get(u.lower())
+    return (factor, u) if u and factor else (1.0, "kg")
+
+
+def _num(v: float) -> str:
+    return f"{v:,.6f}".rstrip("0").rstrip(".") if v is not None else "—"
+
+
 def check_rule(rule, cost: dict) -> dict:
-    """One rule against a recipe's costing: expected, actual, MET / NOT MET and the reason."""
+    """One rule against a recipe's costing: expected, actual, MET / NOT MET and the reason.
+    Quantity and cost limits are in the rule's UOM (rule.unit, default kg) and compared in kg."""
     rows = cost["ingredients"]
     kind, ing = rule.kind, (rule.ingredient or "").strip()
     lo, hi = rule.min_value, rule.max_value
+    per_kg, u = unit_factor(getattr(rule, "unit", None))
     ok, expected, actual, reason = False, "", "", ""
     if kind == "required_ingredient":
         found = _find(rows, ing)
@@ -230,20 +242,20 @@ def check_rule(rule, cost: dict) -> dict:
             reason = f"{ing}: {share:.1f}% ({expected})"
         else:
             reason = f"{ing} is {share:.1f}% of the recipe, " + (f"below the minimum {lo:g}%" if lo is not None and share < lo else f"above the maximum {hi:g}%")
-    elif kind == "max_cost_per_kg":  # the WHOLE recipe's cost per kg
-        value = cost["cost_per_kg"]
-        expected = f"Recipe cost at most {_money(hi)}/kg" if hi is not None else "Recipe cost limit"
-        actual = f"{_money(value)}/kg" if value is not None else "Unknown"
-        ok = value is not None and hi is not None and value <= hi
-        reason = (f"Recipe cost {_money(value)}/kg (max {_money(hi)}/kg)" if value is not None
+    elif kind == "max_cost_per_kg":  # the WHOLE recipe's cost, per the rule's UOM (₹ per kg by default)
+        value = cost["cost_per_kg"] * per_kg if cost["cost_per_kg"] is not None else None  # ₹ per UOM
+        expected = f"Recipe cost at most {_money(hi)}/{u}" if hi is not None else "Recipe cost limit"
+        actual = f"{_money(value)}/{u}" if value is not None else "Unknown"
+        ok = value is not None and hi is not None and value <= hi + 1e-9
+        reason = (f"Recipe cost {_money(value)}/{u} (max {_money(hi)}/{u})" if value is not None
                   else "Recipe cost unknown: add Cost per KG to the ingredients")
         if value is not None and not ok:
-            reason = f"Recipe cost {_money(value)}/kg is {_money(value - hi)} above the maximum {_money(hi)}/kg"
+            reason = f"Recipe cost {_money(value)}/{u} is {_money(value - hi)} above the maximum {_money(hi)}/{u}"
         if cost["missing_costs"] and value is not None:
             reason += f" · {len(cost['missing_costs'])} ingredient(s) have no cost yet"
     elif kind == "ingredient_cost_per_kg":  # ONE ingredient's own Cost per KG
         found = _find(rows, ing)
-        expected = f"{ing} at most {_money(hi)}/kg" if hi is not None else f"{ing} cost limit"
+        expected = f"{ing} at most {_money(hi)}/{u}" if hi is not None else f"{ing} cost limit"
         if not found:
             actual, reason = "Not in the recipe", f"No ingredient named like “{ing}”"
         else:
@@ -251,11 +263,33 @@ def check_rule(rule, cost: dict) -> dict:
             if missing:
                 actual, reason = "No Cost per KG", "No Cost per KG for " + ", ".join(missing)
             else:
-                over = [r for r in found if hi is not None and r["cost_per_kg"] > hi]
-                actual = ", ".join(f"{r['name']}: {_money(r['cost_per_kg'])}/kg" for r in found)
+                # The ingredient's Cost per KG, expressed per the rule's UOM (₹/g = ₹/kg × 0.001).
+                over = [r for r in found if hi is not None and r["cost_per_kg"] * per_kg > hi + 1e-9]
+                actual = ", ".join(f"{r['name']}: {_money(r['cost_per_kg'] * per_kg)}/{u}" for r in found)
                 ok = hi is not None and not over
-                reason = (f"{found[0]['name']} costs {_money(found[0]['cost_per_kg'])}/kg (max {_money(hi)}/kg)" if ok
-                          else "; ".join(f"{r['name']} costs {_money(r['cost_per_kg'])}/kg, {_money(r['cost_per_kg'] - hi)} above the maximum {_money(hi)}/kg" for r in over))
+                reason = (f"{found[0]['name']} costs {_money(found[0]['cost_per_kg'] * per_kg)}/{u} (max {_money(hi)}/{u})" if ok
+                          else "; ".join(f"{r['name']} costs {_money(r['cost_per_kg'] * per_kg)}/{u}, "
+                                         f"{_money(r['cost_per_kg'] * per_kg - hi)} above the maximum {_money(hi)}/{u}" for r in over))
+    elif kind == "custom" and ing:  # custom rule: one ingredient's quantity within min and/or max, in the rule's UOM
+        found = _find(rows, ing)
+        range_text = (f"{_num(lo)}-{_num(hi)} {u}" if lo is not None and hi is not None else f"at least {_num(lo)} {u}" if lo is not None
+                      else f"at most {_num(hi)} {u}" if hi is not None else "any quantity")
+        expected = f"{ing}: {range_text}"
+        weights = [r["kg"] for r in found if r.get("kg") is not None]
+        if not found:
+            actual, reason = "Not in the recipe", f"No ingredient named like “{ing}”"
+        elif not weights:
+            actual, reason = "No quantity", f"{ing} has no quantity in a weight or volume unit"
+        else:
+            total = sum(weights) / per_kg  # the recipe's quantity, in the rule's UOM
+            eps = 1e-9 * max(1.0, abs(total))
+            ok = (lo is None or total >= lo - eps) and (hi is None or total <= hi + eps)
+            actual = f"{_num(total)} {u}"
+            reason = (f"{ing} is {_num(total)} {u} (within {range_text})" if ok else
+                      f"{ing} is {_num(total)} {u}, " + (f"above the maximum {_num(hi)} {u}" if hi is not None and total > hi
+                                                          else f"below the minimum {_num(lo)} {u}"))
+    elif kind == "custom":  # an older written rule (no ingredient): listed for people to check, never blocks
+        ok, expected, actual, reason = True, rule.name, "Checked manually", "Written rule: checked by people, not by the system"
     elif kind == "costs_complete":
         missing = cost["missing_costs"]
         expected, ok = "Every ingredient has a Cost per KG", not missing

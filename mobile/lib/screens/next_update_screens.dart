@@ -31,6 +31,7 @@ class NextApi {
     connectTimeout: const Duration(seconds: 20),
     receiveTimeout: const Duration(seconds: 60),
   ))
+    ..interceptors.add(Session.refreshOnUnauthorized()) // an expired token renews (no password)
     ..interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
       final token = Session.token;
       if (token != null && token.isNotEmpty) options.headers['Authorization'] = 'Bearer $token';

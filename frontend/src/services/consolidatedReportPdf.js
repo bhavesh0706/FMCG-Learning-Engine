@@ -271,6 +271,30 @@ export function buildClientSections(stats, narrative, n) {
       note: "Test changes in small batches with your food technologist before changing production.",
     });
   }
+  // What those recipe recommendations would cost (computed on the server; an estimate, nothing changed)
+  const cc = nv.cost_comparison;
+  if (cc && Array.isArray(cc.rows)) {
+    const rs = (v) => (v == null ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`);
+    const kg = (v) => (v == null ? "—" : `${+Number(v).toFixed(3)} kg`);
+    const sign = (v, fmt) => (v == null ? "—" : Number(v) === 0 ? "no change" : `${Number(v) > 0 ? "+" : "−"}${fmt(Math.abs(v))}`);
+    const changed = cc.rows.filter((r) => r.status !== "same");
+    out.push({
+      title: "Cost comparison",
+      sub: `If the recipe recommendations above are applied${cc.recipe_version ? ` to recipe v${cc.recipe_version}` : ""}: an estimate before any change.`,
+      table: {
+        head: ["Ingredient", "Quantity", "Cost per KG", "Batch cost", "Change"],
+        rows: [
+          ...changed.map((r) => ({ cells: [r.ingredient, `${kg(r.old_kg)} → ${kg(r.new_kg)}`, rs(r.new_cost_per_kg), `${rs(r.old_batch_cost)} → ${rs(r.new_batch_cost)}`, sign(r.batch_cost_change, rs)] })),
+          { cells: ["Total batch cost", "", "", `${rs(cc.old.batch_cost)} → ${rs(cc.new.batch_cost)}`, sign(cc.change.batch_cost, rs)] },
+          { cells: ["Product cost per kg", "", "", `${rs(cc.old.cost_per_kg)} → ${rs(cc.new.cost_per_kg)}`, sign(cc.change.cost_per_kg, rs)] },
+          ...(cc.new.margin_pct != null
+            ? [{ cells: ["Margin", "", "", `${cc.old.margin_pct}% → ${cc.new.margin_pct}%`, sign(cc.change.margin_pct, (v) => `${v} pts`)] }] : []),
+        ],
+      },
+      points: (cc.warnings || []).filter((w) => w.code !== "costs_incomplete").map((w) => ({ text: w.message, tone: "concern" })),
+      note: "Decide in Recipe > Add new recipe version: apply or reject each change and check the cost before releasing it.",
+    });
+  }
   return out;
 }
 

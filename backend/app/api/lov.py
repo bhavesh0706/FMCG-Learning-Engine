@@ -69,8 +69,11 @@ def add_value(master_code: str, body: LovIn, request: Request, db: Session = Dep
     master = db.query(OtherMasterName).filter(OtherMasterName.master_code == master_code.upper()).first()
     if master is None:
         raise HTTPException(status_code=404, detail="Unknown list.")
-    if master.is_system:
-        raise HTTPException(status_code=409, detail=f"{master.master_name} is used by the program: values can be renamed, not added.")
+    from app.api.other_masters import may_add
+
+    problem = may_add(master)  # Active + Add Value (Other Master Data), system lists closed
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
     label = _clean(body.label)
     parent = None
     if master.parent_master_id:
@@ -78,6 +81,8 @@ def add_value(master_code: str, body: LovIn, request: Request, db: Session = Dep
         if parent is None or parent.master_id != master.parent_master_id:
             owner = db.get(OtherMasterName, master.parent_master_id)
             raise HTTPException(status_code=422, detail=f"Choose the {owner.master_name.lower()} this {master.master_name.lower()} belongs to.")
+    if parent is not None and (parent.extra or {}).get("base"):
+        raise HTTPException(status_code=409, detail="A unit of measure needs its conversion factor: add it in Master.")
     code = _clean(body.code) if body.code and body.code.strip() else (f"{parent.data_code}/{label}" if parent else label)
     if not re.fullmatch(r"[\w .\-/&()]+", code):
         raise HTTPException(status_code=422, detail="The code may contain letters, numbers, spaces and . - / & ( ) only.")
@@ -92,6 +97,9 @@ def add_value(master_code: str, body: LovIn, request: Request, db: Session = Dep
                         sort_order=max((r.sort_order for r in siblings), default=-1) + 1)
     db.add(v)
     db.commit()
+    from app.services import units
+
+    units.invalidate()
     audit.note(request, summary=f"Added “{label}” to {master.master_name}" + (f" ({parent.data_value})" if parent else ""))
     return _value(v)
 
@@ -102,6 +110,11 @@ def change_value(value_id: int, body: LovPatch, request: Request, db: Session = 
     master = db.get(OtherMasterName, v.master_id) if v else None
     if v is None or master is None:
         raise HTTPException(status_code=404, detail="Value not found.")
+    from app.api.other_masters import may_edit
+
+    problem = may_edit(master)  # Active + Can Edit (Other Master Data)
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
     if body.is_active is not None and master.is_system and not body.is_active:
         raise HTTPException(status_code=409, detail=f"{master.master_name} is used by the program: values can't be hidden.")
     if body.label is not None:
@@ -111,5 +124,8 @@ def change_value(value_id: int, body: LovPatch, request: Request, db: Session = 
     if body.is_active is not None:
         v.is_active = 1 if body.is_active else 0
     db.commit()
+    from app.services import units
+
+    units.invalidate()
     audit.note(request, summary=f"Changed “{v.data_value}” in {master.master_name}")
     return _value(v)

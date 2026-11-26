@@ -188,6 +188,11 @@ def _tone(rec: FeedbackRecord) -> str:
     return rec.tone or response_tone(rec.overall_sentiment, None, rec.overall_rating)
 
 
+def _with_costs(r):
+    from app.services.recipe_economics import with_cost_comparison
+    return with_cost_comparison(r, r.narrative)
+
+
 def _report_out(r: ConsolidatedReport) -> dict:
     return {
         "id": r.id,
@@ -197,7 +202,7 @@ def _report_out(r: ConsolidatedReport) -> dict:
         "response_ids": r.response_ids,
         "overall_rating": r.overall_rating,
         "stats": r.stats,
-        "narrative": r.narrative,
+        "narrative": _with_costs(r),
         "filters": r.filters,
         "generated_at": _iso(r.generated_at),
     }

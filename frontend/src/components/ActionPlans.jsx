@@ -30,7 +30,7 @@ export const planBody = (form) => ({
   persons_needed: null, // no longer asked: the Admin allocates the team
   start_date: form.start_date || null,
   end_date: form.end_date || null,
-  cities: form.cities || [],
+  // no cities: where to survey is decided by the Admin for each survey person (team allocation)
   audience: form.audience || null,
   notes: form.notes?.trim() || null,
 });
@@ -127,10 +127,6 @@ export function PlanFields({ value, onChange, idPrefix = "plan", limit = null })
           min={value.start_date && value.start_date > today ? value.start_date : today}
           onChange={(d) => onChange({ ...value, end_date: d })} />
       </div>
-      <div className="field is-wide">
-        <span className="field-label">Cities</span>
-        <CitiesInput id={`${idPrefix}-cities`} value={value.cities} onChange={(cities) => onChange({ ...value, cities })} />
-      </div>
       <label className="field is-wide">
         <span className="field-label">Other requirements</span>
         <textarea className="input" rows={2} value={value.notes} onChange={set("notes")}
@@ -142,13 +138,19 @@ export function PlanFields({ value, onChange, idPrefix = "plan", limit = null })
 
 // `create` (optional) saves a new plan: by default into the product's live survey.
 // `limit`: the most consumers this plan may have (the product's total minus the other plans).
-export function PlanDialog({ productId, plan, onClose, onSaved, create, title, limit = null, total = null }) {
-  const [name, setName] = useState(plan?.name || "");
+// The code the next plan of these plans gets (lowest free PLA###, like the server)
+export const nextPlanCode = (plans) => {
+  const used = new Set((plans || []).map((p) => Number(String(p.code || "").slice(3))).filter(Boolean));
+  let n = 1;
+  while (used.has(n)) n += 1;
+  return `PLA${String(n).padStart(3, "0")}`;
+};
+
+export function PlanDialog({ productId, plan, onClose, onSaved, create, update, title, limit = null, total = null, nextCode = null }) {
   const [form, setForm] = useState(planForm(plan));
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const save = async () => {
-    if (name.trim().length < 2) return setError("Give the plan a name, e.g. “Delhi team”.");
     const problem = planProblem(form, true);
     if (problem) return setError(problem);
     if (limit != null && Number(form.target) > limit) {
@@ -157,8 +159,10 @@ export function PlanDialog({ productId, plan, onClose, onSaved, create, title, l
     }
     setBusy(true);
     try {
-      const body = { name: name.trim(), ...planBody(form) };
-      onSaved(plan ? await updateActionPlan(plan.id, body) : create ? await create(body) : await createActionPlan(productId, body));
+      // the plan's name is its code (PLA001 ...), given by the server; an edit keeps its name
+    const body = plan ? { name: plan.name, ...planBody(form) } : planBody(form);
+      // create / update: given by a page that keeps plans before saving them (Add project); else the server
+      onSaved(plan ? (update ? await update(body) : await updateActionPlan(plan.id, body)) : create ? await create(body) : await createActionPlan(productId, body));
     } catch (e) {
       setError(orgError(e, "The action plan couldn't be saved."));
       setBusy(false);
@@ -166,14 +170,14 @@ export function PlanDialog({ productId, plan, onClose, onSaved, create, title, l
   };
   return (
     <Modal title={plan ? `Edit “${plan.name}”` : title || "Add an action plan"}
-      subtitle="Its own target, dates and cities; the Admin then allocates the team." onClose={onClose}
+      subtitle="Its own target and dates; the Admin then allocates the team and their cities." onClose={onClose}
       footer={<>
         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
         <button type="button" className="btn btn-primary" disabled={busy} onClick={save}>{busy ? "Saving…" : plan ? "Save plan" : "Add plan"}</button>
       </>}>
-      <label className="field">
-        <span className="field-label">Plan name <span className="req" aria-hidden="true">*</span></span>
-        <input className="input" value={name} maxLength={150} onChange={(e) => setName(e.target.value)} placeholder="e.g. Delhi team" />
+      <label className="field plan-code-field">
+        <span className="field-label">Plan name</span>
+        <input className="input" value={plan?.name || nextCode || ""} readOnly disabled aria-readonly="true" placeholder="PLA001" />
       </label>
       {limit != null && (
         <p className="field-hint ap-limit">Up to <strong>{limit}</strong> consumer responses for this plan (response target {total}).</p>
@@ -199,6 +203,7 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
     <article className="plan-card">
       <header className="plan-card-head">
         <div className="plan-card-title">
+          {p.code && p.code !== p.name && <span className="plan-code">{p.code}</span>}
           <h3>{p.name}</h3>
           <span className={`plan-state ${state.tone}`}>{state.label}</span>
         </div>
@@ -284,6 +289,10 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
 export function AllocateDialog({ plan, plans, onClose, onSaved }) {
   const [people, setPeople] = useState(null);
   const planCities = plan.cities || [];
+  // The Admin decides where each survey person surveys: any city (suggestions: the city list, the plan's)
+  const cityKey = planCities.join("|");
+  const citySuggestions = useMemo(() => [...new Set([...cityKey.split("|").filter(Boolean), ...lovValues("CITY").map((v) => v.label)])].sort(),
+    [cityKey]);
   // One row per survey person: who (dropdown), which of the plan's cities (dropdown) and how many
   // consumer responses (dropdown). The rows' responses add up to at most the plan's target.
   const [rows, setRows] = useState(() => plan.members.map((m) => ({ uid: String(m.user_id), cities: m.cities || [], share: m.target ? String(m.target) : "" })));
@@ -311,7 +320,7 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
       .catch((e) => setError(orgError(e, "The team couldn't be loaded.")));
   }, []);
   const setRow = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const addRow = () => setRows((rs) => [...rs, { uid: "", cities: [...planCities], share: "" }]);
+  const addRow = () => setRows((rs) => [...rs, { uid: "", cities: [], share: "" }]);
   const removeRow = (i) => setRows((rs) => rs.filter((_, j) => j !== i));
   const splitEvenly = () => {
     if (!chosenRows.length) return;
@@ -321,7 +330,6 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
   };
   const save = async () => {
     if (rows.some((r) => !r.uid)) return setError("Choose a survey person in every row, or remove the empty row.");
-    if (planCities.length && chosenRows.some((r) => !r.cities.length)) return setError("Choose a city for every survey person.");
     if (shareProblem) return setError(shareProblem);
     setBusy(true);
     try {
@@ -334,7 +342,7 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
   const free = (people || []).filter((u) => !rows.some((r) => r.uid === String(u.id)));
   return (
     <Modal title={`Team for “${plan.name}”`}
-      subtitle={planCities.length ? `Choose each survey person, their city (${planCities.join(", ")}) and responses.` : "Choose each survey person and their responses; this plan has no city limit."}
+      subtitle="Choose each survey person, the city they survey in and their responses (no city: anywhere)."
       onClose={onClose}
       footer={<>
         <span className="muted small ap-count">{chosenRows.length} chosen</span>
@@ -352,9 +360,10 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
         <div className="alloc-rows">
           {rows.length > 0 && (
             <div className="alloc-row alloc-row-head" aria-hidden="true">
-              <span>Survey person</span>{planCities.length > 0 && <span>City</span>}<span>Responses</span><span />
+              <span>Survey person</span><span>City</span><span>Responses</span><span />
             </div>
           )}
+          <datalist id={`alloc-cities-${plan.id}`}>{citySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
           {rows.map((r, i) => {
             const mine = Number(r.share) || 0;
             const most = Math.max(remaining + mine, done[r.uid] || 0, 1);
@@ -370,14 +379,11 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
                   </Select>
                   {taken && <span className="muted small">Also in {taken.map((n) => `“${n}”`).join(", ")}</span>}
                 </span>
-                {planCities.length > 0 && (
-                  <Select className="input" aria-label={`City for survey person ${i + 1}`}
-                    value={r.cities.length === 1 ? r.cities[0] : "__all"}
-                    onChange={(e) => setRow(i, { cities: e.target.value === "__all" ? [...planCities] : [e.target.value] })}>
-                    {planCities.length > 1 && <option value="__all">All plan cities</option>}
-                    {planCities.map((c) => <option key={c} value={c}>{c}</option>)}
-                  </Select>
-                )}
+                <span className="alloc-city">
+                  <input className="input" aria-label={`City for survey person ${i + 1}`} list={`alloc-cities-${plan.id}`}
+                    placeholder="Any city" value={r.cities.join(", ")}
+                    onChange={(e) => setRow(i, { cities: e.target.value.split(",").map((c) => c.trim()).filter(Boolean) })} />
+                </span>
                 <Select className="input" aria-label={`Responses for survey person ${i + 1}`} value={r.share}
                   onChange={(e) => setRow(i, { share: e.target.value })}>
                   <option value="">Responses</option>

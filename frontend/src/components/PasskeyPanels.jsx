@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import axios from "axios";
 import { API_BASE_URL } from "../config";
 import { generatePasskey, passkeyProblem } from "../services/recordingCrypto";
+import Modal from "./Modal";
 
 /*
   The recording passkey chain (backend api/recordings.py):
-    Super Admin  sets the ONE passkey (Products page) and sends it to Admins   -> OrgPasskeyCard
+    Super Admin  sets the ONE passkey (Products page) and sends it to Admins   -> OrgPasskeyButton (popup)
     Admin        sees it once, then passes it on to survey persons (Team page) -> AdminPasskeyPanel
     Survey person enters it to play the recordings of their own surveys (ProtectedRecording)
   The Super Admin and Admins play recordings without it. Only its hash is stored; a sent passkey
@@ -105,6 +106,80 @@ export function OrgPasskeyCard() {
         </div>
       )}
     </section>
+  );
+}
+
+/* Super Admin, Products page: one header button ("Set passkey" / "Change passkey") that opens the
+   recording passkey in a popup: set or change it, then copy it and send it to the Admins. */
+export function OrgPasskeyButton() {
+  const [state, reload] = useLoad("/org/recording-passkey");
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [fresh, setFresh] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);
+  if (state.loading || state.error) return null;
+  const status = state.data;
+  const admins = status.admins || [];
+  const close = () => { setOpen(false); setDraft(""); setFresh(""); setNote(null); };
+  const run = async (work, ok) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      await work();
+      setNote({ tone: "ok", text: ok });
+      reload();
+    } catch (e) {
+      setNote({ tone: "error", text: reason(e, "That didn't work. Try again.") });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const save = () => run(async () => {
+    await api.put("/org/recording-passkey", { passkey: draft.trim() });
+    setFresh(draft.trim());
+    setDraft("");
+  }, "Passkey saved. Send it to your Admins now: it's shown only this once.");
+  const send = () => run(() => api.post("/org/recording-passkey/share", { passkey: fresh, user_ids: admins.map((a) => a.user_id) }),
+    `Passkey sent to ${plural(admins.length, "Admin")}. Each sees it once, then passes it on to their survey persons.`);
+  return (
+    <>
+      <button type="button" className="btn btn-secondary" onClick={() => setOpen(true)}>
+        {status.has_passkey ? "Change passkey" : "Set passkey"}
+      </button>
+      {open && (
+        <Modal title={status.has_passkey ? "Change recording passkey" : "Set recording passkey"} onClose={close}
+          subtitle={`${status.has_passkey ? `Current passkey ends in “…${status.hint}”. ` : "Not set yet. "}Survey persons need it to play the recordings of their own surveys; you and your Admins don't.`}
+          footer={(
+            <>
+              <button type="button" className="btn btn-secondary" onClick={close}>{fresh ? "Done" : "Cancel"}</button>
+              {!fresh && <button type="button" className="btn btn-primary" onClick={save} disabled={busy || Boolean(passkeyProblem(draft))}>Save passkey</button>}
+            </>
+          )}>
+          <Note note={note} />
+          {!fresh ? (
+            <label className="field">
+              <span className="field-label">New passkey</span>
+              <span className="passkey-row">
+                <input className="input passkey-input" value={draft} autoComplete="off" spellCheck={false} autoFocus aria-label="Recording passkey"
+                  placeholder="Generate one, or type at least 8 characters" onChange={(e) => setDraft(e.target.value)} />
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDraft(generatePasskey())}>Generate</button>
+              </span>
+              {draft && passkeyProblem(draft) && <span className="form-error small">{passkeyProblem(draft)}</span>}
+            </label>
+          ) : (
+            <div className="passkey-once" role="status">
+              <span>New passkey (shown only now): <code>{fresh}</code></span>
+              <span className="org-tl-actions">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => copy(fresh)}>Copy</button>
+                <button type="button" className="btn btn-primary btn-sm" onClick={send} disabled={busy || !admins.length}
+                  title={admins.map((a) => a.name).join(", ")}>Send to {plural(admins.length, "Admin")}</button>
+              </span>
+            </div>
+          )}
+        </Modal>
+      )}
+    </>
   );
 }
 

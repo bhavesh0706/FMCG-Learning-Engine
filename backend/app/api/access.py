@@ -52,6 +52,7 @@ PUBLIC = [
     ({"GET"}, r"^/recordings/\d+/stream$"),
     ({"POST"}, r"^/auth/setup$"),  # only works while no admin exists
     ({"POST"}, r"^/auth/logout$"),  # ends the sent token if it is still valid; harmless otherwise
+    ({"POST"}, r"^/auth/refresh$"),  # the phone renews its session with its refresh token (no password)
     ({"POST"}, r"^/auth/password-reset/(request|confirm|simple)$"),  # forgot password (Admin, Super Admin)
 ]
 
@@ -154,6 +155,14 @@ CLIENT_ALLOWED = [
     # Catalog: read it (the Catalog page) and manage products and categories (ORG_CATALOG)
     ({"GET"}, r"^/categories(/\d+)?$"),
     ({"GET"}, r"^/categories/next-code$"),  # the code a new category gets (Add category)
+    # Question templates: the Super Admin sets the survey questions (Add project), so it uses
+    # templates, applies them to a product and saves its question sets as templates
+    (None, r"^/question-templates(/|$)"),
+    # Recipe economics: the product's commercial targets, a new version's cost comparison, the
+    # report's recipe recommendations (applied to the new version)
+    ({"PUT"}, r"^/products/\d+/commercials$"),
+    ({"POST"}, r"^/products/\d+/recipe/compare$"),
+    ({"GET"}, r"^/products/\d+/recipe/recommendations$"),
     ({"GET"}, r"^/products(/\d+)?$"),
 ] + ORG_CATALOG
 

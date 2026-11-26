@@ -49,6 +49,11 @@ export const reorderQuestions = (productId, ids) =>
 // Recipe
 export const getRecipe = (productId) => data(api.get(`/products/${productId}/recipe`));
 export const saveRecipe = (productId, recipe) => change(api.put(`/products/${productId}/recipe`, recipe));
+// Recipe economics (server-side calculations): a proposed version against the current one, the
+// product's commercial targets, and the latest report's recipe recommendations ready to apply
+export const compareRecipe = (productId, recipe) => data(api.post(`/products/${productId}/recipe/compare`, { recipe }));
+export const saveCommercials = (productId, body) => data(api.put(`/products/${productId}/commercials`, body));
+export const getRecipeRecommendations = (productId) => data(api.get(`/products/${productId}/recipe/recommendations`));
 
 // Who may survey a product ([] = every executive)
 export const getProductExecutives = (productId) => data(api.get(`/admin/products/${productId}/executives`));
@@ -62,6 +67,11 @@ export const listQuestionTemplates = (categoryId) =>
 export const createQuestionTemplate = (body) => change(api.post("/question-templates", body));
 export const updateQuestionTemplate = (id, body) => change(api.put(`/question-templates/${id}`, body));
 export const removeQuestionTemplate = (id) => change(api.delete(`/question-templates/${id}`));
+// Reuse at Add project: earlier products' question sets, and copying a template's (or a product's)
+// questions into a product as its own independent questions
+export const questionSourceProducts = (excludeProductId) =>
+  data(api.get("/question-templates/products", { params: excludeProductId ? { exclude_product_id: excludeProductId } : {} }));
+export const applyQuestionTemplate = (body) => change(api.post("/question-templates/apply", body));
 
 // Permanent deletion (only for deactivated items with no surveys / no products)
 export const deleteProductPermanently = (id) => change(api.delete(`/products/${id}/permanent`));

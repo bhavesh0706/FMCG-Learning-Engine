@@ -248,6 +248,26 @@ def revoke_token(db: Session, token: str) -> None:
         db.commit()
 
 
+REFRESH_DAYS = int(os.environ.get("FMCG_REFRESH_TOKEN_DAYS", "60"))
+
+
+def issue_refresh_token(db: Session, user: User, device: Optional[str] = None, family: Optional[str] = None) -> str:
+    """A new refresh token for this account and device (only its hash is stored; caller commits)."""
+    from app.database.models import RefreshToken
+    raw = secrets.token_urlsafe(48)
+    now = datetime.utcnow()
+    db.add(RefreshToken(user_id=user.id, token_hash=token_hash(raw), token_version=int(user.token_version or 0),
+                        family=family or secrets.token_hex(16), device=(device or "")[:150] or None,
+                        created_at=now, expires_at=now + timedelta(days=REFRESH_DAYS)))
+    return raw
+
+
+def revoke_refresh_family(db: Session, family: str, reason: str) -> None:
+    from app.database.models import RefreshToken
+    db.query(RefreshToken).filter(RefreshToken.family == family, RefreshToken.revoked_at.is_(None)).update(
+        {"revoked_at": datetime.utcnow(), "revoked_reason": reason}, synchronize_session=False)
+
+
 def sign_out_everywhere(user: User) -> None:
     """Every token issued so far for this account stops working (caller commits)."""
     user.token_version = int(user.token_version or 0) + 1
@@ -369,6 +389,18 @@ class SignupIn(BaseModel):
 class LoginIn(BaseModel):
     identifier: str = Field(min_length=3, max_length=190)
     password: str = Field(min_length=1, max_length=128)
+    # The mobile app: also issue a refresh token, so the phone stays signed in (offline too) and
+    # renews its session in the background without asking for the password again
+    remember_device: bool = False
+    device: Optional[str] = Field(default=None, max_length=150)
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str = Field(min_length=20, max_length=200)
+
+
+class LogoutIn(BaseModel):
+    refresh_token: Optional[str] = Field(default=None, max_length=200)
 
 
 # ============================================================
@@ -523,12 +555,54 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
     db.commit()
     audit.record_from_request(request, action="auth.login", account=_account_of(user), target_type="user",
                               target_id=user.id, summary="Signed in")
-    return {"token": make_token(user), "user": _user_out(user)}
+    out = {"token": make_token(user), "user": _user_out(user)}
+    if body.remember_device:
+        out["refresh_token"] = issue_refresh_token(db, user, body.device)
+        db.commit()
+    return out
+
+
+@router.post("/refresh")
+def refresh(body: RefreshIn, request: Request, db: Session = Depends(get_db)):
+    """The phone renews its session without the password: a valid refresh token gives a new access
+    token and a NEW refresh token (the old one is used up). A used-up token sent again means a copy
+    exists elsewhere: that device sign-in is revoked entirely."""
+    from app.database.models import RefreshToken
+    row = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash(body.refresh_token)).first()
+    now = datetime.utcnow()
+    if row is None:
+        raise HTTPException(status_code=401, detail="This sign-in has ended. Log in again.")
+    if row.revoked_at is not None:
+        if row.revoked_reason == "rotated":  # reuse of a used-up token: end the whole device sign-in
+            revoke_refresh_family(db, row.family, "reused")
+            db.commit()
+        raise HTTPException(status_code=401, detail="This sign-in has ended. Log in again.")
+    user = db.get(User, row.user_id)
+    if row.expires_at < now or user is None or int(row.token_version) != int(user.token_version or 0):
+        revoke_refresh_family(db, row.family, "expired" if row.expires_at < now else "revoked")
+        db.commit()
+        raise HTTPException(status_code=401, detail="This sign-in has ended. Log in again.")
+    if not user.is_active:
+        revoke_refresh_family(db, row.family, "disabled")
+        db.commit()
+        raise HTTPException(status_code=403, detail="This account has been disabled. Contact your admin.")
+    row.used_at, row.revoked_at, row.revoked_reason = now, now, "rotated"
+    new_refresh = issue_refresh_token(db, user, row.device, family=row.family)
+    db.commit()
+    return {"token": make_token(user), "refresh_token": new_refresh, "user": _user_out(user)}
 
 
 @router.post("/logout")
-def logout(request: Request, authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
-    """Sign out on this device: the token stops working at once, not when it expires."""
+def logout(request: Request, body: Optional[LogoutIn] = None, authorization: Optional[str] = Header(default=None),
+           db: Session = Depends(get_db)):
+    """Sign out on this device: the token stops working at once, not when it expires; the device's
+    refresh token (sent by the app) is revoked too."""
+    if body is not None and body.refresh_token:
+        from app.database.models import RefreshToken
+        row = db.query(RefreshToken).filter(RefreshToken.token_hash == token_hash(body.refresh_token)).first()
+        if row is not None:
+            revoke_refresh_family(db, row.family, "logout")
+            db.commit()
     token = _bearer(authorization)
     user = user_for_token(db, token)
     if user is not None:

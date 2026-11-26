@@ -181,6 +181,25 @@ class OfflineAuth {
     return verifiedAt != null && now().toUtc().difference(verifiedAt) <= maxAge;
   }
 
+  /// The account saved for offline sign-in, without the password: used when this phone also holds
+  /// a valid session (refresh token) for the same number. Null when expired or locked.
+  static Future<Map<String, dynamic>?> savedUser(String identifier) async {
+    final data = await _read(identifier);
+    if (data == null || data['user'] is! Map) return null;
+    if (((data['failures'] as num?)?.toInt() ?? 0) >= maxFailures) return null;
+    final verifiedAt = DateTime.tryParse('${data['verified_at']}');
+    if (verifiedAt == null || now().toUtc().difference(verifiedAt) > maxAge) return null;
+    return Map<String, dynamic>.from(data['user'] as Map);
+  }
+
+  /// The server confirmed the session again (refresh): offline sign-in stays allowed for another period.
+  static Future<void> touch(String identifier) async {
+    final data = await _read(identifier);
+    if (data == null) return;
+    data['verified_at'] = now().toUtc().toIso8601String();
+    await _write(identifier, data);
+  }
+
   static Future<void> forget(String identifier) async {
     try {
       await _secure.delete(key: _key(identifier));

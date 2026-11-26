@@ -62,14 +62,17 @@ class PlanBody(BaseModel):
     persons_needed: Optional[int] = None
     start_date: Optional[str] = Field(default=None, max_length=10)
     end_date: Optional[str] = Field(default=None, max_length=10)
-    cities: list = Field(default_factory=list)
+    # Survey locations are the Admin's (team allocation): the Super Admin's plan doesn't send cities,
+    # and a plan saved without them keeps the ones it has (older plans)
+    cities: Optional[list] = None
     audience: Optional[str] = None
     respondent_types: list = Field(default_factory=list)
     notes: Optional[str] = Field(default=None, max_length=2000)
 
 
 class ActionPlanBody(PlanBody):
-    name: str = Field(min_length=1, max_length=150)
+    # The plan's name is its code (PLA001 ...), given automatically: no name needs to be sent
+    name: Optional[str] = Field(default=None, max_length=150)
 
 
 class MembersBody(BaseModel):
@@ -214,10 +217,6 @@ def update_action_plan(plan_id: int, body: ActionPlanBody, request: Request, db:
             floor = sum(done.get((plan.id, m.user_id), 0) for m in members)
             if plan.target < floor:
                 raise P.PlanError(f"The team already submitted {floor} response(s) in this plan: its target can't go below {floor}.", 409)
-        for m in P.members_of(db, [plan.id]).get(plan.id, []):  # keep members' cities inside the plan's
-            if plan.cities and m.cities:
-                kept = [c for c in m.cities if c.lower() in {x.lower() for x in plan.cities}]
-                m.cities = kept or None
     except P.PlanError as e:
         db.rollback()
         _fail(e)

@@ -42,6 +42,7 @@ import AdminProjects from "./components/AdminProjects";
 import OrgPortal, { CompareSection } from "./components/OrgPortal";
 import LoginPage from "./components/LoginPage";
 import NotificationBell from "./components/NotificationBell";
+import OtherMasters from "./components/OtherMasters";
 import { buildClientSections, clientHeadline, downloadConsolidatedPdf, normalizeNarrative } from "./services/consolidatedReportPdf";
 import axios from "axios";
 import { AddMemberDialog, AdminsPanel, CredentialsDialog, ResetPasswordDialog } from "./components/TeamDialogs";
@@ -4625,13 +4626,13 @@ class ResultsBoundary extends Component {
    ================================================================ */
 
 const ROLE_PAGES = {
-  admin: ["home", "history", "projects", "catalog", "team"],
+  admin: ["home", "history", "projects", "catalog", "team", "masters"],
   executive: ["survey", "analyze", "mine"], // "analyze" = step 4 of a survey in progress
 };
 const ROLE_START = { admin: "home", executive: "survey" };
-const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine: "my-surveys", history: "survey-history", projects: "projects", catalog: "catalog", team: "team" };
+const PAGE_SLUG = { home: "home", survey: "take-survey", analyze: "record", mine: "my-surveys", history: "survey-history", projects: "projects", catalog: "catalog", team: "team", masters: "other-masters" };
 const SLUG_PAGE = Object.fromEntries(Object.entries(PAGE_SLUG).map(([k, v]) => [v, k]));
-const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", projects: "Projects", catalog: "Categories", team: "Team" };
+const PAGE_NAME = { home: "Home", survey: "Take survey", analyze: "Record feedback", mine: "My surveys", history: "Survey history", projects: "Projects", catalog: "Categories", team: "Team", masters: "Master" };
 
 const roleOf = (user) => (user?.role === "admin" ? "admin" : user?.role === "client" ? "client" : "executive");
 const ROLE_LABEL = { admin: "Admin", executive: "Survey person", client: "Super Admin" };
@@ -5364,6 +5365,7 @@ function AppContent({ user }) {
     else if (view === "survey") page = "Take survey";
     else if (view === "home") page = "Home";
     else if (view === "team") page = "Team";
+    else if (view === "masters") page = "Master";
     else if (view === "catalog") page = "Categories";
     else if (view === "projects") page = "Projects";
     else if (view === "mine") page = "My surveys";
@@ -5491,6 +5493,17 @@ function AppContent({ user }) {
                   Team
                 </button>
               )}
+              {allowedPages.includes("masters") && (
+                <button
+                  type="button"
+                  className={view === "masters" ? "is-active" : ""}
+                  aria-current={view === "masters" ? "page" : undefined}
+                  onClick={() => { setView("masters"); setSelectedFeedback(null); window.scrollTo({ top: 0 }); }}
+                >
+                  <NavIcon name="masters" />
+                  Master
+                </button>
+              )}
             </nav>
             <NotificationBell
               onOpenHistory={isAdminUser ? goHistory : undefined}
@@ -5559,6 +5572,10 @@ function AppContent({ user }) {
         ) : view === "catalog" ? (
           <ResultsBoundary resetKey="catalog" onRetry={goCatalog}>
             <CatalogPage openRequest={catalogRequest} onOpenRound={openProductRound} />
+          </ResultsBoundary>
+        ) : view === "masters" ? (
+          <ResultsBoundary resetKey="masters">
+            <OtherMasters />
           </ResultsBoundary>
         ) : view === "team" ? (
           <ResultsBoundary resetKey="team" onRetry={goTeam}>

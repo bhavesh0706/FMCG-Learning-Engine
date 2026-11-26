@@ -346,12 +346,16 @@ class _RecipeTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final readOnly = snapshot != null;
     return Loaded<Json>(
-      load: () => readOnly ? Future.value(snapshot!) : OrgApi.recipe(productId),
-      builder: (context, recipe, reload) {
+      load: () => readOnly ? Future.value(<String, dynamic>{'recipe': snapshot}) : OrgApi.recipeFull(productId),
+      builder: (context, data, reload) {
+        final recipe = asJson(data['recipe']);
+        // Locked once a consumer responded to this version: only "Add new recipe version" then
+        final locked = !readOnly && data['version_locked'] == true;
+        final latest = intOf(data['latest_version']);
         final ingredients = asJsonList(recipe['ingredients']);
-        Future<void> edit() async {
+        Future<void> edit({bool newVersion = false}) async {
           final saved = await Navigator.of(context).push<bool>(
-            MaterialPageRoute(builder: (_) => RecipeEditorPage(productId: productId, recipe: recipe)),
+            MaterialPageRoute(builder: (_) => RecipeEditorPage(productId: productId, recipe: recipe, newVersion: newVersion, fromVersion: latest)),
           );
           if (saved == true) {
             await reload();
@@ -381,7 +385,7 @@ class _RecipeTab extends StatelessWidget {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
                     Expanded(child: Text('Batch size', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.ink))),
-                    if (!readOnly) TextButton(onPressed: edit, child: const Text('Edit')),
+                    if (!readOnly && !locked) TextButton(onPressed: edit, child: const Text('Edit')),
                   ]),
                   Text(str(recipe['batch_size'], 'Not set'), style: TextStyle(color: AppColors.ink2)),
                 ]),
@@ -433,7 +437,17 @@ class _RecipeTab extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 14),
-              if (!readOnly) FilledButton.icon(onPressed: edit, icon: const Icon(Icons.edit_outlined), label: const Text('Edit recipe')),
+              if (!readOnly && !locked) FilledButton.icon(onPressed: edit, icon: const Icon(Icons.edit_outlined), label: const Text('Edit recipe')),
+              if (locked) ...[
+                Text('Recipe v$latest is locked: consumers have responded to it. To change the recipe, add a new version.',
+                    style: TextStyle(color: AppColors.muted)),
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: () => edit(newVersion: true),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add new recipe version'),
+                ),
+              ],
             ],
           ],
         );
@@ -507,16 +521,51 @@ String _kg(double v) => (v * 1000).round() % 1000 == 0 ? '${v.round()}' : '${(v 
 }
 
 class RecipeEditorPage extends StatefulWidget {
-  const RecipeEditorPage({super.key, required this.productId, required this.recipe});
+  const RecipeEditorPage({super.key, required this.productId, required this.recipe, this.newVersion = false, this.fromVersion = 0});
 
   final int productId;
+  /// The recipe to start from: the current version (also for a new version: the whole previous one)
   final Json recipe;
+  /// "Add new recipe version": saved as the next version (the previous one and its feedback are kept)
+  final bool newVersion;
+  final int fromVersion;
 
   @override
   State<RecipeEditorPage> createState() => _RecipeEditorPageState();
 }
 
 class _RecipeEditorPageState extends State<RecipeEditorPage> {
+  String _rs(dynamic v) => v == null ? '—' : '₹${(v as num).toStringAsFixed(2)}';
+
+  /// The new version's cost and profit against the current one; a version over the cost limit or
+  /// below the minimum margin is released only after "Release anyway".
+  Future<bool?> _confirmRelease(Json cmp) {
+    final o = asJson(cmp['old']), n = asJson(cmp['new']);
+    final warnings = asJsonList(cmp['warnings']);
+    final needs = cmp['needs_approval'] == true;
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Release recipe v${widget.fromVersion + 1}?'),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Compared with v${widget.fromVersion}', style: TextStyle(color: AppColors.muted)),
+          const SizedBox(height: 8),
+          Text('Batch cost: ${_rs(o['batch_cost'])} → ${_rs(n['batch_cost'])}'),
+          Text('Cost per kg: ${_rs(o['cost_per_kg'])} → ${_rs(n['cost_per_kg'])}'),
+          if (n['margin_pct'] != null) Text('Margin: ${o['margin_pct'] ?? '—'}% → ${n['margin_pct']}%'),
+          for (final w in warnings) ...[
+            const SizedBox(height: 6),
+            Text(str(w['message']), style: TextStyle(color: str(w['code']) == 'costs_incomplete' ? AppColors.muted : AppColors.neg)),
+          ],
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(needs ? 'Release anyway' : 'Release')),
+        ],
+      ),
+    );
+  }
+
   late final TextEditingController _batch = TextEditingController(text: str(widget.recipe['batch_size']));
   late final TextEditingController _notes = TextEditingController(text: str(widget.recipe['notes']));
   late final TextEditingController _process = TextEditingController(text: str(widget.recipe['process']));
@@ -573,15 +622,28 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
             },
       ],
       'steps': [], // no Steps in new versions (earlier versions keep theirs, read-only)
+      if (widget.newVersion) 'new_version': true,
     };
     setState(() {
       _saving = true;
       _error = null;
     });
     try {
-      await OrgApi.saveRecipe(widget.productId, body);
+      if (widget.newVersion) {
+        // Is the new version still viable? The server's comparison with the current version
+        final cmp = await OrgApi.compareRecipe(widget.productId, body);
+        if (!mounted) return;
+        final approved = await _confirmRelease(cmp);
+        if (approved != true) return;
+        body['approve_financials'] = asJson(cmp)['needs_approval'] == true;
+      }
+      final res = await OrgApi.saveRecipe(widget.productId, body);
       if (!mounted) return;
-      showMessage(context, 'Recipe saved as a new version. The research team has been told.');
+      showMessage(context, widget.newVersion
+          ? 'Saved as recipe v${intOf(res['version'])}. Recipe v${widget.fromVersion} and its feedback are kept.'
+          : res['version_updated_in_place'] == true
+              ? 'Recipe v${intOf(res['version'])} updated (no consumer responses yet, so no new version).'
+              : 'Recipe saved.');
       Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) setState(() {
@@ -605,7 +667,7 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(title: const Text('Edit recipe')),
+      appBar: AppBar(title: Text(widget.newVersion ? 'New recipe v${widget.fromVersion + 1}' : 'Edit recipe')),
       // The Save bar is part of the body (not bottomNavigationBar), so it stays above
       // the keyboard: the body shrinks to the space the keyboard leaves.
       body: Column(children: [

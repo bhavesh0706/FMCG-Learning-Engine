@@ -57,3 +57,15 @@ def test_a_category_rule_applies_to_its_products_and_a_recipe_can_still_be_clear
     assert r.status_code == 409 and r.json()["detail"]["failed_standards"][0]["name"] == "Salt required"
     cleared = client.put(f"/products/{pid}/recipe", headers=auth(org), json={"batch_size": None, "ingredients": []})
     assert cleared.status_code == 200, "clearing a recipe stays possible"
+
+def test_a_custom_rule_checks_an_ingredient_quantity_in_kg(client, db):
+    org = make_user(db, role="client")
+    _, pid = _setup(client, org)
+    bad = client.post("/recipe-standards", headers=auth(org), json={"name": "Paneer quantity", "kind": "custom", "product_id": pid})
+    assert bad.status_code == 400, "a custom rule needs the ingredient and a limit"
+    r = client.post("/recipe-standards", headers=auth(org), json={"name": "Paneer quantity", "kind": "custom", "ingredient": "Paneer",
+                                                                 "max_value": 25, "product_id": pid})
+    assert r.status_code in (200, 201), r.text
+    over = client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe(("Paneer", 30), ("Spices", 70)))
+    assert over.status_code == 409 and "above the maximum 25 kg" in over.json()["detail"]["failed_standards"][0]["reason"]
+    assert client.put(f"/products/{pid}/recipe", headers=auth(org), json=_recipe(("Paneer", 20), ("Spices", 80))).status_code == 200

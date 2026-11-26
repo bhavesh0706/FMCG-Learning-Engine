@@ -252,6 +252,7 @@ class SurveyApi {
           headers: {'Accept': 'application/json'},
         )) {
     // Identify the signed-in executive on every request.
+    _dio.interceptors.add(Session.refreshOnUnauthorized());
     _dio.interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
       final token = Session.token;
       if (token != null) options.headers['Authorization'] = 'Bearer $token';

@@ -1,6 +1,9 @@
-import { PlanCard, PlanDialog, wholeNumberProblem } from "./ActionPlans";
+import { nextPlanCode, PlanCard, PlanDialog, wholeNumberProblem } from "./ActionPlans";
+import { ProductDialog } from "./CatalogPage";
+import { SaveTemplateDialog, UseTemplateDialog } from "./QuestionTemplates";
+import { listCategories } from "../services/catalogAdminApi";
 import DateField from "./DateField";
-import { OrgPasskeyCard } from "./PasskeyPanels";
+import { OrgPasskeyButton } from "./PasskeyPanels";
 import SuperAdminsCard from "./SuperAdminsCard";
 import { getRecipe } from "../services/catalogAdminApi";
 import { removeStandard } from "../services/nextApi";
@@ -937,6 +940,9 @@ const FILTERS = [
 
 function ProductsPage() {
   const [state, reload] = useData(getOrgProducts, []);
+  // Add product: choose any active category in the dialog (null = closed, else the categories)
+  const [adding, setAdding] = useState(null);
+  const openAdd = () => listCategories(false).then((d) => setAdding((d?.categories || d || []).filter((c) => c.is_active !== false))).catch(() => setAdding([]));
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
   const products = useMemo(() => state.data?.products || [], [state.data]);
@@ -955,8 +961,15 @@ function ProductsPage() {
           <h1 id="org-products-page">Products</h1>
           <p className="home-sub">{plural(products.length, "product")}. Open one to read its report, change its recipe or start a new survey.</p>
         </div>
+        <span className="head-actions">
+          <OrgPasskeyButton />
+          <button type="button" className="btn btn-primary" onClick={openAdd}>Add product</button>
+        </span>
       </header>
-      <OrgPasskeyCard />
+      {adding && (
+        <ProductDialog categories={adding} onClose={() => setAdding(null)} onNeedCategory={() => go("catalog")}
+          onCreated={(p) => { setAdding(null); go(`products/${p.id}/standards`); }} />
+      )}
       <div className="org-toolbar">
         <div className="segmented" role="group" aria-label="Show">
           {FILTERS.map(([key, label, test]) => (
@@ -1024,6 +1037,7 @@ const SNAPSHOT_TABS = ["recipe", "standards", "questions"];
 
 // The survey box (as on the Consumer report): which survey, its recipe version and responses.
 function SurveyBox({ survey, rounds, latest }) {
+  if (!survey && !rounds.length) return null; // never surveyed: nothing to choose between
   if (!survey) {
     const users = rounds.filter((r) => r.recipe_version === latest);
     return (
@@ -1032,7 +1046,7 @@ function SurveyBox({ survey, rounds, latest }) {
           <strong>Current setup · Recipe v{latest || 1}</strong>
           <span>
             {users.length ? `Used by ${users.map((r) => `Survey ${r.number}`).join(", ")}. ` : "Not surveyed yet. "}
-            Changes here apply to the next survey. Choose a survey above to see exactly what it used.
+            Changes here apply to the next survey.
           </span>
         </div>
       </div>
@@ -1349,6 +1363,16 @@ function AddProjectPage({ prefill = null }) {
   const [summary, setSummary] = useState({ loading: false, data: null, error: "" });
   const [questionsKey, setQuestionsKey] = useState(0); // new value = the overview (question count) reloads
   const [notice, setNotice] = useState(null);
+  // Survey plans made on this page: kept here and added to the project when it is created
+  const [plans, setPlans] = useState([]);
+  const [planOpen, setPlanOpen] = useState(false); // true = new plan, a number = editing that pending plan
+  // One page per step: 1 project details -> 2 survey plans -> 3 survey questions (Back keeps everything)
+  const [step, setStep] = useState(1);
+  const toStep = (n) => {
+    setStep(n);
+    if (n === 3) setQuestionsKey((k) => k + 1); // the question count is read again (questions may have changed elsewhere)
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
   useEffect(() => {
     projectOptions().then((d) => {
       setOptions(d.categories);
@@ -1394,8 +1418,11 @@ function AddProjectPage({ prefill = null }) {
   // The product's survey questions must be ready (5-10) before its project can be created.
   const questionCount = summary.data?.product?.id === Number(form.product_id) ? summary.data?.questions?.count ?? null : null;
   const questionsOk = questionCount != null && questionCount >= 5 && questionCount <= 10;
-  const ready = form.project_name.trim().length >= 2 && form.category_id && form.product_id && form.product_version
-    && form.total_target.trim() && !targetProblem && questionsOk;
+  // In order: project details -> survey plans -> survey questions -> Create project
+  const detailsOk = form.project_name.trim().length >= 2 && form.category_id && form.product_id && form.product_version
+    && form.total_target.trim() && !targetProblem;
+  const planned = plans.reduce((n, pl) => n + (Number(pl.target) || 0), 0);
+  const ready = detailsOk && plans.length > 0 && questionsOk;
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true);
@@ -1403,6 +1430,7 @@ function AddProjectPage({ prefill = null }) {
     try {
       const p = await createProject({ ...form, category_id: Number(form.category_id), product_id: Number(form.product_id),
         product_version: Number(form.product_version), total_target: Number(form.total_target) });
+      for (const pl of plans) await addProjectPlan(p.id, pl); // the survey plans made above
       go(`projects/${p.id}`);
     } catch (e) {
       setError(orgError(e, "The project couldn't be created."));
@@ -1418,6 +1446,16 @@ function AddProjectPage({ prefill = null }) {
           <p className="home-sub">Choose the product and the recipe to study: each product recipe can have one project.</p>
         </div>
       </header>
+      <ol className="wizard-steps" aria-label="Steps">
+        {[[1, "Project details"], [2, "Survey plans"], [3, "Survey questions"]].map(([n, label]) => (
+          <li key={n} className={step === n ? "is-current" : step > n ? "is-done" : ""} aria-current={step === n ? "step" : undefined}>
+            <button type="button" disabled={n > step} onClick={() => toStep(n)}>
+              <span className="wizard-num" aria-hidden="true">{step > n ? "✓" : n}</span>{label}
+            </button>
+          </li>
+        ))}
+      </ol>
+      {step === 1 && (
       <div className="add-project-grid">
         <section className="panel add-project-form" aria-label="Project details">
           <label className="field">
@@ -1469,21 +1507,67 @@ function AddProjectPage({ prefill = null }) {
         </section>
         <ProductOverview summary={summary} chosen={Boolean(form.product_id)} />
       </div>
+      )}
       <Notice notice={notice} onClose={() => setNotice(null)} />
-      {product && (
+      {/* Step 2: the survey plans, as cards (like the project page) */}
+      {step === 2 && (
+        <section className="panel" aria-labelledby="ap-plans-title">
+          <div className="ap-head">
+            <div>
+              <h2 id="ap-plans-title" className="report-h">Survey plans</h2>
+              <p className="muted small">{plans.length ? `${plans.length} plan${plans.length === 1 ? "" : "s"} · ${planned} of ${form.total_target} consumers planned. The Admin allocates each plan's team after the project is created.`
+                : "Add at least one plan: how many consumers and when."}</p>
+            </div>
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setPlanOpen(true)}
+              disabled={planned >= Number(form.total_target)}>Add survey plan</button>
+          </div>
+          {plans.length === 0 ? <p className="muted">No survey plan yet.</p> : (
+            <div className="ap-grid">
+              {plans.map((pl, i) => {
+                const code = `PLA${String(i + 1).padStart(3, "0")}`;
+                const card = { ...pl, id: `draft-${i}`, code, name: code, done: 0, cities: [], members: [], allocation_complete: false,
+                  target: Number(pl.target) || 0 };
+                return (
+                  <PlanCard key={code} p={card} canEdit canAllocate={false}
+                    onEdit={() => setPlanOpen(i)} onDelete={() => setPlans(plans.filter((_, k) => k !== i))} />
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+      {planOpen !== false && (  // true = a new plan; 0, 1 … = editing that pending plan
+        <PlanDialog productId={product?.id} title="Add a survey plan" total={Number(form.total_target)}
+          plan={typeof planOpen === "number" ? { ...plans[planOpen], name: `PLA${String(planOpen + 1).padStart(3, "0")}` } : undefined}
+          limit={Number(form.total_target) - planned + (typeof planOpen === "number" ? Number(plans[planOpen].target) || 0 : 0)}
+          nextCode={`PLA${String(plans.length + 1).padStart(3, "0")}`}
+          create={(body) => Promise.resolve(body)} update={(body) => Promise.resolve(body)}
+          onClose={() => setPlanOpen(false)}
+          onSaved={(body) => {
+            setPlans(typeof planOpen === "number" ? plans.map((x, k) => (k === planOpen ? body : x)) : [...plans, body]);
+            setPlanOpen(false);
+          }} />
+      )}
+      {/* Step 3: the survey questions (or a template) */}
+      {step === 3 && product && (
         <ProjectQuestionsStep product={{ id: product.id, name: product.name }} onNotice={setNotice}
           onChanged={() => setQuestionsKey((k) => k + 1)} />
       )}
       {error && <p className="form-error" role="alert">{error}</p>}
       <div className="add-project-actions add-project-footer">
-        {product && questionCount != null && !questionsOk && (
-          <span className="field-hint add-project-why">
-            {questionCount < 5 ? `Add ${5 - questionCount} more survey question${5 - questionCount === 1 ? "" : "s"} (5–10) to create the project.`
-              : "Keep at most 10 survey questions to create the project."}
-          </span>
-        )}
-        <button type="button" className="btn btn-secondary" onClick={() => go("projects")}>Cancel</button>
-        <button type="button" className="btn btn-primary" onClick={submit} disabled={!ready || busy}>{busy ? "Creating…" : "Create project"}</button>
+        <span className="field-hint add-project-why">
+          {step === 1 && !detailsOk ? "Fill in the project details to continue."
+            : step === 2 && !plans.length ? "Add at least one survey plan to continue."
+            : step === 3 && !questionsOk ? (questionCount != null && questionCount > 10 ? "Keep at most 10 survey questions."
+              : `Set the survey questions (5–10)${questionCount != null ? `: ${Math.max(0, 5 - questionCount)} more needed` : ""}, or use a template.`)
+            : ""}
+        </span>
+        {step === 1
+          ? <button type="button" className="btn btn-secondary" onClick={() => go("projects")}>Cancel</button>
+          : <button type="button" className="btn btn-secondary" onClick={() => toStep(step - 1)}>← Back</button>}
+        {step === 1 && <button type="button" className="btn btn-primary" disabled={!detailsOk} onClick={() => toStep(2)}>Next: Survey plans →</button>}
+        {step === 2 && <button type="button" className="btn btn-primary" disabled={!plans.length} onClick={() => toStep(3)}>Next: Survey questions →</button>}
+        {step === 3 && <button type="button" className="btn btn-primary" onClick={submit} disabled={!ready || busy}>{busy ? "Creating…" : "Create project"}</button>}
       </div>
     </section>
   );
@@ -1493,14 +1577,39 @@ function AddProjectPage({ prefill = null }) {
 /* Survey questions of the chosen product, set while creating (or editing) its project: one shared
    set per product, 5-10 questions, saved as they are changed. A project is created only with them. */
 function ProjectQuestionsStep({ product, onChanged, onNotice, readOnly = false }) {
+  // Reusable question sets: copy a template's (or an earlier product's) questions in, or save these
+  const [dialog, setDialog] = useState(null);
+  const [version, setVersion] = useState(0); // new value = the questions below reload
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    getProductSummary(product.id).then((d) => setCount(d?.questions?.count ?? 0)).catch(() => {});
+  }, [product.id, version]);
+  const done = (text) => {
+    setDialog(null);
+    setVersion((v) => v + 1);
+    onChanged?.();
+    onNotice?.({ tone: "ok", text });
+  };
   return (
     <section className="panel project-questions-step" aria-label="Survey questions">
-      <p className="eyebrow">Survey questions</p>
+      <div className="qt-head">
+        <p className="eyebrow">Survey questions</p>
+        {!readOnly && (
+          <span className="head-actions">
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog("use")}>Use existing question template</button>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog("save")} disabled={!count}
+              title={count ? undefined : "Add questions first"}>Save as template</button>
+          </span>
+        )}
+      </div>
+      {dialog === "use" && <UseTemplateDialog product={product} currentCount={count} onClose={() => setDialog(null)} onApplied={done} />}
+      {dialog === "save" && <SaveTemplateDialog product={product} onClose={() => setDialog(null)} onSaved={done} />}
       <p className="muted small project-questions-note">
         What survey persons ask each consumer of {product.name}. Set them here before creating the project; they are shared by
         every project of this product and are saved as you change them.
       </p>
-      <QuestionsTab key={product.id} product={product} onChanged={onChanged} onNotice={onNotice} readOnly={readOnly} />
+      <QuestionsTab key={`${product.id}-${version}`} product={product} onNotice={onNotice} readOnly={readOnly}
+        onChanged={() => { setVersion((v) => v); onChanged?.(); getProductSummary(product.id).then((d) => setCount(d?.questions?.count ?? 0)).catch(() => {}); }} />
     </section>
   );
 }
@@ -1818,22 +1927,6 @@ function ProjectPage({ projectId }) {
         </dl>
       </section>
 
-      {plan.stage === "draft" && plan.checklist?.length > 0 && (
-        <section className="panel project-readiness" aria-labelledby="readiness-title">
-          <div className="ap-head">
-            <div>
-              <h2 id="readiness-title" className="report-h">Survey readiness</h2>
-              <p className="muted small">
-                {plan.ready ? "Everything is set: start the survey below."
-                  : `${plan.checklist.filter((c) => c.done).length} of ${plan.checklist.length} steps done. The survey starts once every step is complete.`}
-              </p>
-            </div>
-            <span className={`status-chip ${plan.ready ? "is-ok" : "is-warn"}`}>{plan.ready ? "Ready to start" : "Not ready"}</span>
-          </div>
-          <SetupSteps steps={plan.checklist} here={`projects/${project.id}`} />
-        </section>
-      )}
-
       <section className="panel" aria-labelledby="recipe-plan-title">
         <div className="ap-head">
           <div>
@@ -1902,7 +1995,7 @@ function ProjectPage({ projectId }) {
 
       {dialog?.type === "plan" && (
         <PlanDialog productId={project.product.id} plan={dialog.plan} title="Add a survey plan"
-          limit={limitFor(dialog.plan)} total={total}
+          limit={limitFor(dialog.plan)} total={total} nextCode={nextPlanCode(plan.plans)}
           create={(body) => addProjectPlan(project.id, body)}
           onClose={() => setDialog(null)} onSaved={() => { setDialog(null); refresh(); }} />
       )}
@@ -2121,7 +2214,6 @@ function StandardsSection({ product, onChanged }) {
   };
   return (
     <div className="pc">
-      {!state.data?.recipe && <p className="muted">Add a recipe on the Recipe tab: the standards are checked against it.</p>}
       <StandardsCard standards={standards} productId={product.id} readOnly={false} onChanged={changed} />
       {inherited.length > 0 && (
         <section className="recipe-card" aria-label="Rules from the category or all products">
@@ -2151,10 +2243,6 @@ function RecipeSection({ product, onNotice, onSaved }) {
   return (
     <div className="org-recipe">
       <section className="panel product-panel">
-        <p className="muted org-recipe-note">
-          The report's recommendations refer to these ingredients. Saving a change creates a new version and tells the
-          research team; start a new survey to test it with consumers.
-        </p>
         <RecipeTab product={product} onNotice={onNotice} onSaved={onSaved} />
       </section>
     </div>

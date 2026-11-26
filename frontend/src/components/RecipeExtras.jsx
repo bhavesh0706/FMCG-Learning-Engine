@@ -82,8 +82,7 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
     <section className="recipe-card" aria-labelledby="standards-title">
       <header className="recipe-card-head">
         <div>
-          <h3 id="standards-title">Recipe standards</h3>
-          <p className="muted">This recipe is checked against the rules for this product, its category and all products.</p>
+          <h3 id="standards-title">{readOnly ? "Recipe standards" : "Set recipe standards for this product"}</h3>
         </div>
         {results.length > 0 && (
           <span className={`status-chip ${standards.passed ? "is-ok" : "is-neg"}`}>
@@ -92,7 +91,7 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
         )}
       </header>
       {results.length === 0 ? (
-        <p className="muted">No standard rules apply to this product yet.</p>
+        null
       ) : (
         <div className="table-wrap">
           <table className="data-table std-table">
@@ -115,7 +114,6 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
       )}
       {!readOnly && productId && (
         <div className="std-product-rules">
-          <h4>Rules for this product</h4>
           <ul className="std-results">
             {rules.map((r) => editing === r.id ? (
               <li key={r.id} className="is-editing"><StandardRuleForm productId={productId} rule={r} onSaved={changed} onCancel={() => setEditing(null)} /></li>
@@ -128,7 +126,6 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
                 </span>
               </li>
             ))}
-            {!rules.length && <li className="muted">No rules for this product only.</li>}
           </ul>
           {adding ? (
             <StandardRuleForm productId={productId} onSaved={changed} onCancel={() => setAdding(false)} />

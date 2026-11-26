@@ -348,7 +348,8 @@ class _AuthScreenState extends State<AuthScreen> {
       if (digits.length == 12 && digits.startsWith('91')) digits = digits.substring(2);
       if (digits.length != 10) return 'Enter a 10-digit mobile number or an email address.';
     }
-    if (_password.text.isEmpty) return 'Enter your password.';
+    // Empty password: sign-in with the mobile number on a phone that already holds that number's session
+    if (_password.text.isEmpty && (_signup || id.contains('@'))) return 'Enter your password.';
     if (_signup) {
       final p = _password.text;
       if (p.length < 8 || !RegExp(r'[A-Za-z]').hasMatch(p) || !RegExp(r'\d').hasMatch(p)) {
@@ -905,4 +906,3 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
     );
   }
 }
-

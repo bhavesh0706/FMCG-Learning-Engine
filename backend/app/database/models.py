@@ -161,6 +161,10 @@ class Product(AuditMixin, Base):
 
     name = Column(String(200), nullable=False)
     sku = Column(String(80), nullable=True, unique=True)
+    # Commercial targets (optional): judge whether a new recipe version stays viable before release
+    selling_price_per_kg = Column(Float, nullable=True)
+    target_cost_per_kg = Column(Float, nullable=True)   # cost limit per kg of product
+    min_margin_pct = Column(Float, nullable=True)       # minimum acceptable gross margin %
     description = Column(Text, nullable=True)
     launch_date = Column(Date, nullable=True)
 
@@ -442,6 +446,10 @@ class RecipeVersion(AuditMixin, Base):
     # The recipe's code: RCP-0001, RCP-0002 ... one per saved version, given when it is saved
     # (_set_recipe_code below). Shown in the portal; opening it shows that recipe.
     recipe_code = Column(String(20), nullable=True, unique=True, index=True)
+    # A version added from a tested one: its cost comparison with that version and what was decided
+    # about each consumer recommendation (history, kept with the version)
+    cost_comparison = Column(JSON, nullable=True)
+    decisions = Column(JSON, nullable=True)
     # Who saved it (name and role copied, so history still reads correctly later).
     changed_by = Column(Integer, nullable=True)
     changed_by_name = Column(String(150), nullable=True)
@@ -611,6 +619,28 @@ class Notification(AuditMixin, Base):
 # Kept in the database so the limit holds across several API processes.
 # Rows older than a day are removed automatically.
 # ============================================================
+
+class RefreshToken(AuditMixin, Base):
+    """A device's long-lived sign-in (the mobile app): exchanged at /auth/refresh for a new access
+    token and a NEW refresh token (rotation). Only a hash is stored. It stops working when it is
+    revoked (logout, rotation, reuse detected), expires, or the account's token_version changes
+    (password changed, disabled, signed out everywhere)."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = synonym("record_no")
+    record_no = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    token_version = Column(Integer, nullable=False, default=0)
+    family = Column(String(32), nullable=False, index=True)  # one per device sign-in (rotations share it)
+    device = Column(String(150), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    revoked_reason = Column(String(30), nullable=True)
+
 
 class LoginFailure(AuditMixin, Base):
     __tablename__ = "login_failures"
@@ -799,6 +829,9 @@ class RecipeStandard(AuditMixin, Base):
     ingredient = Column(String(120), nullable=True)
     min_value = Column(Float, nullable=True)
     max_value = Column(Float, nullable=True)
+    # UOM of min/max (Other Master > Measurement unit, e.g. "g", "MT", "mL"): the quantity of a
+    # custom rule, or the "per" of a cost rule (₹ per g). NULL = kg, as every rule before UOMs.
+    unit = Column(String(16), nullable=True)
     # Scope (exactly one): one product, one category, or every product (explicit)
     product_id = Column(Integer, nullable=True, index=True)
     category_id = Column(Integer, nullable=True, index=True)
@@ -887,7 +920,11 @@ class OtherMasterName(AuditMixin, Base):
     # A list inside another list: STATE values belong to a COUNTRY value, CITY values
     # to a STATE value (m_othermasterdata.parent_id). NULL = a flat list.
     parent_master_id = Column(Integer, ForeignKey("m_othermastername.id"), nullable=True)
+    # Other Master Data (api/other_masters.py): Active = the list can be used at all;
+    # can_edit = its existing values may be changed; allow_add = new values may be added.
     is_active = Column(Integer, nullable=False, default=1)
+    can_edit = Column(Integer, nullable=False, default=1)
+    allow_add = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -937,6 +974,8 @@ class ActionPlan(AuditMixin, Base):
     respondent_types = Column(JSON, nullable=True)
     notes = Column(Text, nullable=True)
     copied_from_id = Column(Integer, nullable=True)  # the plan of the previous round it was copied from
+    # PLA001, PLA002 ... numbered within its project (each project starts at PLA001); given automatically
+    plan_code = Column(String(10), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -1216,3 +1255,46 @@ def _set_recipe_code(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy ev
 
 
 event.listen(RecipeVersion, "before_insert", _set_recipe_code)
+
+
+PLAN_CODE_PREFIX = "PLA"
+
+
+def next_plan_code(connection, project_id, product_id, recipe_version, taken=()) -> str:
+    """The lowest free PLA### within the plan's project (plans without a project: within their
+    product and recipe version). A deleted plan's number is given again."""
+    from sqlalchemy import text as _text
+
+    if project_id:
+        rows = connection.execute(_text("SELECT plan_code FROM action_plans WHERE project_id = :p"), {"p": project_id})
+    else:
+        rows = connection.execute(_text("SELECT plan_code FROM action_plans WHERE project_id IS NULL AND product_id = :p "
+                                        "AND (recipe_version = :v OR (recipe_version IS NULL AND :v IS NULL))"),
+                                  {"p": product_id, "v": recipe_version})
+    used = set()
+    for code in [*(r[0] for r in rows), *taken]:
+        digits = (code or "")[len(PLAN_CODE_PREFIX):]
+        if (code or "").startswith(PLAN_CODE_PREFIX) and digits.isdigit():
+            used.add(int(digits))
+    n = 1
+    while n in used:
+        n += 1
+    return f"{PLAN_CODE_PREFIX}{n:03d}"
+
+
+def _set_plan_code(mapper, connection, target):  # noqa: ARG001 (SQLAlchemy event signature)
+    if (target.plan_code or "").strip():
+        return
+    from sqlalchemy.orm import object_session
+
+    session = object_session(target)
+    scope = target.project_id or f"p{target.product_id}v{target.recipe_version}"
+    given = session.info.setdefault("plan_codes_given", {}) if session is not None else {}
+    taken = given.setdefault(scope, set())
+    target.plan_code = next_plan_code(connection, target.project_id, target.product_id, target.recipe_version, taken)
+    taken.add(target.plan_code)
+    if not (target.name or "").strip():  # the plan's name is its code
+        target.name = target.plan_code
+
+
+event.listen(ActionPlan, "before_insert", _set_plan_code)

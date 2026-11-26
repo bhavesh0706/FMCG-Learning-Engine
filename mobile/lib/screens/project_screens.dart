@@ -591,13 +591,6 @@ class _ProjectDetailPageState extends State<ProjectDetailPage> {
           style: TextStyle(color: AppColors.muted)),
       if (str(p['description']).isNotEmpty) ...[const SizedBox(height: 10), Text(str(p['description']), style: TextStyle(color: AppColors.ink2))],
       const SizedBox(height: 16),
-      if (str(plan['stage']) == 'draft' && asJsonList(plan['checklist']).isNotEmpty && !widget.admin) ...[
-        ReadinessPanel(plan: plan, onAction: (a) async {
-          await openSetupAction(context, a);
-          await _load();
-        }),
-        const SizedBox(height: 16),
-      ],
       Row(children: [
         Text('Survey plan', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17, color: AppColors.ink)),
         const SizedBox(width: 8),
@@ -848,6 +841,8 @@ class PlanCardView extends StatelessWidget {
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Expanded(
             child: Wrap(spacing: 8, runSpacing: 4, crossAxisAlignment: WrapCrossAlignment.center, children: [
+              if (str(p['code']).isNotEmpty && str(p['code']) != str(p['name']))
+                Text(str(p['code']), style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12, letterSpacing: 0.4, color: AppColors.brand)),
               Text(str(p['name']), style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16, color: AppColors.ink)),
               Pill(state, tone: tone),
             ]),
@@ -925,20 +920,19 @@ class _PlanEditorSheet extends StatefulWidget {
 }
 
 class _PlanEditorSheetState extends State<_PlanEditorSheet> {
-  late final _name = TextEditingController(text: str(widget.plan?['name']));
+  // The plan's name is its code (PLA001 ...): given by the server, shown read-only
+  late final _name = TextEditingController(text: widget.plan == null ? 'Given automatically (PLA001, PLA002 …)' : str(widget.plan!['name']));
   late final _target = TextEditingController(text: widget.plan == null ? '' : '${intOf(widget.plan!['target'])}');
   late final _notes = TextEditingController(text: str(widget.plan?['notes']));
-  final _city = TextEditingController();
   late String? _start = widget.plan?['start_date'] as String?;
   late String? _end = widget.plan?['end_date'] as String?;
   late String _audience = str(widget.plan?['audience']);
-  late final List<String> _cities = [...((widget.plan?['cities'] as List?)?.map((c) => '$c') ?? const <String>[])];
   bool _busy = false;
   String? _error;
 
   @override
   void dispose() {
-    for (final c in [_name, _target, _notes, _city]) {
+    for (final c in [_name, _target, _notes]) {
       c.dispose();
     }
     super.dispose();
@@ -966,15 +960,8 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
     });
   }
 
-  void _addCity() {
-    final c = _city.text.trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (c.isNotEmpty && !_cities.any((x) => x.toLowerCase() == c.toLowerCase())) setState(() => _cities.add(c));
-    _city.clear();
-  }
-
   Future<void> _save() async {
-    if (_city.text.trim().isNotEmpty) _addCity();
-    String? problem = _name.text.trim().length < 2 ? 'Give the plan a name, e.g. “Delhi team”.' : _wholeProblem(_target.text, 'Consumer responses');
+    String? problem = _wholeProblem(_target.text, 'Consumer responses');
     if (problem == null && widget.limit != null && int.parse(_target.text.trim()) > widget.limit!) {
       problem = 'This plan can have at most ${widget.limit} consumers: the project\'s response target is ${widget.total ?? widget.limit}. '
           'To plan more, raise the target first (Edit response target).';
@@ -985,11 +972,11 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
       _error = null;
     });
     final body = {
-      'name': _name.text.trim(),
+      if (widget.plan != null) 'name': str(widget.plan!['name']),
       'target': int.parse(_target.text.trim()),
       'start_date': _start,
       'end_date': _end,
-      'cities': _cities,
+      // no cities: where to survey is decided by the Admin for each survey person (team allocation)
       'audience': _audience.isEmpty ? null : _audience,
       'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
     };
@@ -1032,7 +1019,7 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
         if (widget.limit != null)
           Padding(padding: const EdgeInsets.only(top: 4), child: Text('Up to ${widget.limit} consumer responses for this plan.', style: TextStyle(color: AppColors.muted, fontSize: 13))),
         const SizedBox(height: 12),
-        TextField(controller: _name, decoration: InputDecoration(label: requiredLabel('Plan name'), hintText: 'e.g. Delhi team')),
+        TextField(controller: _name, readOnly: true, enabled: false, decoration: const InputDecoration(labelText: 'Plan name')),
         const SizedBox(height: 10),
         Row(children: [
           Expanded(
@@ -1067,20 +1054,6 @@ class _PlanEditorSheetState extends State<_PlanEditorSheet> {
         const SizedBox(height: 10),
         Row(children: [dateBox('Start date', _start, true), const SizedBox(width: 10), dateBox('End date', _end, false)]),
         const SizedBox(height: 10),
-        TextField(
-          controller: _city,
-          textCapitalization: TextCapitalization.words,
-          onSubmitted: (_) => _addCity(),
-          decoration: InputDecoration(labelText: 'Cities (empty = anywhere)', suffixIcon: IconButton(onPressed: _addCity, icon: const Icon(Icons.add))),
-        ),
-        if (_cities.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Wrap(spacing: 6, runSpacing: 6, children: [
-              for (final c in _cities) InputChip(label: Text(c), onDeleted: () => setState(() => _cities.remove(c))),
-            ]),
-          ),
-        const SizedBox(height: 10),
         TextField(controller: _notes, minLines: 2, maxLines: 4, decoration: const InputDecoration(labelText: 'Other requirements')),
         if (_error != null) ...[const SizedBox(height: 10), Text(_error!, style: TextStyle(color: AppColors.neg))],
         const SizedBox(height: 14),
@@ -1111,7 +1084,7 @@ class _Row {
 
 class _AllocateSheetState extends State<_AllocateSheet> {
   List<Json>? _people;
-  // One row per survey person: who, which of the plan's cities and how many responses (all dropdowns).
+  // One row per survey person: who, the city the Admin sends them to (any city) and how many responses.
   late final List<_Row> _rows = [
     for (final m in asJsonList(widget.plan['members']))
       _Row(
@@ -1126,7 +1099,6 @@ class _AllocateSheetState extends State<_AllocateSheet> {
   String? _error;
 
   int get _target => intOf(widget.plan['target']);
-  List<String> get _planCities => (widget.plan['cities'] as List?)?.map((c) => '$c').toList() ?? const [];
   Iterable<_Row> get _chosen => _rows.where((r) => r.uid != null);
 
   @override
@@ -1159,7 +1131,6 @@ class _AllocateSheetState extends State<_AllocateSheet> {
       final name = _nameOf(r.uid);
       if (r.share == null) return '$name: choose their responses.';
       if (r.share! < (_done[r.uid] ?? 0)) return '$name already submitted ${_done[r.uid]}: give them at least ${_done[r.uid]}.';
-      if (_planCities.isNotEmpty && r.cities.isEmpty) return 'Choose a city for $name.';
     }
     if (_allocated > _target) return "That's ${_allocated - _target} more than the plan's $_target.";
     return null;
@@ -1223,20 +1194,16 @@ class _AllocateSheetState extends State<_AllocateSheet> {
         Padding(
           padding: const EdgeInsets.only(right: 8),
           child: Row(children: [
-            if (_planCities.isNotEmpty) ...[
-              Expanded(
-                child: SearchDropdownField<String>(
-                  value: r.cities.length == 1 ? r.cities.first : (_planCities.length > 1 ? '__all' : _planCities.first),
-                  decoration: const InputDecoration(labelText: 'City', isDense: true),
-                  items: [
-                    if (_planCities.length > 1) const DropdownMenuItem(value: '__all', child: Text('All plan cities')),
-                    for (final c in _planCities) DropdownMenuItem(value: c, child: Text(c)),
-                  ],
-                  onChanged: (v) => setState(() => r.cities = v == null || v == '__all' ? [..._planCities] : [v]),
-                ),
+            // The Admin decides where this survey person surveys: any city (empty = anywhere)
+            Expanded(
+              child: TextFormField(
+                initialValue: r.cities.join(', '),
+                textCapitalization: TextCapitalization.words,
+                decoration: const InputDecoration(labelText: 'City', hintText: 'Any city', isDense: true),
+                onChanged: (v) => r.cities = v.split(',').map((c) => c.trim()).where((c) => c.isNotEmpty).toList(),
               ),
-              const SizedBox(width: 8),
-            ],
+            ),
+            const SizedBox(width: 8),
             Expanded(
               child: SearchDropdownField<int>(
                 value: r.share,
@@ -1291,7 +1258,7 @@ class _AllocateSheetState extends State<_AllocateSheet> {
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
-                onPressed: () => setState(() => _rows.add(_Row(cities: [..._planCities]))),
+                onPressed: () => setState(() => _rows.add(_Row())),
                 icon: const Icon(Icons.person_add_alt_1_outlined),
                 label: const Text('Add survey person'),
               ),
@@ -1624,7 +1591,7 @@ class _QuestionsCardState extends State<QuestionsCard> {
             : n < 5
                 ? '$n of 5–10 questions · add ${5 - n} more before creating the project'
                 : '$n questions · keep at most 10';
-    return Panel(
+    final panel = Panel(
       onTap: _open,
       child: Row(children: [
         Icon(Icons.quiz_outlined, color: ok ? AppColors.brand : AppColors.neg),
@@ -1642,6 +1609,135 @@ class _QuestionsCardState extends State<QuestionsCard> {
         Icon(Icons.chevron_right, color: AppColors.muted),
       ]),
     );
+    if (widget.readOnly) return panel;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      panel,
+      Wrap(spacing: 4, children: [
+        TextButton.icon(onPressed: _useTemplate, icon: const Icon(Icons.library_books_outlined, size: 18),
+            label: const Text('Use existing question template')),
+        TextButton.icon(onPressed: (n ?? 0) > 0 ? _saveTemplate : null, icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+            label: const Text('Save as template')),
+      ]),
+    ]);
+  }
+
+  void _changed() {
+    widget.onClosed?.call();
+    if (widget.count == null) _reload();
+  }
+
+  /// A saved template or an earlier product's questions, copied into this product as its own
+  /// (the template / other product never change; {product} reads this product's name).
+  Future<void> _useTemplate() async {
+    List<Json> templates = [], products = [];
+    try {
+      templates = asJsonList(asJson(await _api('GET', '/question-templates'))['templates']);
+      products = asJsonList(asJson(await _api('GET', '/question-templates/products?exclude_product_id=${widget.productId}'))['products']);
+    } catch (e) {
+      if (mounted) showMessage(context, 'The templates could not be loaded. Check the connection.');
+      return;
+    }
+    if (!mounted) return;
+    String first(Json item) {
+      final qs = asJsonList(item['questions']);
+      return qs.isEmpty ? '' : str(qs.first['text']).replaceAll('{product}', widget.productName);
+    }
+    final picked = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        builder: (_, scroll) => ListView(controller: scroll, padding: const EdgeInsets.all(16), children: [
+          Text('Use existing question template', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+          const SizedBox(height: 4),
+          Text('The questions are copied into ${widget.productName}: change them freely, the template stays as it is.',
+              style: TextStyle(color: AppColors.muted)),
+          const SizedBox(height: 12),
+          Text('Saved templates', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
+          if (templates.isEmpty) Text('None yet: save a question set with Save as template.', style: TextStyle(color: AppColors.muted)),
+          for (final t in templates)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(str(t['name'])),
+              subtitle: Text('${intOf(t['question_count'])} questions · ${first(t)}', maxLines: 2, overflow: TextOverflow.ellipsis),
+              onTap: () => Navigator.of(ctx).pop({'template_id': intOf(t['id']), 'n': intOf(t['question_count']), 'name': str(t['name'])}),
+            ),
+          const SizedBox(height: 12),
+          Text('Earlier products', style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.ink)),
+          if (products.isEmpty) Text('No other product has survey questions yet.', style: TextStyle(color: AppColors.muted)),
+          for (final p in products)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text(str(p['name'])),
+              subtitle: Text('${intOf(p['question_count'])} questions · ${first(p)}', maxLines: 2, overflow: TextOverflow.ellipsis),
+              onTap: () => Navigator.of(ctx).pop({'from_product_id': intOf(p['id']), 'n': intOf(p['question_count']), 'name': str(p['name'])}),
+            ),
+        ]),
+      ),
+    );
+    if (picked == null || !mounted) return;
+    final current = widget.count ?? _own ?? 0;
+    final replace = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Use ${picked['name']}?'),
+        content: Text('${picked['n']} questions will be copied into ${widget.productName}.'
+            '${current > 0 ? ' Replace its $current current questions, or add to them?' : ''}'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Cancel')),
+          if (current > 0) TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Add')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: Text(current > 0 ? 'Replace' : 'Use')),
+        ],
+      ),
+    );
+    if (replace == null || !mounted) return;
+    try {
+      await _api('POST', '/question-templates/apply', body: {
+        'product_id': widget.productId,
+        'replace': replace,
+        if (picked['template_id'] != null) 'template_id': picked['template_id'],
+        if (picked['from_product_id'] != null) 'from_product_id': picked['from_product_id'],
+      });
+      if (!mounted) return;
+      showMessage(context, 'Questions copied: edit, remove or add them in Survey questions.');
+      _changed();
+    } catch (e) {
+      if (mounted) showMessage(context, e is ApiException ? e.message : 'The questions could not be copied.');
+    }
+  }
+
+  /// This product's current questions saved as a new template for future projects.
+  Future<void> _saveTemplate() async {
+    final name = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Save as question template'),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('The product name in the questions becomes {product} and reads the new product\'s name when used.',
+              style: TextStyle(color: AppColors.muted, fontSize: 13)),
+          const SizedBox(height: 10),
+          TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Template name', hintText: 'e.g. Snack taste test')),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(ctx).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(ctx).pop(true), child: const Text('Save template')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    if (name.text.trim().length < 2) {
+      showMessage(context, 'Give the template a name.');
+      return;
+    }
+    try {
+      await _api('POST', '/question-templates', body: {'name': name.text.trim(), 'from_product_id': widget.productId});
+      if (mounted) showMessage(context, 'Saved as the template “${name.text.trim()}”.');
+    } catch (e) {
+      if (mounted) showMessage(context, e is ApiException ? e.message : 'The template could not be saved.');
+    }
   }
 }
 

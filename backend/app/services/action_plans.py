@@ -118,10 +118,9 @@ def clean_plan(data: Optional[dict]) -> Optional[dict]:
 
 
 def apply_fields(plan: ActionPlan, data: dict) -> None:
-    """Set an action plan's fields from a request (name, target, dates, cities ...)."""
-    name = " ".join(str(data.get("name") or "").split())[:150]
-    if len(name) < 2:
-        raise PlanError("Give the action plan a name, e.g. “Delhi team”.")
+    """Set an action plan's fields from a request (target, dates, cities ...). The plan's name is its
+    plan code (PLA001 ...), given when it is added; a name sent by an older client is still kept."""
+    name = " ".join(str(data.get("name") or "").split())[:150] or (plan.name or "")
     clean = clean_plan({k: data.get(k) for k in ("target", "persons_needed", "start_date", "end_date", "cities", "audience",
                                                   "respondent_types", "notes")}) or {}
     if not clean.get("target"):
@@ -137,7 +136,11 @@ def apply_fields(plan: ActionPlan, data: dict) -> None:
     plan.persons_needed = clean.get("persons_needed")
     plan.start_date = start
     plan.end_date = end
-    plan.cities, plan.audience = clean.get("cities") or [], clean.get("audience")
+    if data.get("cities") is not None:  # not sent (Super Admin's plan): the plan keeps its cities
+        plan.cities = clean.get("cities") or []
+    elif plan.cities is None:
+        plan.cities = []
+    plan.audience = clean.get("audience")
     plan.respondent_types, plan.notes = clean.get("respondent_types") or [], clean.get("notes")
 
 
@@ -219,10 +222,12 @@ def plan_out(plan: ActionPlan, members: list, done: int, names: dict, member_cou
     return {
         **allocation_state(plan, members),
         "id": plan.id, "product_id": plan.product_id, "round_id": plan.round_id, "recipe_version": plan.recipe_version,
-        "name": plan.name, "target": plan.target, "done": done, "persons_needed": plan.persons_needed,
+        "name": plan.name, "code": plan.plan_code, "target": plan.target, "done": done, "persons_needed": plan.persons_needed,
         "start_date": plan.start_date.isoformat() if plan.start_date else None,
         "end_date": plan.end_date.isoformat() if plan.end_date else None,
-        "cities": plan.cities or [], "audience": plan.audience, "respondent_types": plan.respondent_types or [],
+        # the plan's own cities (older plans), else where the Admin assigned its team
+        "cities": plan.cities or list(dict.fromkeys(c for m in members for c in (m.cities or []))),
+        "audience": plan.audience, "respondent_types": plan.respondent_types or [],
         "notes": plan.notes, "copied_from_id": plan.copied_from_id,
         "members": [{"user_id": m.user_id, "name": names.get(m.user_id, f"#{m.user_id}"), "cities": m.cities or plan.cities or [],
                      "target": m.target, "done": counts.get((plan.id, m.user_id), 0)}
@@ -278,7 +283,8 @@ def sync_round(db: Session, round_id: int) -> None:
 
 
 def set_members(db: Session, plan: ActionPlan, members: list, who: Optional[dict] = None) -> list:
-    """[{user_id, cities, target}]: survey persons, each with cities from the plan's (empty = all) and
+    """[{user_id, cities, target}]: survey persons, each with the cities the Admin assigns (empty = the
+    plan's, or anywhere) and
     the consumer responses they must collect (a positive whole number). Their targets may add up to
     at most the plan's target, and none below what that person already submitted in the plan.
     A person may be in several plans of a survey: each survey counts in the plan of the customer's
@@ -295,12 +301,8 @@ def set_members(db: Session, plan: ActionPlan, members: list, who: Optional[dict
         names[uid] = user.name
         if item.get("target") not in (None, ""):
             targets[uid] = _int(item.get("target"), f"Responses for {user.name}")
-        cities = _cities(item.get("cities"))
-        if plan_cities:
-            outside = [c for c in cities if c.lower() not in plan_cities]
-            if outside:
-                raise PlanError(f"{', '.join(outside)} is not a city of “{plan.name}” ({', '.join(plan.cities)}).")
-            cities = [plan_cities[c.lower()] for c in cities]
+        # The Admin decides where each survey person surveys: any city (a plan city is written as the plan has it)
+        cities = [plan_cities.get(c.lower(), c) for c in _cities(item.get("cities"))]
         wanted[uid] = cities
     total = sum(targets.values())
     if total > (plan.target or 0):
@@ -406,7 +408,7 @@ def cities_for(db: Session, round_id: int, user_id: int) -> Optional[dict]:
     my_target = sum(t or 0 for t in targets.values())
     return {"action_plan_id": mine[0][0].id, "plan_name": " + ".join(p.name for p, _ in mine), "cities": cities,
             "my_target": my_target or None, "my_done": sum(counts.get((p.id, user_id), 0) for p, _ in mine),
-            "plans": [{"id": p.id, "name": p.name, "cities": allowed, "my_target": targets.get(p.id),
+            "plans": [{"id": p.id, "name": p.name, "code": p.plan_code, "cities": allowed, "my_target": targets.get(p.id),
                        "my_done": counts.get((p.id, user_id), 0)} for p, allowed in mine],
             "start_date": min(starts).isoformat() if starts else None,
             "end_date": max(ends).isoformat() if ends else None}

@@ -109,6 +109,109 @@ def list_templates(category_id: Optional[int] = None, db: Session = Depends(get_
     return {"templates": items}
 
 
+PLACEHOLDER = "{product}"
+
+
+def _to_placeholder(text: str, product_name: str) -> str:
+    import re
+    name = (product_name or "").strip()
+    return re.sub(re.escape(name), PLACEHOLDER, text, flags=re.I) if len(name) >= 2 else text
+
+
+def _for_product(questions: list, product_name: str, source_name: Optional[str] = None) -> list:
+    """Independent copies for a product: {product} (and the source product's name) become its name."""
+    out = []
+    for q in questions:
+        text = q["text"].replace(PLACEHOLDER, product_name)
+        if source_name and len(source_name.strip()) >= 2:
+            import re
+            text = re.sub(re.escape(source_name.strip()), product_name, text, flags=re.I)
+        out.append({**q, "text": text})
+    return out
+
+
+@router.get("/products")
+def question_sources(exclude_product_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Earlier products with survey questions: each can be used as a starting set (copied, never linked)."""
+    from app.database.models import SurveyQuestion
+    names = _names(db)
+    counts = dict(db.query(SurveyQuestion.product_id, func.count(SurveyQuestion.id))
+                  .filter(SurveyQuestion.is_active == 1).group_by(SurveyQuestion.product_id).all())
+    rows = (db.query(Product).filter(Product.id.in_(list(counts) or [0]), Product.is_active == 1)
+            .order_by(Product.name).all())
+    out = []
+    for p in rows:
+        if p.id == exclude_product_id:
+            continue
+        try:  # a product whose older questions no longer validate is skipped, not the whole list
+            questions = question_dicts(_active_questions(db, p.id))
+        except HTTPException:
+            continue
+        out.append({"id": p.id, "name": p.name, "category_name": names.get(p.category_id),
+                    "question_count": len(questions), "questions": questions})
+    return {"products": out}
+
+
+class ApplyIn(BaseModel):
+    product_id: int
+    template_id: Optional[int] = None
+    from_product_id: Optional[int] = None
+    replace: bool = True  # replace the product's current questions (answers already collected are kept)
+
+    @model_validator(mode="after")
+    def one_source(self):
+        if bool(self.template_id) == bool(self.from_product_id):
+            raise ValueError("Choose a question template or a product to take the questions from.")
+        return self
+
+
+@router.post("/apply")
+def apply_template(body: ApplyIn, request: Request, db: Session = Depends(get_db)):
+    """Copies a template's (or another product's) questions into a product as its own, independent
+    questions: the template and earlier surveys never change. Replacing deactivates the current
+    questions (answers already collected are kept); adding keeps them. A product has 5 to 10."""
+    from app.api.ownership import check_product_access
+    from app.api.surveys import MAX_QUESTIONS
+    from app.database.models import SurveyQuestion
+    from app.services.rounds import live_survey_lock
+    check_product_access(db, request, body.product_id)
+    product = db.get(Product, body.product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    locked = live_survey_lock(db, [product.id])
+    if locked:  # consumers are answering the current questions right now
+        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
+    source_name = None
+    if body.template_id:
+        t = db.get(QuestionTemplate, body.template_id)
+        if not t or not t.is_active:
+            raise HTTPException(status_code=404, detail="That question template no longer exists.")
+        incoming = question_dicts(t.questions)
+    else:
+        src = db.get(Product, body.from_product_id)
+        if not src:
+            raise HTTPException(status_code=404, detail="Product not found.")
+        incoming, source_name = question_dicts(_active_questions(db, src.id)), src.name
+    incoming = _for_product(incoming, product.name, source_name)
+    current = _active_questions(db, product.id)
+    keep = [] if body.replace else current
+    if len(keep) + len(incoming) > MAX_QUESTIONS:
+        raise HTTPException(status_code=400, detail=f"That makes {len(keep) + len(incoming)} questions: a product can have at most "
+                                                     f"{MAX_QUESTIONS}. Replace the current questions, or remove some first.")
+    if body.replace:
+        for q in current:
+            q.is_active = 0
+    for i, q in enumerate(incoming, start=len(keep) + 1):
+        db.add(SurveyQuestion(product_id=product.id, position=i, text=q["text"], question_type=q["question_type"],
+                              options=q.get("options"), required=1 if q.get("required", True) else 0,
+                              report_role=q.get("report_role")))
+    db.commit()
+    audit.note(request, target_id=product.id, summary=(
+        f"Survey questions of product #{product.id} {'replaced by' if body.replace else 'extended with'} "
+        + (f"template #{body.template_id}" if body.template_id else f"the questions of product #{body.from_product_id}")))
+    return {"product_id": product.id, "question_count": len(_active_questions(db, product.id)), "added": len(incoming)}
+
+
 @router.get("/{template_id}")
 def get_template(template_id: int, db: Session = Depends(get_db)):
     t = db.get(QuestionTemplate, template_id)
@@ -128,6 +231,8 @@ def create_template(body: TemplateIn, request: Request, db: Session = Depends(ge
         questions = question_dicts(_active_questions(db, product.id))
         if not questions:
             raise HTTPException(status_code=400, detail=f"{product.name} has no survey questions to save as a template.")
+        # the product's name becomes {product}: applied to another product, it reads that product's name
+        questions = [{**q, "text": _to_placeholder(q["text"], product.name)} for q in questions]
     else:
         questions = question_dicts([q.model_dump() for q in body.questions])
     t = QuestionTemplate(name=body.name, description=body.description, category_id=body.category_id, questions=questions)

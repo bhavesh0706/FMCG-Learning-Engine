@@ -247,3 +247,43 @@ def start_project(client, db, project_id, headers, json=None):
                    json={"total_target": (state.get("used") or 0) + state["planned"]})
     staff_project(client, db, project_id)
     return client.post(f"/org/projects/{project_id}/start", headers=headers, json=json if json is not None else {})
+
+
+def recipe_change(client, headers, product_id, body):
+    """A recipe change after consumers tested the current version (the new rule): one submitted
+    response locks the current version, then "Add new recipe version" saves the next one. Before
+    any version exists it is a plain first save."""
+    from datetime import datetime
+
+    from app.database.models import RecipeVersion, Respondent, SurveyResponse
+    from app.services.recipe_versions import version_locked
+    db = SessionLocal()
+    try:
+        return _recipe_change(client, db, headers, product_id, body, RecipeVersion, Respondent, SurveyResponse, version_locked, datetime)
+    finally:
+        db.close()
+
+
+def _recipe_change(client, db, headers, product_id, body, RecipeVersion, Respondent, SurveyResponse, version_locked, datetime):
+    latest = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product_id)
+              .order_by(RecipeVersion.version.desc()).first())
+    if latest is None:
+        return client.put(f"/products/{product_id}/recipe", headers=headers, json=body)
+    stand_in = None
+    if not version_locked(db, product_id, latest.version):
+        # a stand-in consumer response locks the version (removed again afterwards, so the
+        # test's own counts of surveys and responses are not changed)
+        who = Respondent(name="Tested consumer", consent_given=1, created_at=datetime.utcnow())
+        db.add(who)
+        db.flush()
+        stand_in = SurveyResponse(product_id=product_id, respondent_id=who.id, recipe_version=latest.version,
+                                  status="submitted", created_at=datetime.utcnow())
+        db.add(stand_in)
+        db.commit()
+    try:
+        return client.put(f"/products/{product_id}/recipe", headers=headers, json={**body, "new_version": True})
+    finally:
+        if stand_in is not None:
+            db.delete(stand_in)
+            db.delete(who)
+            db.commit()

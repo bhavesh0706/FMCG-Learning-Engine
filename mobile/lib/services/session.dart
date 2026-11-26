@@ -165,6 +165,10 @@ class Session {
   // name, role and permissions, which are not secret.
   static const FlutterSecureStorage _secure = FlutterSecureStorage();
   static const String _tokenKey = 'fmcg.session.token';
+  // The device's refresh token (rotated at every renewal) and the number it belongs to: the phone
+  // renews its session in the background without the password. Never the password itself.
+  static const String _refreshKey = 'fmcg.session.refresh';
+  static const String _refreshOwnerKey = 'fmcg.session.refresh.owner';
 
   static Future<File> _file() async {
     final base = await getApplicationDocumentsDirectory();
@@ -208,7 +212,9 @@ class Session {
             await OfflineAuth.stillValid(identifier, restored.id)) {
           _offlineIdentifier = identifier;
           offlineMode.value = true;
-          needsOnlineSignIn.value = true; // the password isn't kept across restarts
+          // With a refresh token the session renews by itself once online; without one (older
+          // sign-ins) the password is asked to upload.
+          needsOnlineSignIn.value = (await _readRefresh()) == null;
           user.value = restored;
         } else if (await f.exists()) {
           await f.delete();
@@ -269,6 +275,8 @@ class Session {
     if (!signedInUser.hasKnownRole) throw _unknownRole; // never fall back to a role
     token = '${data['token']}';
     user.value = signedInUser;
+    final refresh = data['refresh_token'];
+    if (refresh is String && refresh.isNotEmpty) await _secure.write(key: _refreshKey, value: refresh);
     // The public key recordings are encrypted with, kept for offline surveys.
     unawaited(RecordingVault.refresh((path) => SurveyApi().rawGet(path)));
     offlineMode.value = false;
@@ -289,9 +297,11 @@ class Session {
   /// Without a connection, a survey person who signed in online on this phone before
   /// is signed in OFFLINE ([offlineMode]); everyone else needs the internet.
   static Future<void> login(String identifier, String password) async {
+    if (password.isEmpty) return _deviceLogin(identifier);
     Map<String, dynamic> data;
     try {
-      final r = await _dio.post('/auth/login', data: {'identifier': identifier.trim(), 'password': password});
+      final r = await _dio.post('/auth/login',
+          data: {'identifier': identifier.trim(), 'password': password, 'remember_device': true, 'device': 'FMCG mobile app'});
       data = Map<String, dynamic>.from(r.data as Map);
     } catch (e) {
       if (isConnectionProblem(e)) return _offlineLogin(identifier, password);
@@ -301,8 +311,114 @@ class Session {
       throw _message(e);
     }
     await _signedIn(data); // throws a readable message for an unknown role
+    await _secure.write(key: _refreshOwnerKey, value: normalizeIdentifier(identifier));
     await _rememberForOffline(identifier, password);
   }
+
+  /// Sign-in with the mobile number only: allowed when this phone holds a valid session (refresh
+  /// token) for that number and its saved account. Works offline; online, the session renews at once.
+  static Future<void> _deviceLogin(String identifier) async {
+    final owner = await _secure.read(key: _refreshOwnerKey);
+    final hasRefresh = (await _readRefresh()) != null;
+    final saved = await OfflineAuth.savedUser(identifier);
+    if (!hasRefresh || owner != normalizeIdentifier(identifier) || saved == null) throw 'Enter your password.';
+    final savedUser = SessionUser.fromJson(saved);
+    if (savedUser.role != kRoleExecutive) throw 'Enter your password.';
+    token = null;
+    _offlineIdentifier = normalizeIdentifier(identifier);
+    _pendingIdentifier = identifier.trim();
+    _pendingPassword = null;
+    offlineMode.value = true;
+    needsOnlineSignIn.value = false;
+    user.value = savedUser;
+    await _save();
+    AppProfile.executiveName.value = savedUser.name;
+    await AppProfile.save();
+    unawaited(refreshSession()); // online: renews now; offline: later (restoreOnline)
+  }
+
+  static Future<String?> _readRefresh() async {
+    try {
+      final v = await _secure.read(key: _refreshKey);
+      return v == null || v.isEmpty ? null : v;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _deleteRefresh() async {
+    try {
+      await _secure.delete(key: _refreshKey);
+      await _secure.delete(key: _refreshOwnerKey);
+    } catch (_) {}
+  }
+
+  static Future<bool>? _refreshing;
+
+  /// Renews the session with the refresh token (no password): a new access token and a new refresh
+  /// token. True when signed in online again. Offline: false (try again later). Ended on the server
+  /// (logout elsewhere, password changed, disabled, expired): the refresh token is dropped, offline
+  /// sign-in ends, and the password is asked (surveys on the phone are kept).
+  static Future<bool> refreshSession() => _refreshing ??= _doRefresh().whenComplete(() => _refreshing = null);
+
+  static Future<bool> _doRefresh() async {
+    final rt = await _readRefresh();
+    if (rt == null) return false;
+    final expectedId = user.value?.id;
+    try {
+      final r = await _dio.post('/auth/refresh', data: {'refresh_token': rt});
+      final data = Map<String, dynamic>.from(r.data as Map);
+      final serverUser = data['user'] is Map ? data['user'] as Map : const {};
+      if (expectedId != null && (serverUser['id'] as num?)?.toInt() != expectedId) {
+        await _deleteRefresh();
+        return false;
+      }
+      await _signedIn(data);
+      final u = user.value;
+      for (final id in [u?.mobile, u?.email]) {
+        if (id != null && id.isNotEmpty) await OfflineAuth.touch(id);
+      }
+      return true;
+    } catch (e) {
+      if (isConnectionProblem(e)) return false;
+      final code = e is DioException ? e.response?.statusCode : null;
+      if (code == 401 || code == 403) {
+        await _deleteRefresh();
+        final u = user.value;
+        for (final id in [u?.mobile, u?.email]) {
+          if (id != null && id.isNotEmpty) await OfflineAuth.forget(id);
+        }
+        signedOutReason.value = code == 403
+            ? 'This account has been disabled. Contact your admin.'
+            : 'Your session ended. Please log in again to upload your surveys.';
+        needsOnlineSignIn.value = true;
+      }
+      return false;
+    }
+  }
+
+  /// For every API client: a request refused with 401 renews the session once (refresh token) and
+  /// is sent again, so the person never sees an expired token.
+  /// Sign-in calls themselves are never renewed and retried (a 401 there is the answer); the
+  /// person's own data under /auth/me/... is.
+  static bool _isSignInCall(String path) => RegExp(
+          r'/auth/(login|refresh|logout|logout-all|signup|setup|change-password|password-reset)(/|$|\?)')
+      .hasMatch(path);
+
+  static Interceptor refreshOnUnauthorized() => InterceptorsWrapper(onError: (e, handler) async {
+        final opts = e.requestOptions;
+        if (e.response?.statusCode == 401 && opts.extra['fmcg_retried'] != true && !_isSignInCall(opts.path) &&
+            await refreshSession()) {
+          opts.extra['fmcg_retried'] = true;
+          opts.headers['Authorization'] = 'Bearer $token';
+          try {
+            return handler.resolve(await Dio().fetch(opts));
+          } on DioException catch (again) {
+            return handler.next(again);
+          }
+        }
+        handler.next(e);
+      });
 
   /// Survey persons keep a password verifier for offline sign-in (see offline_auth.dart).
   static Future<void> _rememberForOffline(String identifier, String password) async {
@@ -345,10 +461,14 @@ class Session {
   /// run. Without that password (the app was restarted) [needsOnlineSignIn] asks for it.
   static Future<bool> restoreOnline() async {
     if (!offlineMode.value || user.value == null) return hasServerSession;
+    if (await refreshSession()) return true; // the refresh token: no password needed
+    if (!offlineMode.value) return hasServerSession;
     final identifier = _pendingIdentifier;
     final password = _pendingPassword;
     if (identifier == null || password == null) {
-      needsOnlineSignIn.value = true;
+      // No refresh token (older sign-in) and no password in memory: ask for it, unless the phone
+      // is simply still offline (then the refresh above returned false without ending anything).
+      if ((await _readRefresh()) == null) needsOnlineSignIn.value = true;
       return false;
     }
     final offlineUserId = user.value!.id;
@@ -479,6 +599,9 @@ class Session {
       if (renewed is String && renewed.isNotEmpty) token = renewed;
       await _save();
     } on DioException catch (e) {
+      if (e.response?.statusCode == 401 && await refreshSession()) {
+        return; // renewed with the refresh token (no password)
+      }
       if (e.response?.statusCode == 401) {
         // Ended on the server (signed out everywhere, disabled, expired): offline
         // sign-in must not outlive it.
@@ -509,11 +632,15 @@ class Session {
   /// stops working at once (best effort: signing out works offline too).
   static Future<void> logout({bool endOnServer = true}) async {
     final old = token;
-    if (endOnServer && old != null) {
+    final oldRefresh = await _readRefresh();
+    await _deleteRefresh();
+    if (endOnServer && (old != null || oldRefresh != null)) {
       // Not awaited: signing out never waits for the network (works offline too).
       Future(() async {
         try {
-          await _dio.post('/auth/logout', options: Options(headers: {'Authorization': 'Bearer $old'}));
+          await _dio.post('/auth/logout',
+              data: {if (oldRefresh != null) 'refresh_token': oldRefresh},
+              options: Options(headers: {if (old != null) 'Authorization': 'Bearer $old'}));
         } catch (_) {
           // Offline or server unreachable: the token still expires on its own.
         }

@@ -37,7 +37,7 @@ class OrgApi {
       sendTimeout: const Duration(seconds: 30),
       headers: {'Accept': 'application/json'},
     ),
-  )..interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
+  )..interceptors.add(Session.refreshOnUnauthorized())..interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
       final token = Session.token;
       if (token != null) options.headers['Authorization'] = 'Bearer $token';
       handler.next(options);
@@ -142,6 +142,10 @@ class OrgApi {
 
   static Future<Json> recipe(int productId) async => asJson((await _get('/products/$productId/recipe'))['recipe']);
   static Future<Json> saveRecipe(int productId, Json recipe) => _put('/products/$productId/recipe', recipe);
+  /// The recipe with its version facts: version_locked (a consumer responded to it), latest_version.
+  static Future<Json> recipeFull(int productId) async => asJson(await _get('/products/$productId/recipe'));
+  /// A proposed recipe against the current version (costs, profit, warnings), computed on the server.
+  static Future<Json> compareRecipe(int productId, Json recipe) => _send('POST', '/products/$productId/recipe/compare', body: {'recipe': recipe});
 
   // ---------------------------------------------------------------- survey questions
 

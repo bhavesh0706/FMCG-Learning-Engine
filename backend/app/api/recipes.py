@@ -64,6 +64,13 @@ class RecipeIn(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=3000)
     # The production process typed in (alongside, or instead of, the process attachments)
     process: Optional[str] = Field(default=None, max_length=10000)
+    # "Add new recipe version": only once the current version has consumer responses (it is then
+    # locked); otherwise the current version is corrected in place.
+    new_version: bool = False
+    # A new version that exceeds the cost limit or the margin minimum needs this explicit approval
+    approve_financials: bool = False
+    # What the Super Admin decided about each consumer recommendation: [{change, ingredient, decision}]
+    recommendation_decisions: list = Field(default_factory=list)
 
 
 @router.get("/products/{product_id}/recipe")
@@ -83,12 +90,29 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found.")
+    from app.services.recipe_versions import latest_version_row, version_locked
     from app.services.rounds import live_survey_lock
 
-    locked = live_survey_lock(db, [product.id])
-    if locked:  # no recipe change (and no new version) while consumers test the current one
-        raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": locked})
+    latest = latest_version_row(db, product.id)
+    is_locked = latest is not None and version_locked(db, product.id, latest.version)
+    if body.new_version:
+        if latest is None or not is_locked:
+            raise HTTPException(status_code=409, detail={
+                "code": "version_not_locked",
+                "message": (f"Recipe v{latest.version} has no consumer responses yet: edit it directly. "
+                            "A new version is added only after consumers have tested the current one.")
+                if latest is not None else "Save the first recipe first."})
+        live = live_survey_lock(db, [product.id])
+        if live:  # the version being tested stays the product's current recipe until its survey ends
+            raise HTTPException(status_code=409, detail={"code": "survey_ongoing", "message": live})
+    elif is_locked:
+        raise HTTPException(status_code=409, detail={
+            "code": "recipe_version_locked", "version": latest.version,
+            "message": f"Recipe v{latest.version} has consumer responses, so it is locked. "
+                       "Use Add new recipe version to change the recipe."})
     recipe = body.model_dump()
+    for extra in ("new_version", "approve_financials", "recommendation_decisions"):
+        recipe.pop(extra, None)
     from app.services.recipe_tools import normalize_ingredients
 
     # "65 kg" typed in Quantity -> 65 + kg; a number without a unit is kg
@@ -113,13 +137,27 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
                 "message": f"Recipe not saved: it doesn't meet {n} recipe standard{'s' if n != 1 else ''}. "
                            "Change the recipe so every standard is met (or change the standard), then save.",
                 "failed_standards": failures})
+    comparison = None
+    if body.new_version:  # is the new version still commercially viable? (cost limit, margin)
+        from app.services.recipe_economics import compare, targets_of
+        comparison = compare(product.recipe, recipe, targets_of(product))
+        if comparison["needs_approval"] and not body.approve_financials:
+            raise HTTPException(status_code=409, detail={
+                "code": "financial_review_needed",
+                "message": "The new version: " + " ".join(w["message"] for w in comparison["warnings"]
+                                                         if w["code"] != "costs_incomplete") + " Review it and approve to release it anyway.",
+                "comparison": comparison})
     recipe["updated_at"] = datetime.utcnow().isoformat()
     old = product.recipe or None
     recipe["process"] = (recipe.get("process") or "").strip() or None
     product.recipe = recipe if (recipe["ingredients"] or recipe.get("notes") or recipe.get("process") or recipe.get("batch_size")) else None
     db.commit()
     who = account(request)
-    version = save_version(db, product, old, product.recipe, who)
+    version = save_version(db, product, old, product.recipe, who, new_version=body.new_version)
+    if body.new_version and version is not None:  # history: the comparison and the decisions, with the version
+        version.cost_comparison = comparison
+        version.decisions = list(body.recommendation_decisions or [])
+        db.commit()
     in_place = bool(getattr(version, "edited_in_place", False))
     if version is not None:
         audit.note(request, details={"version": version.version, "changes": version.changes, "updated_in_place": in_place},
@@ -187,3 +225,50 @@ def recipe_versions(product_id: int, request: Request, db: Session = Depends(get
     return {"product_id": product_id,
             "versions": [{**version_out(v, role), "rounds": used.get(v.version, []), "project": projects.get(v.version)}
                          for v in rows]}
+
+
+class TargetsIn(BaseModel):
+    selling_price_per_kg: Optional[float] = Field(default=None, ge=0)
+    target_cost_per_kg: Optional[float] = Field(default=None, ge=0)
+    min_margin_pct: Optional[float] = Field(default=None, ge=-100, le=100)
+
+
+class CompareIn(BaseModel):
+    recipe: dict
+
+
+def _product(db, request, product_id):
+    check_product_access(db, request, product_id)
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    return product
+
+
+@router.put("/products/{product_id}/commercials")
+def save_targets(product_id: int, body: TargetsIn, request: Request, db: Session = Depends(get_db)):
+    """The product's selling price per kg, cost limit per kg and minimum margin (all optional)."""
+    from app.services.recipe_economics import targets_of
+    product = _product(db, request, product_id)
+    product.selling_price_per_kg, product.target_cost_per_kg, product.min_margin_pct = (
+        body.selling_price_per_kg, body.target_cost_per_kg, body.min_margin_pct)
+    db.commit()
+    return targets_of(product)
+
+
+@router.post("/products/{product_id}/recipe/compare")
+def compare_recipe(product_id: int, body: CompareIn, request: Request, db: Session = Depends(get_db)):
+    """The proposed recipe against the current version: cost by ingredient, totals, profit, warnings."""
+    from app.services.recipe_economics import compare, targets_of
+    from app.services.recipe_tools import normalize_ingredients
+    product = _product(db, request, product_id)
+    proposed = dict(body.recipe or {})
+    proposed["ingredients"] = normalize_ingredients([i for i in proposed.get("ingredients") or [] if (i or {}).get("name")])
+    return compare(product.recipe, proposed, targets_of(product))
+
+
+@router.get("/products/{product_id}/recipe/recommendations")
+def recipe_recommendations(product_id: int, request: Request, db: Session = Depends(get_db)):
+    """The latest consumer report's recipe recommendations, with the quantity each proposes."""
+    from app.services.recipe_economics import recommendations
+    return recommendations(db, _product(db, request, product_id))

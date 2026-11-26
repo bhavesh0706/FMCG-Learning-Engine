@@ -112,7 +112,25 @@ def _next_version(db: Session, product: Product) -> int:
     return int(current) + 1 if current else first_version(product)
 
 
-def save_version(db: Session, product: Product, old: Optional[dict], new: Optional[dict], account: dict) -> Optional[RecipeVersion]:
+def latest_version_row(db: Session, product_id: int) -> Optional[RecipeVersion]:
+    return (db.query(RecipeVersion).filter(RecipeVersion.product_id == product_id)
+            .order_by(RecipeVersion.version.desc()).first())
+
+
+def version_locked(db: Session, product_id: int, version: int) -> bool:
+    """A recipe version is locked for good once ONE consumer response using it has been submitted
+    (an unfinished draft doesn't count). Before that it is edited in place."""
+    round_ids = [rid for (rid,) in db.query(SurveyRound.id).filter(SurveyRound.product_id == product_id,
+                                                                   SurveyRound.recipe_version == version)]
+    cond = SurveyResponse.recipe_version == version
+    if round_ids:
+        cond = cond | SurveyResponse.round_id.in_(round_ids)
+    return (db.query(SurveyResponse.id).filter(SurveyResponse.product_id == product_id, SurveyResponse.status != "draft")
+            .filter(cond).first() is not None)
+
+
+def save_version(db: Session, product: Product, old: Optional[dict], new: Optional[dict], account: dict,
+                 new_version: bool = False) -> Optional[RecipeVersion]:
     """
     Store the new version (caller has already updated product.recipe). Returns None
     when nothing really changed. A recipe saved before version history existed is
@@ -121,16 +139,20 @@ def save_version(db: Session, product: Product, old: Optional[dict], new: Option
     if comparable(old) == comparable(new):
         return None
     if old and not db.query(RecipeVersion.id).filter(RecipeVersion.product_id == product.id).first():
+        # The recipe from before version history is kept as version 1, as it was: the change
+        # becomes version 2 (never overwrite historic data).
+        new_version = True
         db.add(RecipeVersion(product_id=product.id, version=first_version(product), recipe=old, changed_by_name=None,
                              changed_by_role=None, changes=["Recipe as it was before version history"],
                              created_at=product.updated_at or datetime.utcnow()))
         db.flush()
     latest = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id)
               .order_by(RecipeVersion.version.desc()).first())
-    if latest is not None and version_in_unanswered_survey(db, product.id, latest.version):
-        # A survey was started on this version but nobody has tasted it yet (e.g. the survey
-        # was started before the recipe was complete): update the version in place, so the
-        # survey keeps testing it instead of needing a new survey for "version 2".
+    if latest is not None and not new_version:
+        # Until its first consumer response a version is corrected in place (same number and
+        # recipe code): quantities, batch size, process ... A new version is only made on
+        # purpose ("Add new recipe version"), after consumers have tested this one; the route
+        # refuses in-place changes to a locked version.
         previous = (db.query(RecipeVersion).filter(RecipeVersion.product_id == product.id,
                                                    RecipeVersion.version < latest.version)
                     .order_by(RecipeVersion.version.desc()).first())
@@ -251,6 +273,9 @@ def version_out(v: RecipeVersion, viewer_role: Optional[str] = None) -> dict:
         "changed_by_name": by_name,
         "changed_by_role": v.changed_by_role,
         "changed_at": v.created_at.isoformat(timespec="seconds") + "Z" if v.created_at else None,
+        # its cost comparison with the version it was made from, and the decisions on recommendations
+        "cost_comparison": v.cost_comparison,
+        "decisions": v.decisions or [],
     }
 
 

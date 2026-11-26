@@ -117,7 +117,7 @@ class Notifications {
       receiveTimeout: const Duration(seconds: 20),
       headers: {'Accept': 'application/json'},
     ),
-  )..interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
+  )..interceptors.add(Session.refreshOnUnauthorized())..interceptors.add(InterceptorsWrapper(onRequest: (options, handler) {
       final token = Session.token;
       if (token != null) options.headers['Authorization'] = 'Bearer $token';
       handler.next(options);

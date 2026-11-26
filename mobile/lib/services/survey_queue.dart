@@ -713,7 +713,7 @@ class SurveyQueue {
         // The server ended this session: keep the survey waiting; sign-in is asked again.
         s
           ..status = SurveyStatus.waiting
-          ..error = 'Sign in again to upload.';
+          ..error = 'Renewing the sign-in: the upload continues automatically.';
         await _changed(s);
         unawaited(Session.refreshMe());
         return false;

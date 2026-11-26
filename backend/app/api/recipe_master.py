@@ -60,6 +60,18 @@ def _latest_version(db: Session, product_id: int) -> Optional[int]:
     return v[0] if v else None
 
 
+def _latest_comparison(db: Session, product_id: int):
+    from app.services.recipe_versions import latest_version_row
+    latest = latest_version_row(db, product_id)
+    return latest.cost_comparison if latest is not None else None
+
+
+def _latest_locked(db: Session, product_id: int) -> bool:
+    from app.services.recipe_versions import latest_version_row, version_locked
+    latest = latest_version_row(db, product_id)
+    return bool(latest is not None and version_locked(db, product_id, latest.version))
+
+
 def _latest_code(db: Session, product_id: int):
     """The recipe code (RCP-####) of the product's latest saved version, or None."""
     row = (db.query(RecipeVersion.recipe_code).filter(RecipeVersion.product_id == product_id)
@@ -87,6 +99,12 @@ def recipe_extras(db: Session, product: Product) -> dict:
         "legacy_steps": legacy,  # steps of an earlier version, shown read-only
         "latest_version": _latest_version(db, product.id),  # (not "version": a save returns its own)
         "recipe_code": _latest_code(db, product.id),  # RCP-#### of the latest version
+        # Locked once a consumer response used the latest version: then only "Add new recipe version"
+        "version_locked": _latest_locked(db, product.id),
+        # the latest version's stored cost comparison with the version it came from (history)
+        "latest_cost_comparison": _latest_comparison(db, product.id),
+        "commercials": {"selling_price_per_kg": product.selling_price_per_kg, "target_cost_per_kg": product.target_cost_per_kg,
+                        "min_margin_pct": product.min_margin_pct},
         # Active standards that apply to this product (its own, its category's, all products'):
         # the recipe must meet every one to be saved. Known before the first recipe too.
         "standards_count": sum(1 for r in rules if r.applies_to_all or r.product_id == product.id
@@ -131,10 +149,13 @@ def recipe_master(request: Request, db: Session = Depends(get_db)):
 
 class StandardIn(BaseModel):
     name: str = Field(min_length=3, max_length=160)
-    kind: Literal["required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg"]
+    # "custom": a rule written in words (its name), checked by people, never automatically
+    kind: Literal["required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg", "custom"]
     ingredient: Optional[str] = Field(default=None, max_length=120)
     min_value: Optional[float] = Field(default=None, ge=0)
     max_value: Optional[float] = Field(default=None, ge=0)
+    # UOM of the limits (quantity rules, cost rules): a Measurement unit code, e.g. "g", "MT", "mL"
+    unit: Optional[str] = Field(default=None, max_length=16)
     # Scope, exactly one: a product, a category, or every product (explicit)
     product_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -151,7 +172,7 @@ def _standard_out(r: RecipeStandard, cats: dict, products: Optional[dict] = None
     label = {"product": f"Only {(products or {}).get(r.product_id, 'this product')}",
              "category": f"Only {cats.get(r.category_id, 'this category')}", "all": "All products", "none": "Applies to nothing"}[scope]
     return {"id": r.id, "name": r.name, "kind": r.kind, "ingredient": r.ingredient, "min_value": r.min_value,
-            "max_value": r.max_value, "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
+            "max_value": r.max_value, "unit": r.unit or "kg", "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
             "category_id": r.category_id, "category_name": cats.get(r.category_id), "applies_to_all": bool(r.applies_to_all),
             "scope": scope, "scope_label": label, "is_active": bool(r.is_active), "created_by": r.created_by_name}
 
@@ -164,6 +185,8 @@ def _check_standard(body: StandardIn, db: Session) -> None:
         raise HTTPException(status_code=400, detail="That product doesn't exist.")
     if body.category_id and db.get(Category, body.category_id) is None:
         raise HTTPException(status_code=400, detail="That category doesn't exist.")
+    if body.kind == "custom" and (not (body.ingredient or "").strip() or (body.min_value is None and body.max_value is None)):
+        raise HTTPException(status_code=400, detail="A custom rule needs the ingredient and a minimum and/or maximum quantity in kg.")
     if body.kind in ("required_ingredient", "ingredient_share", "ingredient_cost_per_kg") and not (body.ingredient or "").strip():
         raise HTTPException(status_code=400, detail="Name the ingredient this rule checks.")
     if body.kind == "ingredient_cost_per_kg" and body.max_value is None:
@@ -174,6 +197,13 @@ def _check_standard(body: StandardIn, db: Session) -> None:
         raise HTTPException(status_code=400, detail="The minimum is above the maximum.")
     if body.kind == "max_cost_per_kg" and body.max_value is None:
         raise HTTPException(status_code=400, detail="Give the maximum cost per kg.")
+    if body.unit and body.unit.strip():
+        from app.services.recipe_tools import TO_KG
+
+        if body.unit.strip().lower() not in TO_KG:
+            raise HTTPException(status_code=400, detail=f"“{body.unit}” isn't a known unit: choose one from Measurement unit.")
+    if body.kind == "custom" and body.min_value is not None and body.max_value is not None and body.min_value > body.max_value:
+        raise HTTPException(status_code=400, detail="The minimum is above the maximum.")
 
 
 @router.get("/recipe-standards")
@@ -191,6 +221,9 @@ def _fields(body: StandardIn) -> dict:
     d = body.model_dump(exclude={"is_active", "applies_to_all"})
     d["applies_to_all"] = 1 if body.applies_to_all else 0
     d["ingredient"] = (body.ingredient or "").strip() or None
+    # A unit only matters for quantity and cost rules; kg is stored as NULL (the default).
+    u = (body.unit or "").strip()
+    d["unit"] = u if u and u.lower() != "kg" and body.kind in ("custom", "ingredient_cost_per_kg", "max_cost_per_kg") else None
     return d
 
 

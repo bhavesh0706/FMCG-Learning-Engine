@@ -126,7 +126,9 @@ def seed_lov() -> int:
         for code, name, is_system, values in DEFAULTS:
             master = db.query(OtherMasterName).filter(OtherMasterName.master_code == code).first()
             if master is None:
-                master = OtherMasterName(master_code=code, master_name=name, is_system=is_system)
+                # System lists: the program uses their codes, so no values are added (Add Value off).
+                master = OtherMasterName(master_code=code, master_name=name, is_system=is_system,
+                                         allow_add=0 if is_system else 1)
                 db.add(master)
                 db.flush()
                 added += 1
@@ -137,11 +139,58 @@ def seed_lov() -> int:
                                            sort_order=position, extra=extra))
                     added += 1
         added += _seed_geo(db)
+        added += _seed_units(db)
         db.commit()
     finally:
         db.close()
     if added:
         print(f"Database updated: {added} LOV rows added (m_othermastername / m_othermasterdata)")
+    return added
+
+
+# Measurement units for recipe ingredients: two categories (fixed), units inside each
+# (manageable in Other Master Data). extra.to_base: the unit in the category's base
+# (kg for Weight/Mass, L for Volume).
+UNIT_CATEGORIES = [("weight", "Weight/Mass", "kg"), ("volume", "Volume", "L")]
+UNITS = {
+    "weight": [("µg", "Microgram", 1e-9), ("mg", "Milligram", 1e-6), ("g", "Gram", 1e-3), ("kg", "Kilogram", 1.0),
+               ("MT", "Metric tonne", 1000.0)],
+    "volume": [("µL", "Microlitre", 1e-6), ("mL", "Millilitre", 1e-3), ("L", "Litre", 1.0), ("kL", "Kilolitre", 1000.0)],
+}
+
+
+def _seed_units(db) -> int:
+    added = 0
+
+    def master(code, name, description, parent=None, allow_add=1):
+        nonlocal added
+        m = db.query(OtherMasterName).filter(OtherMasterName.master_code == code).first()
+        if m is None:
+            m = OtherMasterName(master_code=code, master_name=name, description=description, is_system=0,
+                                allow_add=allow_add, can_edit=1, parent_master_id=parent.id if parent else None)
+            db.add(m)
+            db.flush()
+            added += 1
+        return m
+
+    cats = master("UNIT_CATEGORY", "Measurement category", "Weight/Mass and Volume: the categories of measurement units.",
+                  allow_add=0)
+    units = master("MEASUREMENT_UNIT", "Measurement unit", "Units for recipe ingredient quantities, by category.", cats)
+    have = {r.data_code: r for r in db.query(OtherMasterData).filter(OtherMasterData.master_id.in_([cats.id, units.id]))
+            if r.master_id == cats.id}
+    have_units = {r.data_code for r in db.query(OtherMasterData).filter(OtherMasterData.master_id == units.id)}
+    for pos, (code, label, base) in enumerate(UNIT_CATEGORIES):
+        row = have.get(code)
+        if row is None:
+            row = OtherMasterData(master_id=cats.id, data_code=code, data_value=label, sort_order=pos, extra={"base": base})
+            db.add(row)
+            db.flush()
+            added += 1
+        for upos, (ucode, ulabel, factor) in enumerate(UNITS[code]):
+            if ucode not in have_units:
+                db.add(OtherMasterData(master_id=units.id, data_code=ucode, data_value=ulabel, parent_id=row.id,
+                                       sort_order=upos, extra={"to_base": factor, "base": base}))
+                added += 1
     return added
 
 

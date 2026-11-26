@@ -68,6 +68,11 @@ def _categories(db: Session) -> dict:
     return {c.id: c.name for c in db.query(Category).all()}
 
 
+def _with_costs(report):
+    from app.services.recipe_economics import with_cost_comparison
+    return with_cost_comparison(report, report.narrative)
+
+
 def _safe_report(report) -> Optional[dict]:
     """The consolidated report without internal survey ids."""
     if report is None:
@@ -79,7 +84,7 @@ def _safe_report(report) -> Optional[dict]:
         "response_count": report.response_count,
         "overall_rating": report.overall_rating,
         "stats": report.stats,
-        "narrative": report.narrative,
+        "narrative": _with_costs(report),
         "generated_at": _iso(report.generated_at),
     }
 

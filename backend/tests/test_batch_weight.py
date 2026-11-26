@@ -11,7 +11,7 @@ def _recipe(batch, *kgs, unit="kg"):
     return {"batch_size": batch, "ingredients": [{"name": f"Ingredient {i}", "quantity": str(q), "unit": unit} for i, q in enumerate(kgs)]}
 
 
-@pytest.mark.parametrize("text, kg", [("100 kg batch = 500 bottles of 200 ml", 100), ("1.5 tonnes", 1500), ("2 quintal", 200),
+@pytest.mark.parametrize("text, kg", [("100 kg batch = 500 bottles of 200 ml", 100), ("1.5 tonnes", 1500), ("2 MT", 2000),
                                       ("250kg", 250), ("500 bottles", None), ("", None)])
 def test_the_batch_weight_is_read_from_the_text(text, kg):
     assert batch_weight_kg(text) == kg

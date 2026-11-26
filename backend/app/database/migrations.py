@@ -229,6 +229,13 @@ def run_migrations():
     _add_column("respondents", "city", "VARCHAR(120) NULL", index=True)
     _add_column("m_othermastername", "parent_master_id", "INT NULL")
     _add_column("m_othermasterdata", "parent_id", "INT NULL", index=True)
+    # Other Master Data permissions. System lists keep their behaviour: values can be renamed, not added.
+    if not _has_column("m_othermastername", "allow_add"):
+        _add_column("m_othermastername", "allow_add", "INT NOT NULL DEFAULT 1")
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE m_othermastername SET allow_add = 0 WHERE is_system = 1"))
+    _add_column("m_othermastername", "can_edit", "INT NOT NULL DEFAULT 1")
+    _add_column("recipe_standards", "unit", "VARCHAR(16) NULL")  # UOM of a rule's limits (NULL = kg)
     #    Older uploads keep NULL: they aren't linked to a survey.
     _add_column("feedback_records", "response_id", "INT NULL", index=True)
     _add_column("survey_answers", "value_en", "TEXT NULL")
@@ -343,6 +350,11 @@ def run_migrations():
     project_totals()
     # Recipe codes (RCP-0001 ...): one per saved recipe version
     _add_column("recipe_versions", "recipe_code", "VARCHAR(20) NULL")
+    _add_column("recipe_versions", "cost_comparison", "JSON NULL")
+    _add_column("recipe_versions", "decisions", "JSON NULL")
+    _add_column("products", "selling_price_per_kg", "DOUBLE NULL")
+    _add_column("products", "target_cost_per_kg", "DOUBLE NULL")
+    _add_column("products", "min_margin_pct", "DOUBLE NULL")
     _add_unique_index("recipe_versions", "recipe_code")
     recipe_codes()
     _add_column("survey_responses", "location_captured_at", "DATETIME NULL")
@@ -368,6 +380,8 @@ def run_migrations():
 def plans_before_the_survey() -> None:
     """Action plans can be made in a project before its survey starts (round_id NULL)."""
     _add_column("action_plans", "project_id", "INT NULL", index=True)
+    _add_column("action_plans", "plan_code", "VARCHAR(10) NULL", index=True)
+    plan_codes()
     col = next((c for c in inspect(engine).get_columns("action_plans") if c["name"] == "round_id"), None)
     if col is not None and not col.get("nullable", True):
         try:
@@ -790,3 +804,28 @@ def category_codes_unique() -> None:
                 changes.append(f"{name}: {code} -> CAT-{kept[rid]:04d}")
     if changes:
         print("Database updated: category codes made unique (CAT-####): " + "; ".join(changes))
+
+
+def plan_codes() -> None:
+    """Existing survey plans get their PLA### code once: numbered within their project (or, without
+    a project, within their product and recipe version), oldest first. Safe to repeat."""
+    from collections import defaultdict
+
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT record_no, project_id, product_id, recipe_version, plan_code FROM action_plans "
+                                 "ORDER BY record_no")).all()
+        used, todo = defaultdict(set), []
+        for rid, project, product, version, code in rows:
+            scope = ("j", project) if project else ("p", product, version)
+            if code and code.startswith("PLA") and code[3:].isdigit():
+                used[scope].add(int(code[3:]))
+            else:
+                todo.append((rid, scope))
+        for rid, scope in todo:
+            n = 1
+            while n in used[scope]:
+                n += 1
+            used[scope].add(n)
+            conn.execute(text("UPDATE action_plans SET plan_code = :c WHERE record_no = :r"), {"c": f"PLA{n:03d}", "r": rid})
+    if todo:
+        print(f"Database updated: {len(todo)} survey plan(s) got a plan code (PLA001, PLA002 ... per project)")

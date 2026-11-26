@@ -1,7 +1,9 @@
+import { CostComparison, RecommendationsPanel } from "./RecipeEconomics";
 import { ActionPlansSection } from "./ActionPlans";
 import MastersDialog from "./MastersDialog";
 import KpiIcon from "./KpiIcon";
 import { onLovLoaded, patchMap } from "../services/lov";
+import { toKg, unitCode, unitGroups, unitTable } from "../services/units";
 import { AttachmentsCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
 
 // ₹ with up to 2 decimals; "—" when unknown (same as the old Costing table)
@@ -201,7 +203,7 @@ function VersionsCell({ product }) {
   );
 }
 
-function ProductDialog({ categories, defaultCategoryId, lockCategory = false, onClose, onCreated, onNeedCategory }) {
+export function ProductDialog({ categories, defaultCategoryId, lockCategory = false, onClose, onCreated, onNeedCategory }) {
   // Opened from inside a category: the product goes into that category only
   const active = categories.filter((c) => c.is_active && (!lockCategory || String(c.id) === String(defaultCategoryId)));
   const [form, setForm] = useState({
@@ -1235,28 +1237,31 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
 
 /* ---------------- Recipe ---------------- */
 
-const blankIngredient = () => ({ name: "", quantity: "", unit: "", cost_per_kg: "", notes: "" });
+const blankIngredient = () => ({ name: "", quantity: "", unit: "kg", cost_per_kg: "", notes: "" });
 
 /* Batch tolerance (the server checks the same: services/recipe_tools.batch_check).
    The ingredients weigh at least the batch size and at most a little more: each 100 kg band
    has its own %, a bigger batch a smaller % (but more kg). */
 const TOLERANCE_BANDS = [[100, 2.0], [200, 1.8], [300, 1.6], [400, 1.5], [500, 1.4], [600, 1.3], [700, 1.2], [800, 1.1], [900, 1.0], [1000, 0.9]];
 const TOLERANCE_ABOVE = 0.8;
-const WEIGHT_TO_KG = { kg: 1, kgs: 1, g: 0.001, gm: 0.001, gms: 0.001, gram: 0.001, grams: 0.001, mg: 0.000001, l: 1, ltr: 1, litre: 1, liter: 1, ml: 0.001 };
-const BATCH_UNITS = { ...WEIGHT_TO_KG, kilo: 1, kilos: 1, kilogram: 1, kilograms: 1, t: 1000, ton: 1000, tons: 1000, tonne: 1000, tonnes: 1000, quintal: 100, quintals: 100 };
+// Units and their factors: Other Master > Measurement unit (services/units.js), never listed here.
+
 const kgText = (v) => String(Math.round(v * 1000) / 1000);
 
 export function batchCheck(recipe) {
   const text = String(recipe?.batch_size || "").toLowerCase().replace(/,/g, "");
   let batch = null;
-  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/g)) {
-    if (BATCH_UNITS[m[2]] !== undefined) { batch = Number(m[1]) * BATCH_UNITS[m[2]]; break; }
+  const units = unitTable();
+  for (const m of text.matchAll(/(\d+(?:\.\d+)?)\s*(\p{L}+)/gu)) {
+    const f = toKg(m[2], units);
+    if (f !== undefined) { batch = Number(m[1]) * f; break; }
   }
   let total = 0, weighed = false;
   for (const ing of recipe?.ingredients || []) {
     const qty = Number(String(ing.quantity ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/)?.[0]);
     const unit = unitOf(ing);
-    if (ing.name?.trim() && Number.isFinite(qty) && WEIGHT_TO_KG[unit] !== undefined) { total += qty * WEIGHT_TO_KG[unit]; weighed = true; }
+    const f = toKg(unit, units);
+    if (ing.name?.trim() && Number.isFinite(qty) && f !== undefined) { total += qty * f; weighed = true; }
   }
   if (!batch || !weighed) return { checked: false, ok: true, message: "" };
   total = Math.round(total * 1000) / 1000; // whole grams: no floating-point dust (0.1 + 0.2)
@@ -1278,23 +1283,16 @@ export function batchCheck(recipe) {
 }
 const blankStep = () => ({ title: "", details: "", temperature: "", duration: "" });
 
-// "82" + "kg" -> grams (mass) or millilitres (volume); null when it can't be compared.
-const UNIT_FACTORS = { mg: ["mass", 0.001], g: ["mass", 1], gm: ["mass", 1], gram: ["mass", 1], grams: ["mass", 1], kg: ["mass", 1000],
-  ml: ["vol", 1], l: ["vol", 1000], litre: ["vol", 1000], liter: ["vol", 1000], ltr: ["vol", 1000] };
 // The quantity with its unit, as typed and shown in one field: "65 kg", "500 g"
 const qtyText = (i) => [i.quantity, i.unit].filter((x) => String(x ?? "").trim() !== "").join(" ");
-// "65 kg" -> 65 + kg; "65" -> 65 (kg is added when it's a plain number); other text stays as typed
-function splitQty(text) {
-  const m = String(text).match(/^\s*(\d+(?:[.,]\d*)?)\s*([a-zA-Z%]*)\s*$/);
-  return m ? { quantity: m[1], unit: m[2] } : { quantity: text, unit: "" };
-}
 // A plain number with no unit counts as kg (batches are weighed in kg)
 const unitOf = (i) => String(i.unit || "").trim().toLowerCase() || (Number.isFinite(parseFloat(String(i.quantity ?? "").replace(",", "."))) ? "kg" : "");
 
 function amountOf(i) {
   const q = parseFloat(String(i.quantity || "").replace(",", "."));
-  const u = UNIT_FACTORS[unitOf(i)];
-  return Number.isFinite(q) && u ? { kind: u[0], value: q * u[1] } : null;
+  // In grams (Weight/Mass) or millilitres (Volume), from the unit's master factor; null when unknown.
+  const u = unitTable()[unitOf(i)];
+  return Number.isFinite(q) && u ? { kind: u.base === "L" ? "vol" : "mass", value: q * u.toKg * 1000 } : null;
 }
 
 // "30 min", "1 h", "1.5 hr", "45 sec" -> minutes; null when unclear.
@@ -1302,15 +1300,33 @@ function amountOf(i) {
 // manages recipes in its portal; the server refuses admin changes too).
 // snapshot: an earlier survey's recipe version (read-only, same layout as the current recipe).
 export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp = false, snapshot = null }) {
-  const readOnly = readOnlyProp || Boolean(snapshot);
+  const readOnlyBase = readOnlyProp || Boolean(snapshot);
   const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
   const [reloadKey, setReloadKey] = useState(0); // new value = the recipe is loaded again
   const [recipe, setRecipe] = useState(null);
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState({ batch: false, ingredients: false, steps: false });
+  const units = unitGroups(); // ingredient units (Other Master > Measurement unit)
   // Costing, standards, attachments, earlier steps (from the server)
   const [extras, setExtras] = useState(null);
+  // A version with consumer responses is locked: only "Add new recipe version" changes the recipe,
+  // starting from the whole previous version. Before its first response it is corrected in place.
+  const [newVersion, setNewVersion] = useState(false);
+  // New version: what was decided about each consumer recommendation, and the approval needed when
+  // the version breaks the cost limit or the minimum margin (checked again on the server)
+  const [decisions, setDecisions] = useState([]);
+  const [approve, setApprove] = useState(false);
+  const decide = (r, d) => setDecisions((list) => (d
+    ? [...list.filter((x) => x.change !== r.change), { change: r.change, ingredient: r.ingredient || "", decision: d, proposed_kg: r.proposed_kg ?? null }]
+    : list.filter((x) => x.change !== r.change)));
+  const applyRecommendation = (r) => setRecipe((rr) => ({
+    ...rr,
+    ingredients: rr.ingredients.map((i) => (String(i.name || "").trim().toLowerCase() === String(r.ingredient).toLowerCase()
+      ? { ...i, quantity: String(+Number(r.proposed_kg).toFixed(3)), unit: "kg" } : i)),
+  }));
+  const locked = Boolean(extras?.version_locked) && !snapshot;
+  const readOnly = readOnlyBase || (locked && !newVersion);
   // A save refused because the recipe doesn't meet its recipe standards: { message, failures }
   const [stdError, setStdError] = useState(null);
   const reloadExtras = () => getRecipe(product.id).then((d) => setExtras(d)).catch(() => {});
@@ -1365,7 +1381,11 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
         notes: recipe.notes.trim() || null,
         process: (recipe.process || "").trim() || null,
       };
-      const res = await saveRecipe(product.id, clean);
+      const res = await saveRecipe(product.id, newVersion
+        ? { ...clean, new_version: true, approve_financials: approve, recommendation_decisions: decisions } : clean);
+      setNewVersion(false);
+      setDecisions([]);
+      setApprove(false);
       setStdError(null);
       if (res) setExtras(res);
       const next = { ...recipe, ingredients: clean.ingredients.map((i) => ({ ...i, cost_per_kg: i.cost_per_kg ?? "" })), steps: [] };
@@ -1375,9 +1395,12 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       setHistoryKey((k) => k + 1);
       onNotice({
         tone: "ok",
-        text: res?.version_updated_in_place
-          ? `Recipe saved as version ${res.version}: its survey has no responses yet, so it keeps testing version ${res.version} (no new version).`
-          : `Recipe saved: ${res?.recipe?.ingredients?.length || 0} ingredients, ${res?.recipe?.steps?.length || 0} steps. The next report refresh uses it.`,
+        text: res?.version == null ? "Nothing changed."
+          : res.version_updated_in_place
+            ? `Recipe v${res.version} updated (no consumer responses yet, so no new version).`
+            : res.version > 1
+              ? `Saved as recipe v${res.version}. Recipe v${res.version - 1} and its consumer feedback are kept as they were.`
+              : `Recipe v${res.version} saved.`,
       });
       onSaved?.();
     } catch (err) {
@@ -1393,6 +1416,9 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
     }
   };
   const discard = () => {
+    setNewVersion(false);
+    setDecisions([]);
+    setApprove(false);
     setRecipe(JSON.parse(saved));
     setEditing({ batch: false, ingredients: false, steps: false });
     setStdError(null);
@@ -1443,14 +1469,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
           </p>
         )
       )}
-      <div className="tab-intro">
-        <strong>Recipe</strong>
-        <p className="muted">
-          How {product.name} is made, from raw materials to the packed product. Consolidated reports use it to link customer
-          feedback to an exact ingredient, e.g. "7 of 10 find it too sweet: reduce sugar from 8 kg to 7 kg".
-        </p>
-      </div>
-      {readOnly && !snapshot && (
+      {readOnlyProp && !snapshot && (
         <p className="catalog-hint managed-note" role="note">
           Recipes are added and changed by the organization in its portal. Every saved change becomes a new version,
           listed below.
@@ -1458,6 +1477,23 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       )}
 
       {/* ---- batch ---- */}
+      {!readOnlyBase && locked && !newVersion && (
+        <div className="callout org-callout recipe-lock-bar" role="status">
+          <span><strong>Recipe v{extras?.latest_version} is locked:</strong> consumers have responded to it. To change the recipe, add a new version.</span>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => {
+            setNewVersion(true);
+            setEditing({ batch: true, ingredients: true, steps: false });
+          }}>Add new recipe version</button>
+        </div>
+      )}
+      {newVersion && (
+        <div className="callout org-callout recipe-lock-bar is-new" role="status">
+          <span><strong>New recipe v{(extras?.latest_version || 0) + 1}</strong>, starting from v{extras?.latest_version}: change what you need, then save.
+            Recipe v{extras?.latest_version} and its feedback stay as they are.</span>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={discard}>Cancel</button>
+        </div>
+      )}
+      {newVersion && <RecommendationsPanel productId={product.id} decisions={decisions} onDecide={decide} onApply={applyRecommendation} />}
       <section className="recipe-card">
         <header className="recipe-card-head">
           <div>
@@ -1501,18 +1537,26 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
         {editing.ingredients ? (
           <div className="ing-edit">
             <div className="ing-edit-head" aria-hidden="true">
-              <span>Ingredient</span><span>Quantity</span><span>Cost per KG (₹)</span><span>Purpose in the recipe</span><span />
+              <span>Ingredient</span><span>Quantity</span><span>UOM</span><span>Cost per KG (₹)</span><span>Purpose in the recipe</span><span />
             </div>
             {recipe.ingredients.map((ing, i) => (
               <div className="ing-edit-row" key={i}>
                 <input className="input" aria-label={`Ingredient ${i + 1}`} placeholder="e.g. Sugar" value={ing.name}
                   onChange={(e) => setList("ingredients", i, "name", e.target.value)} />
-                {/* Quantity with its unit in one field ("65 kg", "500 g"); a plain number is kg */}
-                <input className="input" aria-label="Quantity" placeholder="e.g. 8 kg" value={qtyText(ing)}
-                  onChange={(e) => {
-                    const v = splitQty(e.target.value);
-                    setRecipe((r) => ({ ...r, ingredients: r.ingredients.map((row, k) => (k === i ? { ...row, ...v } : row)) }));
-                  }} />
+                {/* Quantity and its unit (Other Master > Measurement unit: Weight/Mass or Volume) */}
+                <>
+                  <input className="input" aria-label={`Quantity of ingredient ${i + 1}`} inputMode="decimal" placeholder="e.g. 8" value={ing.quantity ?? ""}
+                    onChange={(e) => setList("ingredients", i, "quantity", e.target.value.replace(/[^0-9.,]/g, ""))} />
+                  <Select className="input" aria-label={`Unit of ingredient ${i + 1}`} value={unitCode(ing.unit, units) || "kg"}
+                    onChange={(e) => setList("ingredients", i, "unit", e.target.value)}>
+                    {units.flatMap(([cat, us]) => us.map(([code, label]) => (
+                      <option key={`${cat}-${code}`} value={code} title={cat}>{code} · {label}</option>
+                    )))}
+                    {ing.unit && !units.some(([, us]) => us.some(([code]) => code === unitCode(ing.unit, units))) && (
+                      <option value={ing.unit}>{ing.unit} (older unit)</option>
+                    )}
+                  </Select>
+                </>
                 <input className="input" aria-label="Cost per KG" inputMode="decimal" placeholder="e.g. 45" value={ing.cost_per_kg ?? ""}
                   onChange={(e) => setList("ingredients", i, "cost_per_kg", e.target.value.replace(/[^0-9.,]/g, ""))} />
                 <input className="input" aria-label="Purpose" placeholder="e.g. Sweetness" value={ing.notes}
@@ -1590,8 +1634,15 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
 
       {/* ---- production process ---- */}
       {/* Requirements points 1-3 and 6: costing, standards, process attachments; no Steps in new versions */}
-      {readOnly && !snapshot && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
+      {readOnlyProp && !snapshot && <StandardsCard standards={extras?.standards} productId={product.id} readOnly onChanged={reloadExtras} />}
       {/* The process: typed in here, attached as files below, or both */}
+      {newVersion && (
+        <CostComparison productId={product.id} recipe={recipe} fromVersion={extras?.latest_version}
+          approve={approve} onApprove={setApprove} />
+      )}
+      {!newVersion && !snapshot && extras?.latest_cost_comparison && (
+        <CostComparison productId={product.id} saved={extras.latest_cost_comparison} fromVersion={(extras?.latest_version || 1) - 1} />
+      )}
       <section className="recipe-card">
         <header className="recipe-card-head">
           <div>

@@ -1,7 +1,7 @@
 """Recipe plans and action plans: planning per product, several plans per round,
 team members allocated to cities (enforced), and plans carried to new recipe versions."""
 
-from conftest import start_project, staff_project  # noqa: F401
+from conftest import start_project, staff_project, recipe_change  # noqa: F401
 from conftest import _unique, auth, make_user
 
 from app.database.models import ActionPlan, ProductAssignment, SurveyResponse
@@ -22,7 +22,7 @@ def _product(client, org, cid, **extra):
 
 
 def _ready(client, org, pid):
-    client.put(f"/products/{pid}/recipe", headers=auth(org), json=RECIPE)
+    recipe_change(client, auth(org), pid, RECIPE)
     for text in ("How is the taste?", "How is the sweetness?", "How is the texture?", "How is the aroma?", "Would you buy it again?"):
         client.post(f"/products/{pid}/questions", headers=auth(org), json={"text": text, "question_type": "rating"})  # surveys need 5
 
@@ -64,8 +64,10 @@ def test_several_action_plans_with_their_own_teams_and_cities(client, db, admin)
     # Admin allocates: A -> Delhi, B -> Mumbai
     assert client.put(f"/admin/action-plans/{main}/members", headers=auth(admin), json={"members": [{"user_id": a.id, "cities": ["delhi"]}]}).status_code == 200
     assert client.put(f"/admin/action-plans/{mumbai}/members", headers=auth(admin), json={"members": [{"user_id": b.id}]}).status_code == 200
+    # The Admin decides where each survey person surveys: any city, also outside the plan's own
     outside = client.put(f"/admin/action-plans/{main}/members", headers=auth(admin), json={"members": [{"user_id": a.id, "cities": ["Pune"]}]})
-    assert outside.status_code == 400 and "not a city of" in outside.json()["detail"]
+    assert outside.status_code == 200
+    assert client.put(f"/admin/action-plans/{main}/members", headers=auth(admin), json={"members": [{"user_id": a.id, "cities": ["delhi"]}]}).status_code == 200
     view = client.get(f"/products/{pid}/action-plans", headers=auth(admin)).json()
     assert view["round"]["target"] == 18, "the round's target is the sum of its plans"
     assert {p["name"]: [m["cities"] for m in p["members"]] for p in view["plans"]} == {"Delhi team": [["Delhi"]], "Mumbai team": [["Mumbai"]]}
@@ -105,7 +107,7 @@ def test_a_new_recipe_version_copies_the_action_plans(client, db, admin):
     db.commit()
     assert client.delete(f"/action-plans/{plan}", headers=auth(org)).status_code == 409, "a plan with surveys is kept"
     client.post(f"/org/products/{pid}/rounds/{first['number']}/end", headers=auth(org))
-    client.put(f"/products/{pid}/recipe", headers=auth(org), json={**RECIPE, "batch_size": "100 kg batch v2"})
+    recipe_change(client, auth(org), pid, {**RECIPE, "batch_size": "100 kg batch v2"})
     second = client.post(f"/org/products/{pid}/rounds", headers=auth(org), json={})
     assert second.status_code in (200, 201), second.text
     new = client.get(f"/products/{pid}/action-plans", headers=auth(org)).json()
