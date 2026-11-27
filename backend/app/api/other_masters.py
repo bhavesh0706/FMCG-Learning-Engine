@@ -9,13 +9,15 @@ DELETE /admin/other-masters/{id}                 only an empty table that nothin
 GET    /admin/other-masters/{id}/values          its values (also inactive ones)
 POST   /admin/other-masters/{id}/values          {code, description?, is_active?, parent_id?}   needs Active + Add Value
 PATCH  /admin/other-masters/values/{value_id}    {description?, is_active?, sort_order?}        needs Active + Can Edit
+DELETE /admin/other-masters/values/{value_id}    only a value nothing uses (needs Active + Can Edit)
 
 Active    the table can be used (an inactive table disappears from GET /lov and takes no new values).
 Can Edit  its existing values may be changed.
 Add Value new values may be added.
 System tables (is_system) hold codes the program relies on: they stay active, take no new
-values and their codes never change. Values are never deleted (saved data keeps the code):
-they are deactivated instead.
+values and their codes never change. A value may be deleted when nothing uses it: not a code
+the program itself relies on (built-in question / rule types, the unit categories, kg and L),
+no value belongs to it, and no question, rule or recipe uses it. Otherwise it is deactivated.
 """
 
 import re
@@ -27,7 +29,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database.database import get_db
-from app.database.models import OtherMasterData, OtherMasterName, User
+from app.database.models import OtherMasterData, OtherMasterName, Product, RecipeStandard, RecipeVersion, SurveyQuestion, User
 from app.services import audit
 from app.services import units as unit_table
 
@@ -55,7 +57,7 @@ def _table_out(m: OtherMasterName, counts: dict, parents: dict, names: dict) -> 
     return {
         "id": m.id, "code": m.master_code, "name": m.master_name, "description": m.description,
         "is_active": bool(m.is_active), "can_edit": bool(m.can_edit), "allow_add": bool(m.allow_add),
-        "closed_why": CLOSED_WHY.get(m.master_code),  # why a system list takes no new values
+        "closed_why": None,
         # The server's own verdicts (None = allowed): the page shows these, never its own rules.
         "add_problem": may_add(m), "edit_problem": may_edit(m),
         "is_system": bool(m.is_system),
@@ -137,10 +139,6 @@ def create_table(body: TableIn, request: Request, db: Session = Depends(get_db))
 @router.patch("/{table_id}")
 def change_table(table_id: int, body: TablePatch, request: Request, db: Session = Depends(get_db)):
     m = _table_or_404(db, table_id)
-    if m.is_system and body.is_active is False:
-        raise HTTPException(status_code=409, detail=f"{m.master_name} is used by the program: it stays active.")
-    if m.is_system and body.allow_add:
-        raise HTTPException(status_code=409, detail=f"{m.master_name} is used by the program: its values are fixed, new ones can't be added.")
     if body.name is not None:
         name = _clean(body.name)
         clash = (db.query(OtherMasterName).filter(func.lower(OtherMasterName.master_name) == name.lower(),
@@ -194,9 +192,96 @@ def delete_table(table_id: int, request: Request, db: Session = Depends(get_db))
 
 # ---------------------------------------------------------------- values
 
-def _value_out(v: OtherMasterData, parents: dict, names: dict) -> dict:
+def _calculation_codes(m: OtherMasterName) -> set:
+    """The only values that are never deleted: every quantity and cost is converted through them
+    (the Weight/Mass and Volume categories and their base units kg and L)."""
+    from app.services.lov import UNIT_CATEGORIES
+
+    return {
+        "UNIT_CATEGORY": {c for c, *_ in UNIT_CATEGORIES},
+        "MEASUREMENT_UNIT": {base for *_, base in UNIT_CATEGORIES},
+    }.get(m.master_code, set())
+
+
+def _built_in_codes(m: OtherMasterName) -> set:
+    """Starting codes the app knows (built-in question / rule types, sentiments, roles ...). They
+    may be deleted: saved questions, rules and results keep their own code and keep working; the
+    value only stops being offered. The delete dialog says so (delete_warning)."""
+    from app.services.lov import BUILT_IN_QUESTION_TYPES, BUILT_IN_STANDARD_TYPES, DEFAULTS
+
+    if m.is_system:
+        # Lists the program reads by code (sentiments, ratings, roles ...): their starting codes stay.
+        for code, _name, _sys, values in DEFAULTS:
+            if code == m.master_code:
+                return {c for c, *_ in values}
+    return {
+        "QUESTION_TYPE": set(BUILT_IN_QUESTION_TYPES),
+        "RECIPE_STANDARD_TYPE": set(BUILT_IN_STANDARD_TYPES),
+    }.get(m.master_code, set())
+
+
+def value_delete_warning(m: OtherMasterName, v: OtherMasterData) -> Optional[str]:
+    if v.data_code not in _built_in_codes(m):
+        return None
+    if m.master_code == "RECIPE_STANDARD_TYPE":
+        return "It's one of the app's starting rule types: it won't be offered for new rules. Rules already made with it keep being checked."
+    if m.master_code == "QUESTION_TYPE":
+        return "It's one of the app's starting question types: it won't be offered for new questions. Questions already made with it keep working."
+    return "It's one of the app's starting values: the app may still produce this code (e.g. from the AI analysis), and it is then shown by its code."
+
+
+def _recipe_units(db: Session) -> set:
+    """Lower-case units used by any recipe (current or saved version)."""
+    used = set()
+    for (recipe,) in list(db.query(Product.recipe)) + list(db.query(RecipeVersion.recipe)):
+        for ing in ((recipe or {}).get("ingredients") or []) if isinstance(recipe, dict) else []:
+            if isinstance(ing, dict) and ing.get("unit"):
+                used.add(str(ing["unit"]).strip().lower())
+    return used
+
+
+def _usage(db: Session, m: OtherMasterName) -> dict:
+    """What uses this table's values: {"children": {value_id: n}, "questions": {code: n},
+    "rules": {code: n}, "units": set of lower-case codes}."""
+    child_tables = [c.id for c in db.query(OtherMasterName).filter(OtherMasterName.parent_master_id == m.id)]
+    children = dict(db.query(OtherMasterData.parent_id, func.count()).filter(OtherMasterData.master_id.in_(child_tables))
+                    .group_by(OtherMasterData.parent_id)) if child_tables else {}
+    out = {"children": children, "questions": {}, "rules": {}, "units": set()}
+    if m.master_code == "QUESTION_TYPE":
+        out["questions"] = dict(db.query(SurveyQuestion.type_code, func.count()).filter(SurveyQuestion.type_code.isnot(None))
+                                .group_by(SurveyQuestion.type_code))
+    elif m.master_code == "RECIPE_STANDARD_TYPE":
+        for code, name in db.query(RecipeStandard.type_code, RecipeStandard.name).filter(RecipeStandard.type_code.isnot(None)):
+            out["rules"].setdefault(code, []).append(name)
+    elif m.master_code == "MEASUREMENT_UNIT":
+        out["units"] = _recipe_units(db) | {u.lower() for (u,) in db.query(RecipeStandard.unit).filter(RecipeStandard.unit.isnot(None))}
+    return out
+
+
+def value_delete_problem(m: OtherMasterName, v: OtherMasterData, usage: dict) -> Optional[str]:
+    """Why this value can't be deleted (None = it can). Deactivating is always the alternative."""
+    if v.data_code in _calculation_codes(m):
+        return f"Every quantity and cost is converted through “{v.data_code}”, so it must stay. Deactivate it to hide it."
+    n = usage["children"].get(v.id)
+    if n:
+        return f"{n} value{'s' if n != 1 else ''} belong{'' if n != 1 else 's'} to “{v.data_value or v.data_code}”: delete or move them first, or deactivate it."
+    n = usage["questions"].get(v.data_code)
+    if n:
+        return f"{n} survey question{'s use' if n != 1 else ' uses'} “{v.data_code}”. Deactivate it instead: saved surveys keep it."
+    names = usage["rules"].get(v.data_code)
+    if names:
+        shown = ", ".join(f"“{n}”" for n in names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        return f"Recipe rule{'s' if len(names) != 1 else ''} {shown} use{'' if len(names) != 1 else 's'} it: remove {'them' if len(names) != 1 else 'it'} first, then delete. Or deactivate it."
+    if v.data_code.lower() in usage["units"]:
+        return f"Recipes or recipe rules use the unit “{v.data_code}”. Deactivate it instead: saved recipes keep it."
+    return None
+
+
+def _value_out(v: OtherMasterData, parents: dict, names: dict, delete_problem_text: Optional[str] = None,
+               delete_warning_text: Optional[str] = None) -> dict:
     parent = parents.get(v.parent_id)
     return {
+        "delete_problem": delete_problem_text, "delete_warning": delete_warning_text,
         "id": v.id, "code": v.data_code, "description": v.data_value, "is_active": bool(v.is_active),
         "sort_order": v.sort_order, "extra": v.extra or {},
         "parent": {"id": parent.id, "code": parent.data_code, "description": parent.data_value} if parent else None,
@@ -219,7 +304,9 @@ def list_values(table_id: int, db: Session = Depends(get_db)):
                    for p in db.query(OtherMasterData).filter(OtherMasterData.master_id == m.parent_master_id,
                                                              OtherMasterData.is_active == 1)
                    .order_by(OtherMasterData.sort_order, OtherMasterData.data_value)]
-    return {"table": _one(db, m), "values": [_value_out(r, parents, names) for r in rows], "parent_options": options}
+    usage = _usage(db, m)
+    return {"table": _one(db, m), "values": [_value_out(r, parents, names, value_delete_problem(m, r, usage), value_delete_warning(m, r)) for r in rows],
+            "parent_options": options}
 
 
 class ValueIn(BaseModel):
@@ -258,12 +345,9 @@ def may_add(m: OtherMasterName) -> Optional[str]:
     """Why no value may be added to this table now (None = it may)."""
     if not m.is_active:
         return f"“{m.master_name}” is inactive: make it active to add values."
-    from app.services.lov import EXTENSIBLE_SYSTEM
-
-    if m.is_system and m.master_code not in EXTENSIBLE_SYSTEM:
-        return CLOSED_WHY.get(m.master_code, f"{m.master_name} is used by the program: values can be renamed, not added.")
+    # Every table, built-in ones too, follows its own Add Value switch: the admin decides.
     if not m.allow_add:
-        return CLOSED_WHY.get(m.master_code) or f"Adding values to “{m.master_name}” is closed (Add Value is off)."
+        return f"Adding values to “{m.master_name}” is closed (Add Value is off)."
     return None
 
 
@@ -300,12 +384,14 @@ def add_value(table_id: int, body: ValueIn, request: Request, db: Session = Depe
         if body.factor is None:
             raise HTTPException(status_code=422, detail=f"Give the conversion factor: 1 {code} = how many {base}?")
         extra = {"to_base": body.factor, "base": base}
-    if m.master_code == "QUESTION_TYPE":
-        from app.services.lov import BUILT_IN_QUESTION_TYPES
+    from app.services.lov import BEHAVES_LIKE
 
-        if body.behaves_like not in BUILT_IN_QUESTION_TYPES:
-            raise HTTPException(status_code=422, detail="Choose which built-in type this question type works like.")
-        extra = {"behaves_like": body.behaves_like}
+    if m.master_code in BEHAVES_LIKE:
+        from app.services.lov import ADDED_BEHAVES_LIKE
+
+        # Nothing to choose: a new question type is answered as text, a new rule type is checked by people.
+        base = body.behaves_like if body.behaves_like in BEHAVES_LIKE[m.master_code] else ADDED_BEHAVES_LIKE[m.master_code]
+        extra = {"behaves_like": base}
     rows = db.query(OtherMasterData).filter(OtherMasterData.master_id == m.id).all()
     if any(r.data_code.lower() == code.lower() for r in rows):
         raise HTTPException(status_code=409, detail=f"The value code “{code}” is already in “{m.master_name}”.")
@@ -313,6 +399,8 @@ def add_value(table_id: int, body: ValueIn, request: Request, db: Session = Depe
     v = OtherMasterData(master_id=m.id, data_code=code, data_value=description, parent_id=parent.id if parent else None,
                         is_active=int(body.is_active), sort_order=max((r.sort_order for r in siblings), default=-1) + 1,
                         extra=extra)
+    if code in (m.removed_codes or []):
+        m.removed_codes = [c for c in m.removed_codes if c != code]  # added back on purpose
     db.add(v)
     db.commit()
     unit_table.invalidate()
@@ -329,11 +417,8 @@ def change_value(value_id: int, body: ValuePatch, request: Request, db: Session 
     problem = may_edit(m)
     if problem:
         raise HTTPException(status_code=409, detail=problem)
-    from app.services.lov import BUILT_IN_QUESTION_TYPES
-
-    added_later = m.master_code == "QUESTION_TYPE" and v.data_code not in BUILT_IN_QUESTION_TYPES
-    if body.is_active is False and m.is_system and not added_later:
-        raise HTTPException(status_code=409, detail=f"{m.master_name} is used by the program: its values can't be made inactive.")
+    # Any value may be made active or inactive by the admin (inactive = no longer offered in lists;
+    # data saved with it keeps it).
     if body.description is not None:
         v.data_value = _clean(body.description) or v.data_code
     if body.is_active is not None:
@@ -349,3 +434,23 @@ def change_value(value_id: int, body: ValuePatch, request: Request, db: Session 
     audit.note(request, target_id=m.id, summary=f"Changed “{v.data_code}” in the master table “{m.master_name}”")
     parent = db.get(OtherMasterData, v.parent_id) if v.parent_id else None
     return _value_out(v, {parent.id: parent} if parent else {}, _names(db, [v.created_by, v.mod_by]))
+
+
+@router.delete("/values/{value_id}")
+def delete_value(value_id: int, request: Request, db: Session = Depends(get_db)):
+    """Deletes a value nothing uses. Saved data that only copied its label is unaffected."""
+    v = db.get(OtherMasterData, value_id)
+    m = db.get(OtherMasterName, v.master_id) if v else None
+    if v is None or m is None:
+        raise HTTPException(status_code=404, detail="Value not found.")
+    problem = may_edit(m) or value_delete_problem(m, v, _usage(db, m))
+    if problem:
+        raise HTTPException(status_code=409, detail=problem)
+    code = v.data_code
+    # Remember it, so start-up seeding doesn't add a deleted starting value back.
+    m.removed_codes = sorted(set(m.removed_codes or []) | {code})
+    db.delete(v)
+    db.commit()
+    unit_table.invalidate()
+    audit.note(request, target_id=m.id, summary=f"Deleted “{code}” from the master table “{m.master_name}”")
+    return {"deleted": value_id}

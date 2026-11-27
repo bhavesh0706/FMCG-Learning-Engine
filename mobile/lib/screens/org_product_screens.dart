@@ -96,7 +96,11 @@ class _OrgProductPageState extends State<OrgProductPage> {
                         onRefresh: _load,
                         child: ListView(
                           padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-                          children: [RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true)],
+                          children: [
+                            RecipeExtrasView(productId: widget.productId, canEdit: true, standardsOnly: true),
+                            const SizedBox(height: 12),
+                            ApprovedIngredientsPanel(productId: widget.productId),
+                          ],
                         ),
                       ),
                     ),
@@ -576,10 +580,70 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
   final List<TextEditingController> _removed = [];
   bool _saving = false;
   String? _error;
+  /// Recipe standards: the ingredients this recipe may use (empty = any ingredient may be typed).
+  List<String> _approved = const [];
+
+  String _k(String s) => s.trim().toLowerCase();
+  Set<String> get _used => {for (final r in _ingredients) if (r[0].text.trim().isNotEmpty) _k(r[0].text)};
+
+  Future<void> _loadApproved() async {
+    try {
+      final full = await OrgApi.recipeFull(widget.productId);
+      if (mounted) setState(() => _approved = [for (final n in (full['approved_ingredients'] as List? ?? const [])) '$n']);
+    } catch (_) {
+      // Offline or older server: free typing as before.
+    }
+  }
+
+  /// "Start from an existing recipe": loads another product's recipe (or a saved version) into the editor.
+  Future<void> _startFrom() async {
+    List<Json> sources;
+    try {
+      sources = asJsonList((await OrgApi.request('GET', '/products/${widget.productId}/recipe/sources'))['sources']);
+    } catch (e) {
+      if (mounted) showMessage(context, '$e', error: true);
+      return;
+    }
+    if (!mounted) return;
+    final pick = await showModalBottomSheet<Json>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (ctx) => ListView(padding: const EdgeInsets.all(16), children: [
+        Text('Start From An Existing Recipe', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        Text('Loads it into the editor; nothing is saved until you press Save.', style: TextStyle(color: AppColors.muted)),
+        const SizedBox(height: 10),
+        if (sources.isEmpty) Text('No other recipes yet.', style: TextStyle(color: AppColors.muted)),
+        for (final src in sources)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(str(src['label'])),
+            subtitle: Text('${asJsonList(asJson(src['recipe'])['ingredients']).length} ingredients'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(ctx).pop(src),
+          ),
+      ]),
+    );
+    if (pick == null || !mounted) return;
+    final r = asJson(pick['recipe']);
+    setState(() {
+      _removed.addAll(_ingredients.expand((row) => row));
+      _ingredients.clear();
+      for (final i in asJsonList(r['ingredients'])) {
+        _ingredients.add([for (final k in ['name', 'quantity', 'unit', 'notes', 'cost_per_kg']) TextEditingController(text: str(i[k]))]);
+      }
+      if (str(r['batch_size']).isNotEmpty) _batch.text = str(r['batch_size']);
+      if (str(r['process']).isNotEmpty) _process.text = str(r['process']);
+      if (str(r['notes']).isNotEmpty) _notes.text = str(r['notes']);
+    });
+    showMessage(context, 'Loaded ${str(pick['label'])}. Check it, then save.');
+  }
 
   @override
   void initState() {
     super.initState();
+    _loadApproved();
     for (final i in asJsonList(widget.recipe['ingredients'])) {
       _ingredients.add([for (final k in ['name', 'quantity', 'unit', 'notes', 'cost_per_kg']) TextEditingController(text: str(i[k]))]);
     }
@@ -604,6 +668,12 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
     final check = _check();
     if (!check.ok) {
       setState(() => _error = check.message);
+      return;
+    }
+    final names = [for (final r in _ingredients) if (r[0].text.trim().isNotEmpty) _k(r[0].text)];
+    final dup = names.where((n) => names.where((m) => m == n).length > 1).firstOrNull;
+    if (dup != null) {
+      setState(() => _error = '“$dup” is in the recipe twice: add each ingredient once.');
       return;
     }
     String? t(TextEditingController c) => c.text.trim().isEmpty ? null : c.text.trim();
@@ -684,7 +754,28 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
               padding: const EdgeInsets.fromLTRB(12, 12, 4, 4),
               child: Column(children: [
                 Row(children: [
-                  Expanded(child: _field(_ingredients[k][0], 'Ingredient ${k + 1}')),
+                  Expanded(
+                    child: _approved.isEmpty
+                        ? _field(_ingredients[k][0], 'Ingredient ${k + 1}')
+                        // Recipe standards list the approved ingredients: choose one, each only once.
+                        : Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: SearchDropdownField<String>(
+                              isExpanded: true,
+                              value: _ingredients[k][0].text.trim().isEmpty ? null : _ingredients[k][0].text.trim(),
+                              decoration: InputDecoration(labelText: 'Ingredient ${k + 1}'),
+                              items: [
+                                // Only ingredients not yet in the recipe (and this row's own one).
+                                for (final n in _approved)
+                                  if (!_used.contains(_k(n)) || _k(n) == _k(_ingredients[k][0].text))
+                                    DropdownMenuItem(value: n, child: Text(n)),
+                                if (_ingredients[k][0].text.trim().isNotEmpty && !_approved.any((n) => _k(n) == _k(_ingredients[k][0].text)))
+                                  DropdownMenuItem(value: _ingredients[k][0].text.trim(), child: Text('${_ingredients[k][0].text.trim()} (not approved)')),
+                              ],
+                              onChanged: (v) => setState(() => _ingredients[k][0].text = v ?? ''),
+                            ),
+                          ),
+                  ),
                   IconButton(
                     tooltip: 'Remove ingredient',
                     onPressed: () => setState(() => _removed.addAll(_ingredients.removeAt(k))),
@@ -704,7 +795,16 @@ class _RecipeEditorPageState extends State<RecipeEditorPage> {
                 Padding(padding: const EdgeInsets.only(right: 8), child: _field(_ingredients[k][3], 'Why it\'s there (optional)')),
               ]),
             ),
-          TextButton.icon(onPressed: _addIngredient, icon: const Icon(Icons.add), label: const Text('Add ingredient')),
+          Wrap(spacing: 8, children: [
+            TextButton.icon(
+              onPressed: _approved.isNotEmpty && _approved.every((n) => _used.contains(_k(n))) ? null : _addIngredient,
+              icon: const Icon(Icons.add),
+              label: const Text('Add ingredient'),
+            ),
+            // Only for a product without a recipe yet: start it from another product's recipe.
+            if (_used.isEmpty)
+              TextButton.icon(onPressed: _startFrom, icon: const Icon(Icons.copy_all_outlined), label: const Text('Start from an existing recipe')),
+          ]),
           _section('Production process'),
           _field(_process, 'Write the process step by step (optional; files can be attached too)', lines: 6),
           _section('Notes'),
@@ -768,7 +868,6 @@ class _QuestionTypes {
   _QuestionTypes._();
   static final labels = Map<String, String>.of(_typeLabels);
   static final base = <String, String>{};
-  static bool _loaded = false;
 
   static Future<void> load() async {
     try {
@@ -781,13 +880,11 @@ class _QuestionTypes {
       base
         ..clear()
         ..addEntries(values.where((v) => v.behavesLike != null).map((v) => MapEntry(v.code, v.behavesLike!)));
-      _loaded = true;
     } catch (_) {
       // Offline or older server: keep the built-in list.
     }
   }
 
-  static bool get loaded => _loaded;
   static String baseOf(String code) => base[code] ?? code;
   static String labelOf(Json q) =>
       labels[str(q['type_code'])] ?? labels[str(q['question_type'])] ?? _typeLabels[str(q['question_type'])] ?? str(q['question_type']);
@@ -944,7 +1041,7 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
   @override
   void initState() {
     super.initState();
-    if (!_QuestionTypes.loaded) _QuestionTypes.load().then((_) { if (mounted) setState(() {}); });
+    _QuestionTypes.load().then((_) { if (mounted) setState(() {}); });
   }
   late bool _required = widget.question?['required'] != false;
   bool _saving = false;
@@ -1369,6 +1466,123 @@ class StandardsBlocked extends StatelessWidget {
           Text('Actual: ${str(f['actual'])}', style: TextStyle(fontSize: 13, color: AppColors.muted)),
           Text(str(f['reason']), style: TextStyle(fontSize: 13, color: AppColors.neg)),
         ],
+      ]),
+    );
+  }
+}
+
+/// Recipe standards: the ingredients this product's recipe may use. Once listed, the recipe editor
+/// offers only these (each once) and the server refuses others (PUT /products/{id}/approved-ingredients).
+class ApprovedIngredientsPanel extends StatefulWidget {
+  const ApprovedIngredientsPanel({super.key, required this.productId});
+
+  final int productId;
+
+  @override
+  State<ApprovedIngredientsPanel> createState() => _ApprovedIngredientsPanelState();
+}
+
+class _ApprovedIngredientsPanelState extends State<ApprovedIngredientsPanel> {
+  List<String> _list = const [];
+  Set<String> _inRecipe = const {};
+  final _text = TextEditingController();
+  bool _busy = false;
+  String? _error;
+
+  String _k(String s) => s.trim().toLowerCase();
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final full = await OrgApi.recipeFull(widget.productId);
+      if (!mounted) return;
+      setState(() {
+        _list = [for (final n in (full['approved_ingredients'] as List? ?? const [])) '$n'];
+        _inRecipe = {for (final i in asJsonList(asJson(full['recipe'])['ingredients'])) _k(str(i['name']))};
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  Future<void> _save(List<String> next) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final r = await OrgApi.request('PUT', '/products/${widget.productId}/approved-ingredients', body: {'ingredients': next});
+      if (mounted) setState(() => _list = [for (final n in (r['ingredients'] as List? ?? const [])) '$n']);
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _add() {
+    final names = _text.text.split(RegExp(r'[,\n]')).map((n) => n.trim()).where((n) => n.isNotEmpty);
+    final fresh = names.where((n) => !_list.any((a) => _k(a) == _k(n))).toList();
+    _text.clear();
+    if (fresh.isNotEmpty) _save([..._list, ...fresh]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Panel(
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Approved Ingredients (${_list.length})', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15.5, color: AppColors.ink)),
+        const SizedBox(height: 4),
+        Text(
+          _list.isEmpty
+              ? 'No list yet: any ingredient can be typed in the recipe. Add ingredients to limit the recipe to them.'
+              : 'The recipe can use only these ingredients, each once.',
+          style: TextStyle(fontSize: 13, color: AppColors.muted),
+        ),
+        const SizedBox(height: 8),
+        Wrap(spacing: 6, runSpacing: 6, children: [
+          for (final n in _list)
+            InputChip(
+              label: Text(_inRecipe.contains(_k(n)) ? '$n · in recipe' : n),
+              onDeleted: _busy
+                  ? null
+                  : () async {
+                      if (_inRecipe.contains(_k(n))) {
+                        final ok = await confirmAction(context,
+                            title: 'Remove “$n”?',
+                            message: 'The current recipe uses it: the next recipe version must leave it out.',
+                            confirmLabel: 'Remove',
+                            cancelLabel: 'Keep');
+                        if (!ok) return;
+                      }
+                      _save(_list.where((a) => a != n).toList());
+                    },
+            ),
+        ]),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: _text,
+              onSubmitted: (_) => _add(),
+              decoration: const InputDecoration(labelText: 'Add ingredients', hintText: 'Sugar, Salt, Turmeric Powder', isDense: true),
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(onPressed: _busy ? null : _add, child: const Text('Add')),
+        ]),
+        if (_error != null) Padding(padding: const EdgeInsets.only(top: 6), child: Text(_error!, style: TextStyle(color: AppColors.neg))),
       ]),
     );
   }

@@ -45,10 +45,12 @@ def test_admin_adds_hides_and_renames_open_list_values(client, admin):
     assert renamed["label"] == "Renamed value" and renamed["code"] == label  # saved data keeps its code
 
 
-def test_system_lists_only_allow_label_and_order_changes(client, admin):
-    assert client.post("/admin/lov/SENTIMENT", headers=auth(admin), json={"label": "Angry"}).status_code == 409
+def test_built_in_lists_follow_the_admins_choices(client, admin):
+    """Built-in lists take new values and can be switched off, like any other list: the admin decides."""
+    assert client.post("/admin/lov/SENTIMENT", headers=auth(admin), json={"label": _unique("Angry ")}).status_code == 201
     positive = next(v for v in _values(client, admin, "SENTIMENT") if v["code"] == "positive")
-    assert client.patch(f"/admin/lov/values/{positive['id']}", headers=auth(admin), json={"is_active": False}).status_code == 409
+    assert client.patch(f"/admin/lov/values/{positive['id']}", headers=auth(admin), json={"is_active": False}).status_code == 200
+    client.patch(f"/admin/lov/values/{positive['id']}", headers=auth(admin), json={"is_active": True})
     r = client.patch(f"/admin/lov/values/{positive['id']}", headers=auth(admin), json={"label": "Happy", "sort_order": 9})
     assert r.status_code == 200 and r.json()["label"] == "Happy"
     client.patch(f"/admin/lov/values/{positive['id']}", headers=auth(admin), json={"label": "Positive", "sort_order": 0})
@@ -103,3 +105,12 @@ def test_the_usage_period_labels_are_renamed_unless_an_admin_changed_them(db):
     assert db.get(OtherMasterData, rows["last_month"].id).data_value == "Pichla mahina", "an admin's label is kept"
     db.get(OtherMasterData, rows["last_month"].id).data_value = "For the past 1 month"
     db.commit()
+
+def test_the_lists_version_changes_with_every_admin_change(client, admin, db):
+    org = make_user(db, role="client")
+    before = client.get("/lov/version", headers=auth(org)).json()["version"]
+    v = client.post("/admin/lov/GENDER", headers=auth(admin), json={"label": _unique("Gender ")}).json()
+    after_add = client.get("/lov/version", headers=auth(org)).json()["version"]
+    assert after_add != before
+    client.patch(f"/admin/lov/values/{v['id']}", headers=auth(admin), json={"is_active": False})
+    assert client.get("/lov/version", headers=auth(org)).json()["version"] != after_add

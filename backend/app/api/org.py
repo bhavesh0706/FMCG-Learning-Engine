@@ -369,6 +369,24 @@ def product_report(
     }
 
 
+def _survey_attachments(db: Session, product_id: int, version, survey: dict) -> list:
+    from app.api.recipe_master import _attachment_out
+    from app.database.models import RecipeAttachment
+
+    ended = None
+    if survey.get("closed_at"):
+        try:
+            ended = datetime.fromisoformat(str(survey["closed_at"]).rstrip("Z"))
+        except ValueError:
+            ended = None
+    out = []
+    for a in (db.query(RecipeAttachment).filter(RecipeAttachment.product_id == product_id)
+              .order_by(RecipeAttachment.created_at).all()):
+        if a.recipe_version == version or (a.recipe_version is None and (ended is None or a.created_at <= ended)):
+            out.append(_attachment_out(a))
+    return out
+
+
 @router.get("/products/{product_id}/rounds/{number}/snapshot")
 def round_snapshot(product_id: int, number: int, request: Request, db: Session = Depends(get_db)):
     """What one survey used: its recipe version (as saved then), the recipe standards checked
@@ -426,6 +444,9 @@ def round_snapshot(product_id: int, number: int, request: Request, db: Session =
         "standards": standards,
         # Cost per KG and Cost in Use of that version's ingredients (as on the current recipe).
         "costing": costing(recipe) if recipe else None,
+        # The process files of the recipe version this survey tested (files saved before versions were
+        # recorded on them count when uploaded before the survey ended).
+        "attachments": _survey_attachments(db, product.id, version, survey),
         "questions": questions,
         "questions_source": source,
     }

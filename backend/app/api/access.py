@@ -85,6 +85,7 @@ ADMIN = [
 ORG_CONTENT = [
     ({"PUT"}, r"^/products/\d+/recipe$"),
     ({"DELETE"}, r"^/products/\d+/recipe/versions/\d+$"),
+    ({"PUT"}, r"^/products/\d+/approved-ingredients$"),  # only the Super Admin sets them
     # Recipe standards and the recipe process attachments (Recipe Master)
     ({"POST"}, r"^/recipe-standards$"),
     ({"PUT", "DELETE"}, r"^/recipe-standards/\d+$"),
@@ -135,6 +136,8 @@ CLIENT_ALLOWED = [
     (None, r"^/org(/|$)"),
     ({"GET", "PUT"}, r"^/products/\d+/recipe$"),
     ({"GET"}, r"^/products/\d+/recipe/versions$"),
+    ({"GET", "PUT"}, r"^/products/\d+/approved-ingredients$"),
+    ({"GET"}, r"^/products/\d+/recipe/sources$"),
     ({"DELETE"}, r"^/products/\d+/recipe/versions/\d+$"),
     # Recipe Master: list, standards, attachments
     ({"GET"}, r"^/recipes$"),
@@ -146,7 +149,7 @@ CLIENT_ALLOWED = [
     # Report downloads (Excel, PowerPoint), master lists, a survey report's review history
     ({"GET"}, r"^/product-feedback/\d+/export\.(xlsx|pptx)$"),
     ({"GET"}, r"^/masters$"),
-    ({"GET"}, r"^/lov$"),
+    ({"GET"}, r"^/lov(/version)?$"),
     ({"GET"}, r"^/surveys/responses/\d+/report/history$"),
     # Survey questions of a product: read, add, edit, reorder, remove
     ({"GET", "POST"}, r"^/products/\d+/questions$"),

@@ -16,11 +16,11 @@ DELETE /recipe-attachments/{id}                remove                (Super Admi
 import re
 import uuid
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
 from app.api.ownership import account, check_product_access
@@ -98,6 +98,7 @@ def recipe_extras(db: Session, product: Product) -> dict:
         "attachments": [_attachment_out(a) for a in files],
         "legacy_steps": legacy,  # steps of an earlier version, shown read-only
         "latest_version": _latest_version(db, product.id),  # (not "version": a save returns its own)
+        "approved_ingredients": product.approved_ingredients or [],  # the recipe's ingredient choices
         "recipe_code": _latest_code(db, product.id),  # RCP-#### of the latest version
         # Locked once a consumer response used the latest version: then only "Add new recipe version"
         "version_locked": _latest_locked(db, product.id),
@@ -150,7 +151,10 @@ def recipe_master(request: Request, db: Session = Depends(get_db)):
 class StandardIn(BaseModel):
     name: str = Field(min_length=3, max_length=160)
     # "custom": a rule written in words (its name), checked by people, never automatically
-    kind: Literal["required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg", "custom"]
+    # A built-in rule type, or one added in Master > Recipe standard type (resolved below to the
+    # built-in rule it is checked like; the chosen code is kept in type_code).
+    kind: str = Field(min_length=1, max_length=80)
+    type_code: Optional[str] = None
     ingredient: Optional[str] = Field(default=None, max_length=120)
     min_value: Optional[float] = Field(default=None, ge=0)
     max_value: Optional[float] = Field(default=None, ge=0)
@@ -162,6 +166,16 @@ class StandardIn(BaseModel):
     applies_to_all: bool = False
     is_active: bool = True
 
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_kind(cls, data):
+        if isinstance(data, dict) and data.get("kind"):
+            from app.services.lov import resolve_added_type
+
+            base, code = resolve_added_type("RECIPE_STANDARD_TYPE", data["kind"])
+            data = {**data, "kind": base, "type_code": code}
+        return data
+
 
 def _names(db: Session) -> tuple:
     return ({c.id: c.name for c in db.query(Category).all()}, {p.id: p.name for p in db.query(Product).all()})
@@ -172,7 +186,7 @@ def _standard_out(r: RecipeStandard, cats: dict, products: Optional[dict] = None
     label = {"product": f"Only {(products or {}).get(r.product_id, 'this product')}",
              "category": f"Only {cats.get(r.category_id, 'this category')}", "all": "All products", "none": "Applies to nothing"}[scope]
     return {"id": r.id, "name": r.name, "kind": r.kind, "ingredient": r.ingredient, "min_value": r.min_value,
-            "max_value": r.max_value, "unit": r.unit or "kg", "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
+            "max_value": r.max_value, "unit": r.unit or "kg", "type_code": getattr(r, "type_code", None), "product_id": r.product_id, "product_name": (products or {}).get(r.product_id),
             "category_id": r.category_id, "category_name": cats.get(r.category_id), "applies_to_all": bool(r.applies_to_all),
             "scope": scope, "scope_label": label, "is_active": bool(r.is_active), "created_by": r.created_by_name}
 

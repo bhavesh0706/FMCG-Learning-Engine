@@ -237,6 +237,14 @@ def run_migrations():
     _add_column("m_othermastername", "can_edit", "INT NOT NULL DEFAULT 1")
     _add_column("recipe_standards", "unit", "VARCHAR(16) NULL")  # UOM of a rule's limits (NULL = kg)
     _add_column("survey_questions", "type_code", "VARCHAR(80) NULL")  # a Question type added in Master
+    _add_column("recipe_standards", "type_code", "VARCHAR(80) NULL")  # a Recipe standard type added in Master
+    _add_column("products", "approved_ingredients", "JSON NULL")  # the ingredients a recipe may use
+    # Every Master table follows its own switches: open Add Value on the tables that were closed by
+    # the app (never on one an admin has changed since: mod_by set).
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE m_othermastername SET allow_add = 1 WHERE allow_add = 0 AND mod_by IS NULL"))
+    with engine.begin() as conn:  # Recipe standard type takes new values (each checked like a built-in rule)
+        conn.execute(text("UPDATE m_othermastername SET allow_add = 1 WHERE master_code = 'RECIPE_STANDARD_TYPE' AND allow_add = 0"))
     with engine.begin() as conn:  # Question type takes new values (each behaves like a built-in type)
         conn.execute(text("UPDATE m_othermastername SET allow_add = 1 WHERE master_code = 'QUESTION_TYPE' AND allow_add = 0 "
                           "AND mod_at = created_at"))
@@ -334,6 +342,9 @@ def run_migrations():
     from app.services.masters import seed_defaults
 
     seed_defaults()
+
+    # Before seeding, which reads it: starting values an admin deleted (not added again).
+    _add_column("m_othermastername", "removed_codes", "JSON NULL")
 
     from app.services.lov import seed_lov
 

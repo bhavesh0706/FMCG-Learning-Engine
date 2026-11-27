@@ -32,6 +32,7 @@ import {
   removeQuestion,
   reorderQuestions,
   saveRecipe,
+  getRecipeSources,
   updateCategory,
   updateProduct,
   updateQuestion,
@@ -1312,6 +1313,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
   const [historyKey, setHistoryKey] = useState(0); // new value = version history reloads
   const [reloadKey, setReloadKey] = useState(0); // new value = the recipe is loaded again
   const [recipe, setRecipe] = useState(null);
+  const [sources, setSources] = useState(null); // recipes to start from (dialog open when set)
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState({ batch: false, ingredients: false, steps: false });
@@ -1365,6 +1367,32 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
   const dirty = useMemo(() => recipe && JSON.stringify(recipe) !== saved, [recipe, saved]);
   if (!recipe) return <p className="muted">Loading recipe…</p>;
 
+  // Recipe standards: the approved ingredients (empty = free typing) and those already in the recipe.
+  const approvedList = extras?.approved_ingredients || [];
+  const usedNames = new Set(recipe.ingredients.map((x) => String(x.name || "").trim().toLowerCase()).filter(Boolean));
+  const dupNames = recipe.ingredients.map((x) => String(x.name || "").trim().toLowerCase()).filter((n, k, all) => n && all.indexOf(n) !== k);
+  const openSources = async () => {
+    try {
+      const d = await getRecipeSources(product.id);
+      setSources(d.sources || []);
+    } catch (err) {
+      onNotice({ tone: "error", text: catalogError(err, "Recipes couldn't be loaded.") });
+    }
+  };
+  // Load a chosen recipe into the editor (not saved until "Save recipe"): batch, ingredients, process, notes.
+  const startFrom = (src) => {
+    const r = src.recipe || {};
+    setRecipe((cur) => ({
+      ...cur,
+      batch_size: r.batch_size || cur.batch_size,
+      ingredients: (r.ingredients || []).map((x) => ({ ...blankIngredient(), ...x })),
+      process: r.process || cur.process,
+      notes: r.notes || cur.notes,
+    }));
+    setEditing((e) => ({ ...e, batch: true, ingredients: true }));
+    setSources(null);
+    onNotice({ tone: "ok", text: `Loaded the recipe of ${src.label}. Check it, then save.` });
+  };
   const setList = (key, i, field, value) =>
     setRecipe((r) => ({ ...r, [key]: r[key].map((row, k) => (k === i ? { ...row, [field]: value } : row)) }));
   const addRow = (key) => setRecipe((r) => ({ ...r, [key]: [...r[key], key === "steps" ? blankStep() : blankIngredient()] }));
@@ -1466,6 +1494,23 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
 
   return (
     <div className="recipe">
+      {sources && (
+        <Modal title="Start From An Existing Recipe" subtitle="Loads it into the editor; nothing is saved until you press Save recipe." onClose={() => setSources(null)}>
+          {!sources.length ? <p className="muted">No other recipes yet.</p> : (
+            <ul className="src-list">
+              {sources.map((src) => (
+                <li key={`${src.product_id}-${src.version ?? "current"}`}>
+                  <span><strong>{src.label}</strong><span className="muted small"> · {src.recipe.ingredients.length} ingredients{src.recipe.batch_size ? ` · ${src.recipe.batch_size}` : ""}</span></span>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => startFrom(src)}>Use</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Modal>
+      )}
+      {dupNames.length > 0 && (
+        <p className="form-error" role="alert">“{dupNames[0]}” is in the recipe twice: add each ingredient once.</p>
+      )}
       {extras && !readOnly && (
         extras.standards_count > 0 ? (
           <p className="recipe-std-note is-ok">
@@ -1549,8 +1594,23 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
             </div>
             {recipe.ingredients.map((ing, i) => (
               <div className="ing-edit-row" key={i}>
-                <input className="input" aria-label={`Ingredient ${i + 1}`} placeholder="e.g. Sugar" value={ing.name}
-                  onChange={(e) => setList("ingredients", i, "name", e.target.value)} />
+                {approvedList.length ? (
+                  // Recipe standards list the approved ingredients: choose one; each only once per recipe.
+                  <Select className="input" aria-label={`Ingredient ${i + 1}`} value={ing.name}
+                    onChange={(e) => setList("ingredients", i, "name", e.target.value)}>
+                    <option value="">Choose an ingredient</option>
+                    {/* Only ingredients not yet in the recipe (and this row's own one). */}
+                    {approvedList
+                      .filter((n) => !usedNames.has(n.trim().toLowerCase()) || n.trim().toLowerCase() === ing.name.trim().toLowerCase())
+                      .map((n) => <option key={n} value={n}>{n}</option>)}
+                    {ing.name && !approvedList.some((n) => n.trim().toLowerCase() === ing.name.trim().toLowerCase()) && (
+                      <option value={ing.name}>{ing.name} (not approved)</option>
+                    )}
+                  </Select>
+                ) : (
+                  <input className="input" aria-label={`Ingredient ${i + 1}`} placeholder="e.g. Sugar" value={ing.name}
+                    onChange={(e) => setList("ingredients", i, "name", e.target.value)} />
+                )}
                 {/* Quantity and its unit (Other Master > Measurement unit: Weight/Mass or Volume) */}
                 <>
                   <input className="input" aria-label={`Quantity of ingredient ${i + 1}`} inputMode="decimal" placeholder="e.g. 8" value={ing.quantity ?? ""}
@@ -1573,7 +1633,15 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
               </div>
             ))}
             <div className="recipe-edit-foot">
-              <button type="button" className="link-btn" onClick={() => addRow("ingredients")}>+ Add ingredient</button>
+              <button type="button" className="link-btn" onClick={() => addRow("ingredients")}
+                disabled={approvedList.length > 0 && approvedList.every((n) => usedNames.has(n.trim().toLowerCase()))}
+                title={approvedList.length > 0 && approvedList.every((n) => usedNames.has(n.trim().toLowerCase())) ? "Every approved ingredient is already in the recipe" : ""}>
+                + Add ingredient
+              </button>
+              {/* Only for a product without a recipe yet: start it from another product's recipe. */}
+              {!recipe.ingredients.some((x) => String(x.name || "").trim()) && (
+                <button type="button" className="link-btn" onClick={openSources}>Start from an existing recipe</button>
+              )}
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("ingredients", false)}>Done</button>
             </div>
           </div>
@@ -1666,7 +1734,8 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
             onChange={(e) => setRecipe({ ...recipe, process: e.target.value })} />
         )}
       </section>
-      {!snapshot && <AttachmentsCard productId={product.id} attachments={extras?.attachments || []} readOnly={readOnly} onChanged={reloadExtras} />}
+      {/* An earlier survey shows the process files of the recipe it tested (view / download only). */}
+      <AttachmentsCard productId={product.id} attachments={(snapshot ? snapshot.attachments : extras?.attachments) || []} readOnly={readOnly} onChanged={reloadExtras} />
       <LegacyStepsCard legacy={extras?.legacy_steps} />
 
       {/* ---- notes ---- */}

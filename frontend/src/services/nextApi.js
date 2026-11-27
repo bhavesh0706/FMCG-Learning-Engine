@@ -44,6 +44,19 @@ export async function downloadFile(path, fallbackName) {
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 export const downloadAttachment = (a) => downloadFile(`/recipe-attachments/${a.id}/file`, a.filename);
+/** Opens a process file in a new tab to read it (PDF, images); other files download. */
+export async function viewAttachment(a) {
+  const tab = window.open("", "_blank"); // opened now, so the browser doesn't block it as a pop-up
+  try {
+    const res = await api.get(`/recipe-attachments/${a.id}/file`, { responseType: "blob" });
+    const url = URL.createObjectURL(res.data);
+    if (tab) tab.location.href = url; else window.location.href = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (err) {
+    tab?.close();
+    throw err;
+  }
+}
 export const downloadReport = (productId, kind, round) =>
   downloadFile(`/product-feedback/${productId}/export.${kind}${round ? `?round=${round}` : ""}`, `report.${kind}`);
 

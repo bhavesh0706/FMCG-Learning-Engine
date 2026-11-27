@@ -50,22 +50,28 @@ def test_only_admins_manage_master_data(client, db, admin):
         assert client.post(f"{URL}/{t['id']}/values", headers=auth(someone), json={"code": "X"}).status_code == 403
 
 
-def test_system_tables_and_values_are_protected(client, admin):
+def test_every_table_is_editable_and_takes_values_but_built_ins_are_never_deleted(client, admin):
+    """The admin decides: built-in tables take new values and can be switched off (table and values);
+    only deleting a built-in table is refused, because the app reads it."""
     seed_lov()
     tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
     sentiment = tables["SENTIMENT"]
-    assert sentiment["is_system"] and not sentiment["allow_add"]
-    assert client.patch(f"{URL}/{sentiment['id']}", headers=auth(admin), json={"is_active": False}).status_code == 409
-    assert client.patch(f"{URL}/{sentiment['id']}", headers=auth(admin), json={"allow_add": True}).status_code == 409
-    assert client.post(f"{URL}/{sentiment['id']}/values", headers=auth(admin), json={"code": "x"}).status_code == 409
-    assert client.delete(f"{URL}/{sentiment['id']}", headers=auth(admin)).status_code == 409
-    # Built-in tables are kept; a table created here is deleted with its values.
+    assert sentiment["add_problem"] is None
+    v = client.post(f"{URL}/{sentiment['id']}/values", headers=auth(admin), json={"code": _unique("delighted_")})
+    assert v.status_code == 201
+    assert client.patch(f"{URL}/values/{v.json()['id']}", headers=auth(admin), json={"is_active": False}).status_code == 200
+    builtin = next(x for x in client.get(f"{URL}/{sentiment['id']}/values", headers=auth(admin)).json()["values"] if x["code"] == "neutral")
+    assert client.patch(f"{URL}/values/{builtin['id']}", headers=auth(admin), json={"is_active": False}).status_code == 200
+    client.patch(f"{URL}/values/{builtin['id']}", headers=auth(admin), json={"is_active": True})
+    assert client.patch(f"{URL}/{sentiment['id']}", headers=auth(admin), json={"allow_add": False}).status_code == 200
+    assert client.post(f"{URL}/{sentiment['id']}/values", headers=auth(admin), json={"code": "x"}).status_code == 409, "Add Value off"
+    client.patch(f"{URL}/{sentiment['id']}", headers=auth(admin), json={"allow_add": True})
+    assert client.delete(f"{URL}/{sentiment['id']}", headers=auth(admin)).status_code == 409, "built-in tables stay"
     assert client.delete(f"{URL}/{tables['GENDER']['id']}", headers=auth(admin)).status_code == 409
     t = _create(client, admin)
     client.post(f"{URL}/{t['id']}/values", headers=auth(admin), json={"code": "A"})
     gone = client.delete(f"{URL}/{t['id']}", headers=auth(admin))
     assert gone.status_code == 200 and gone.json()["values_deleted"] == 1
-    assert client.get(f"{URL}/{t['id']}/values", headers=auth(admin)).status_code == 404
 
 
 def test_measurement_units_weight_and_volume(client, admin):
@@ -81,8 +87,6 @@ def test_measurement_units_weight_and_volume(client, admin):
     assert by_cat[cats["weight"]["id"]] == ["µg", "mg", "g", "kg", "MT"]
     assert by_cat[cats["volume"]["id"]] == ["µL", "mL", "L", "kL"]
     tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
-    # Only the two categories: no third one can be added.
-    assert client.post(f"{URL}/{tables['UNIT_CATEGORY']['id']}/values", headers=auth(admin), json={"code": "length"}).status_code == 409
     # A unit must belong to a category.
     assert client.post(f"{URL}/{tables['MEASUREMENT_UNIT']['id']}/values", headers=auth(admin), json={"code": "cg"}).status_code == 422
 
@@ -145,10 +149,10 @@ def test_a_question_type_added_in_master_works_in_survey_questions(client, db, a
     tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
     qt = tables["QUESTION_TYPE"]
     assert qt["add_problem"] is None, "Question type takes new values"
-    assert tables["SENTIMENT"]["add_problem"] and "AI" in tables["SENTIMENT"]["add_problem"]
     url = f"{URL}/{qt['id']}/values"
     code = _unique("dropdown_")
-    assert client.post(url, headers=auth(admin), json={"code": code}).status_code == 422, "needs behaves_like"
+    plain = client.post(url, headers=auth(admin), json={"code": _unique("plain_type_")})
+    assert plain.status_code == 201 and plain.json()["extra"] == {"behaves_like": "text"}, "a new type is answered as text"
     made = client.post(url, headers=auth(admin), json={"code": code, "description": "Dropdown", "behaves_like": "single_choice"})
     assert made.status_code == 201 and made.json()["extra"] == {"behaves_like": "single_choice"}
     assert any(v["code"] == code for v in client.get("/lov", headers=auth(admin)).json()["QUESTION_TYPE"]["values"])
@@ -169,5 +173,77 @@ def test_a_question_type_added_in_master_works_in_survey_questions(client, db, a
     # Made inactive: no longer offered for new questions; the built-in ones can't be switched off.
     client.patch(f"{URL}/values/{made.json()['id']}", headers=auth(admin), json={"is_active": False})
     assert client.post(f"/products/{p.id}/questions", headers=auth(org), json=body).status_code == 422
-    builtin = next(v for v in client.get(url, headers=auth(admin)).json()["values"] if v["code"] == "rating")
-    assert client.patch(f"{URL}/values/{builtin['id']}", headers=auth(admin), json={"is_active": False}).status_code == 409
+
+
+def test_a_recipe_standard_type_added_in_master_is_checked_like_its_built_in_rule(client, db, admin):
+    from app.database.models import Category, Product
+
+    seed_lov()
+    tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
+    st = tables["RECIPE_STANDARD_TYPE"]
+    assert st["add_problem"] is None
+    url = f"{URL}/{st['id']}/values"
+    code = _unique("max_salt_")
+    manual_code = _unique("hygiene_")
+    m = client.post(url, headers=auth(admin), json={"code": manual_code, "description": "Hygiene check"})
+    assert m.status_code == 201 and m.json()["extra"] == {"behaves_like": "manual"}, "a new rule type is checked by people"
+    assert client.post(url, headers=auth(admin), json={"code": code, "description": "Salt limit",
+                                                         "behaves_like": "ingredient_share"}).status_code == 201
+    org = make_user(db, role="client")
+    cat = Category(name=_unique("ST "), is_active=1)
+    db.add(cat)
+    db.commit()
+    p = Product(category_id=cat.id, name=_unique("ST product "), is_active=1)
+    db.add(p)
+    db.commit()
+    r = client.post("/recipe-standards", headers=auth(org), json={"name": "Salt at most 2%", "kind": code,
+                                                                  "ingredient": "Salt", "max_value": 2, "product_id": p.id})
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["kind"] == "ingredient_share" and r.json()["type_code"] == code
+    w = client.post("/recipe-standards", headers=auth(org), json={"name": "Hygiene checked", "kind": manual_code, "product_id": p.id})
+    assert w.status_code in (200, 201) and w.json()["kind"] == "manual"
+    assert client.post("/recipe-standards", headers=auth(org), json={"name": "Nope rule", "kind": "nope_type",
+                                                                     "product_id": p.id}).status_code in (400, 422)
+
+
+def _values(client, admin, table_id):
+    return {v["code"]: v for v in client.get(f"{URL}/{table_id}/values", headers=auth(admin)).json()["values"]}
+
+
+def test_an_unused_value_can_be_deleted_and_stays_deleted(client, admin):
+    t = _create(client, admin)
+    vid = client.post(f"{URL}/{t['id']}/values", headers=auth(admin), json={"code": "TIN"}).json()["id"]
+    assert _values(client, admin, t["id"])["TIN"]["delete_problem"] is None
+    assert client.delete(f"{URL}/values/{vid}", headers=auth(admin)).status_code == 200
+    assert "TIN" not in _values(client, admin, t["id"])
+    assert client.delete(f"{URL}/values/{vid}", headers=auth(admin)).status_code == 404
+
+
+def test_a_deleted_starting_value_is_not_seeded_again(client, admin):
+    seed_lov()
+    tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
+    usage = tables["USAGE_PERIOD"]
+    code = next(iter(_values(client, admin, usage["id"])))
+    vid = _values(client, admin, usage["id"])[code]["id"]
+    assert client.delete(f"{URL}/values/{vid}", headers=auth(admin)).status_code == 200
+    seed_lov()
+    assert code not in _values(client, admin, usage["id"]), "seeding doesn't bring it back"
+    # Added again on purpose: it is a normal value again.
+    assert client.post(f"{URL}/{usage['id']}/values", headers=auth(admin), json={"code": code}).status_code == 201
+
+
+def test_built_in_values_can_be_deleted_but_base_units_and_values_in_use_cannot(client, admin):
+    seed_lov()
+    tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
+    rules = _values(client, admin, tables["RECIPE_STANDARD_TYPE"]["id"])
+    # A starting rule type may be deleted (with a warning): saved rules keep their own type.
+    assert rules["custom"]["delete_problem"] is None and rules["custom"]["delete_warning"]
+    assert client.delete(f"{URL}/values/{rules['custom']['id']}", headers=auth(admin)).status_code == 200
+    seed_lov()
+    assert "custom" not in _values(client, admin, tables["RECIPE_STANDARD_TYPE"]["id"])
+    units = _values(client, admin, tables["MEASUREMENT_UNIT"]["id"])
+    assert units["kg"]["delete_problem"], "kg is the base every weight is converted through"
+    assert client.delete(f"{URL}/values/{units['kg']['id']}", headers=auth(admin)).status_code == 409
+    # A value other values belong to (a state with cities) can't be deleted either.
+    states = _values(client, admin, tables["STATE"]["id"])
+    assert any(v["delete_problem"] and "belong" in v["delete_problem"] for v in states.values())

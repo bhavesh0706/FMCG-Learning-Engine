@@ -185,7 +185,7 @@ def _find(rows: list, name: str) -> list:
     return found
 
 
-KINDS = ("required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg", "custom")
+KINDS = ("required_ingredient", "ingredient_share", "max_cost_per_kg", "costs_complete", "ingredient_cost_per_kg", "custom", "manual")
 
 
 def applies(rule, product_id: Optional[int], category_id: Optional[int]) -> bool:
@@ -288,7 +288,8 @@ def check_rule(rule, cost: dict) -> dict:
             reason = (f"{ing} is {_num(total)} {u} (within {range_text})" if ok else
                       f"{ing} is {_num(total)} {u}, " + (f"above the maximum {_num(hi)} {u}" if hi is not None and total > hi
                                                           else f"below the minimum {_num(lo)} {u}"))
-    elif kind == "custom":  # an older written rule (no ingredient): listed for people to check, never blocks
+    elif kind == "manual" or kind == "custom":  # a written rule (a type added in Master, or an older custom
+        # rule without an ingredient): listed for people to check, never blocks
         ok, expected, actual, reason = True, rule.name, "Checked manually", "Written rule: checked by people, not by the system"
     elif kind == "costs_complete":
         missing = cost["missing_costs"]

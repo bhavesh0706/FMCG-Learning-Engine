@@ -49,6 +49,10 @@ export const reorderQuestions = (productId, ids) =>
 // Recipe
 export const getRecipe = (productId) => data(api.get(`/products/${productId}/recipe`));
 export const saveRecipe = (productId, recipe) => change(api.put(`/products/${productId}/recipe`, recipe));
+// Recipe standards: the ingredients this product's recipe may use (backend api/recipes.py).
+export const setApprovedIngredients = (productId, ingredients) => data(api.put(`/products/${productId}/approved-ingredients`, { ingredients }));
+// Recipes a new recipe can start from: other products' recipes and saved versions.
+export const getRecipeSources = (productId) => data(api.get(`/products/${productId}/recipe/sources`));
 // Recipe economics (server-side calculations): a proposed version against the current one, the
 // product's commercial targets, and the latest report's recipe recommendations ready to apply
 export const compareRecipe = (productId, recipe) => data(api.post(`/products/${productId}/recipe/compare`, { recipe }));

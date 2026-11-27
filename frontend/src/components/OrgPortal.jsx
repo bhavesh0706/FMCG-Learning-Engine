@@ -1063,7 +1063,9 @@ function SurveyBox({ survey, rounds, latest }) {
         <span>
           Recipe v{survey.recipe_version ?? "—"} · {survey.done} of {survey.target} consumers
           {survey.started_at ? ` · started ${fmtDate(survey.started_at)}` : ""}{survey.closed_at ? ` · ended ${fmtDate(survey.closed_at)}` : ""}.
-          {" "}This is what Survey {survey.number} used (read-only).
+          {survey.status === "live"
+            ? <>{" "}Survey {survey.number} is collecting, so the recipe, standards and questions are locked. To change them, end or finish the survey first.</>
+            : <>{" "}This is what Survey {survey.number} used (read-only).</>}
         </span>
       </div>
     </div>
@@ -1165,7 +1167,10 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
   const shownRound = tab === "report" ? round || rounds[rounds.length - 1]?.number : null;
   // Recipe, Recipe standards and Survey questions: the current setup, or what an earlier survey used.
   const snapTab = SNAPSHOT_TABS.includes(tab);
-  const snapRound = snapTab && round ? rounds.find((r) => r.number === round) || null : null;
+  // While a survey is collecting nothing can change (recipe, standards, questions): there is no editable
+  // "Current" setup then, the tabs show what the collecting survey uses (read-only) until it ends.
+  const liveRound = rounds.find((r) => r.status === "live") || null;
+  const snapRound = snapTab ? (round ? rounds.find((r) => r.number === round) || null : liveRound) : null;
 
   return (
     <section className="org-product" aria-labelledby="org-product-title">
@@ -1193,7 +1198,7 @@ function ProductPage({ productId, tab, round, ReportView, project = null, onProj
           {snapTab && rounds.length > 0 && (
             <Select className="select" value={snapRound ? String(snapRound.number) : ""} aria-label="Survey"
               onChange={(e) => go(`${base}/${tab}${e.target.value ? `/${e.target.value}` : ""}`)}>
-              <option value="">Current (Recipe v{detail.latest_version || 1})</option>
+              {!liveRound && <option value="">Current (Recipe v{detail.latest_version || 1})</option>}
               {[...rounds].reverse().map((r) => (
                 <option key={r.number} value={String(r.number)}>Survey {r.number} · v{r.recipe_version ?? "—"} ({r.status === "live" ? "collecting" : "completed"})</option>
               ))}
@@ -2229,13 +2234,19 @@ function StandardsSection({ product, onChanged }) {
   const inherited = (standards.results || []).filter((r) => r.scope && r.scope !== "product");
   const changed = () => { load(); onChanged?.(); };
   const removeInherited = async (r) => {
-    if (!window.confirm(`Remove “${r.name}”? It applies to ${r.scope === "all" ? "every product" : "every product in this category"}.`)) return;
+    if (!(await confirmDialog({
+      title: `Remove “${r.name}”?`,
+      message: `It applies to ${r.scope === "all" ? "every product" : "every product in this category"}: removing it removes it there too.`,
+      confirmLabel: "Remove", danger: true,
+    }))) return;
     await removeStandard(r.rule_id).catch(() => {});
     changed();
   };
   return (
     <div className="pc">
-      <StandardsCard standards={standards} productId={product.id} readOnly={false} onChanged={changed} />
+      <StandardsCard standards={standards} productId={product.id} readOnly={false} onChanged={changed}
+        approved={state.data?.approved_ingredients || []}
+        recipeIngredients={(state.data?.recipe?.ingredients || []).map((i) => i.name).filter(Boolean)} />
       {inherited.length > 0 && (
         <section className="recipe-card" aria-label="Rules from the category or all products">
           <header className="recipe-card-head">

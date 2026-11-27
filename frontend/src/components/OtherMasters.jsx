@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Modal from "./Modal";
 import Select from "./Select";
 import KpiIcon from "./KpiIcon";
+import { confirmDialog } from "./ConfirmDialog";
 import {
-  addMasterValue, createMasterTable, deleteMasterTable, listMasterTables, listMasterValues, masterError,
+  addMasterValue, createMasterTable, deleteMasterTable, deleteMasterValue, listMasterTables, listMasterValues, masterError,
   updateMasterTable, updateMasterValue,
 } from "../services/otherMastersApi";
 
@@ -44,7 +45,6 @@ function TableDialog({ table, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const sys = Boolean(table?.is_system);
   // System lists whose new values the app can use (Question type: each works like a built-in type).
-  const addFixed = sys && Boolean(table?.closed_why);
   const save = async () => {
     if (form.name.trim().length < 2) return setError("Enter the table name (at least 2 characters).");
     if (!form.description.trim()) return setError("Enter a description.");
@@ -89,17 +89,17 @@ function TableDialog({ table, onClose, onSaved }) {
         <section className="om-section" aria-label="Permissions">
           <h3 className="om-section-title">Permissions</h3>
           <div className="om-perms">
-            <Permission title="Active" text="The table can be used across the app." checked={form.is_active} disabled={sys}
-              hint={sys ? "Used by the program: always active" : ""} onChange={(v) => setForm({ ...form, is_active: v })} />
+            <Permission title="Active" text="The table can be used across the app." checked={form.is_active}
+              onChange={(v) => setForm({ ...form, is_active: v })} />
             <Permission title="Can Edit" text="Existing values can be changed." checked={form.can_edit}
               onChange={(v) => setForm({ ...form, can_edit: v })} />
-            <Permission title="Add Value" text="New values can be added." checked={form.allow_add} disabled={addFixed}
-              hint={addFixed ? table.closed_why : ""} onChange={(v) => setForm({ ...form, allow_add: v })} />
+            <Permission title="Add Value" text="New values can be added." checked={form.allow_add}
+              onChange={(v) => setForm({ ...form, allow_add: v })} />
           </div>
           {sys && (
             <p className="field-hint">
-              Built into the app: it always stays active.{" "}
-              {addFixed ? <>New values can't be added: {table.closed_why}</> : "New values can be added: each one works like one of the built-in values."}
+              Built into the app: you decide what people may do with it. Switching it off hides it from every list that uses it;
+              it can't be deleted.
             </p>
           )}
         </section>
@@ -115,9 +115,7 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
     code: value?.code || "", description: value?.description || "", is_active: value ? value.is_active : true,
     parent_id: value?.parent?.id ? String(value.parent.id) : (parentOptions[0] ? String(parentOptions[0].id) : ""),
     factor: value?.extra?.to_base != null ? String(value.extra.to_base) : "",
-    behaves_like: value?.extra?.behaves_like || "single_choice",
   });
-  const isQuestionType = table.code === "QUESTION_TYPE";
   // A value inside a category with a base unit (Measurement unit: kg / L) is a unit of measure:
   // it has a conversion factor, which every recipe calculation uses.
   const parentOpt = parentOptions.find((p) => String(p.id) === form.parent_id);
@@ -137,7 +135,6 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
           code: form.code.trim(), description: form.description.trim() || null, is_active: form.is_active,
           parent_id: table.parent ? Number(form.parent_id) || null : null,
           ...(base ? { factor: factorNum } : {}),
-          ...(isQuestionType ? { behaves_like: form.behaves_like } : {}),
         }));
     } catch (e) {
       setError(masterError(e, "The value couldn't be saved."));
@@ -182,16 +179,6 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
           </div>
         </section>
 
-        {isQuestionType && !value && (
-          <section className="om-section" aria-label="Works like">
-            <h3 className="om-section-title">Works like <span className="req" aria-hidden="true">*</span></h3>
-            <Select className="input" value={form.behaves_like} onChange={(e) => setForm({ ...form, behaves_like: e.target.value })}
-              aria-label="Built-in type it works like">
-              {Object.entries(BUILT_IN_TYPES).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-            </Select>
-            <p className="field-hint">How surveys ask it, what options it needs, and how reports count its answers.</p>
-          </section>
-        )}
         {base && (
           <section className="om-section" aria-label="Conversion">
             <h3 className="om-section-title">Conversion <span className="req" aria-hidden="true">*</span></h3>
@@ -210,7 +197,7 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
           <h3 className="om-section-title">Status</h3>
           <div className="om-perms is-one">
             <Permission title="Active" text="Shown in the app's lists. Inactive values stay on saved data." checked={form.is_active}
-              disabled={table.is_system} onChange={(v) => setForm({ ...form, is_active: v })} />
+              onChange={(v) => setForm({ ...form, is_active: v })} />
           </div>
         </section>
       </div>
@@ -257,6 +244,12 @@ const PAGE_SIZES = [10, 20, 50, 0];
 // The six question types the app itself knows how to ask and report (backend BUILT_IN_QUESTION_TYPES).
 const BUILT_IN_TYPES = { rating: "Rating 1–5", yes_no: "Yes / No", single_choice: "Choice (one answer)",
   multiple_choice: "Multiple choice", preference: "Preference (Sample A vs B)", text: "Text answer" }; // 0 = all on one page
+// The six recipe standard rules the app knows how to check (backend BUILT_IN_STANDARD_TYPES).
+const BUILT_IN_STANDARDS = { required_ingredient: "Must contain an ingredient", ingredient_share: "Ingredient usage % between",
+  ingredient_cost_per_kg: "Ingredient cost at most (per UOM)", max_cost_per_kg: "Recipe cost at most (per UOM, whole recipe)",
+  costs_complete: "Every ingredient has a cost per KG", custom: "Custom rule (by quantity)" };
+// Lists whose new values work like a built-in value, with those built-in values.
+const WORKS_LIKE = { QUESTION_TYPE: BUILT_IN_TYPES, RECIPE_STANDARD_TYPE: BUILT_IN_STANDARDS };
 
 /* The same pager as the Home page's tables (App.jsx Pager, styles .pager). */
 function Pager({ total, page, pages, size, onSize, onPage }) {
@@ -340,10 +333,44 @@ export default function OtherMasters() {
   // What the server allows (api/other_masters.py may_add / may_edit), with its reason.
   const addProblem = t?.add_problem || "";
   const editProblem = t?.edit_problem || "";
-  const isQuestionTypes = t?.code === "QUESTION_TYPE";
+  const isQuestionTypes = Boolean(t && WORKS_LIKE[t.code]); // lists whose new values work like a built-in one
   const refresh = async (msg) => {
     setNotice(msg || "");
     await Promise.all([loadTables(), loadDetail(selectedId)]);
+  };
+  const deleteValue = async (v) => {
+    const name = v.description && v.description !== v.code ? `${v.description} (${v.code})` : v.code;
+    if (v.delete_problem) {
+      // Can't be deleted: say why, and offer deactivating instead (same result for every list).
+      const off = await confirmDialog({
+        title: `“${name}” can't be deleted`,
+        message: v.delete_problem,
+        confirmLabel: v.is_active && !editProblem ? "Deactivate Instead" : "OK",
+        cancelLabel: v.is_active && !editProblem ? "Close" : null,
+      });
+      if (off && v.is_active && !editProblem) toggleValue(v);
+      return;
+    }
+    const ok = await confirmDialog({
+      title: `Delete “${name}”?`,
+      message: `${v.delete_warning ? `${v.delete_warning} ` : ""}It is removed from this table and from every list in the app. This can't be undone: to only hide it, deactivate it instead.`,
+      confirmLabel: "Delete", danger: true,
+    });
+    if (!ok) return;
+    try {
+      await deleteMasterValue(v.id);
+      refresh(`“${v.code}” was deleted.`);
+    } catch (e) {
+      setError(masterError(e, "The value couldn't be deleted."));
+    }
+  };
+  const askDeleteTable = async () => {
+    if (!t.built_in) return setDialog({ type: "delete" });
+    await confirmDialog({
+      title: `“${t.name}” can't be deleted`,
+      message: "It's built into the app: screens and reports read it, so it must stay. You can delete the values nobody uses, deactivate values, or switch the whole table off with Edit Table > Active.",
+      confirmLabel: "OK", cancelLabel: null,
+    });
   };
   const toggleValue = async (v) => {
     try {
@@ -390,13 +417,14 @@ export default function OtherMasters() {
           <KpiIcon name="questions" />
           <span className="h-stat-label">Values in this table</span>
           <span className="h-stat-value">{t ? t.values : "—"}</span>
-          <span className="h-stat-note">{t ? `${t.active_values} active` : "choose a table"}</span>
+          <span className="h-stat-note">{t ? `in ${t.name}` : "choose a table"}</span>
         </div>
-        <div className="h-stat kpi-card tone-act">
+        {/* Active values: the ones offered in the app's dropdowns; inactive ones stay on saved data but can't be chosen. */}
+        <div className="h-stat kpi-card tone-pos">
           <KpiIcon name="analyzed" />
-          <span className="h-stat-label">Created here</span>
-          <span className="h-stat-value">{tables ? tables.filter((x) => !x.built_in).length : "—"}</span>
-          <span className="h-stat-note">the rest are built into the app</span>
+          <span className="h-stat-label">Active values</span>
+          <span className="h-stat-value">{t ? t.active_values : "—"}</span>
+          <span className="h-stat-note">{t ? (t.values - t.active_values ? `shown in dropdowns · ${t.values - t.active_values} inactive (hidden)` : "all shown in the app's dropdowns") : "choose a table"}</span>
         </div>
       </div>
 
@@ -444,15 +472,14 @@ export default function OtherMasters() {
                   <button type="button" className="btn btn-primary btn-sm" disabled={Boolean(addProblem)} title={addProblem}
                     onClick={() => setDialog({ type: "value" })}>Add value</button>
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setDialog({ type: "table", table: t })}>Edit table</button>
-                  {!t.built_in && (
-                    <button type="button" className="btn btn-danger btn-sm" onClick={() => setDialog({ type: "delete" })}>Delete table</button>
-                  )}
+                  <button type="button" className="btn btn-danger btn-sm" onClick={askDeleteTable}>Delete table</button>
                 </div>
               </div>
               {addProblem && <p className="field-hint om-why">New values can't be added: {addProblem}</p>}
               {isQuestionTypes && !addProblem && (
-                <p className="field-hint om-why">A new question type works like one of the six built-in types (its answers, options and report),
-                  and appears straight away in the Question type list of every product's survey questions.</p>
+                <p className="field-hint om-why">{t.code === "RECIPE_STANDARD_TYPE"
+                  ? "A new rule type appears straight away in the rule type list of every product's Recipe standards, as a written rule that people check."
+                  : "A new question type appears straight away in the Question type list of every product's survey questions, answered as free text."}</p>
               )}
 
               {allValues.length > 0 && (
@@ -478,7 +505,6 @@ export default function OtherMasters() {
                         <th scope="col">Value code</th>
                         <th scope="col">Description</th>
                         {isUnits && <th scope="col">Conversion</th>}
-                        {isQuestionTypes && <th scope="col">Works like</th>}
                         <th scope="col">Status</th>
                         <th scope="col">Last changed</th>
                         <th scope="col"><span className="visually-hidden">Actions</span></th>
@@ -491,17 +517,18 @@ export default function OtherMasters() {
                           {t.parent && <td>{v.parent?.description || "—"}</td>}
                           <td><strong>{v.code}</strong></td>
                           <td>{v.description && v.description !== v.code ? v.description : <span className="muted">—</span>}</td>
-                          {isQuestionTypes && <td>{v.extra?.behaves_like ? (BUILT_IN_TYPES[v.extra.behaves_like] || v.extra.behaves_like) : <span className="muted">Built-in type</span>}</td>}
                           {isUnits && <td>{v.extra?.to_base != null ? `1 ${v.code} = ${Number(v.extra.to_base).toLocaleString(undefined, { maximumSignificantDigits: 12 })} ${v.extra.base || ""}` : "—"}</td>}
                           <td><span className={`status-chip ${v.is_active ? "is-ok" : "is-neutral"}`}>{v.is_active ? "Active" : "Inactive"}</span></td>
                           <td className="muted small">{fmt(v.mod_at || v.created_at)}{(v.mod_by || v.created_by) ? ` · ${v.mod_by || v.created_by}` : ""}</td>
                           <td className="om-row-actions">
                             <button type="button" className="link-btn" disabled={Boolean(editProblem)} title={editProblem}
                               onClick={() => setDialog({ type: "value", value: v })}>Edit</button>
-                            {(!t.is_system || (isQuestionTypes && v.extra?.behaves_like)) && (
+                            {(
                               <button type="button" className="link-btn" disabled={Boolean(editProblem)} title={editProblem}
                                 onClick={() => toggleValue(v)}>{v.is_active ? "Deactivate" : "Activate"}</button>
                             )}
+                            <button type="button" className="link-btn danger-link" disabled={Boolean(editProblem)} title={editProblem || v.delete_problem || "Delete"}
+                              onClick={() => deleteValue(v)}>Delete</button>
                           </td>
                         </tr>
                       ))}

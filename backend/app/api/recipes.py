@@ -84,6 +84,78 @@ def get_recipe(product_id: int, request: Request, db: Session = Depends(get_db))
     return {"product_id": product.id, "product_name": product.name, "recipe": product.recipe, **recipe_extras(db, product)}
 
 
+def _key(name: str) -> str:
+    return " ".join(str(name or "").split()).lower()
+
+
+def check_ingredients(product: Product, ingredients: list) -> Optional[str]:
+    """Each ingredient at most once in a recipe, and (once the product's Recipe standards list its
+    approved ingredients) only those. None = fine."""
+    seen = set()
+    for ing in ingredients:
+        k = _key(ing.get("name"))
+        if k in seen:
+            return f"“{ing['name']}” is in the recipe twice: add each ingredient once."
+        seen.add(k)
+    approved = {_key(n) for n in (product.approved_ingredients or [])}
+    if approved:
+        outside = [ing["name"] for ing in ingredients if _key(ing.get("name")) not in approved]
+        if outside:
+            return ("Not in this product's approved ingredients (Recipe standards): " + ", ".join(outside)
+                    + ". Add them to the approved list first, or choose approved ones.")
+    return None
+
+
+class ApprovedIn(BaseModel):
+    ingredients: List[str] = Field(default_factory=list, max_length=200)
+
+
+@router.get("/products/{product_id}/approved-ingredients")
+def get_approved(product_id: int, db: Session = Depends(get_db)):
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    return {"ingredients": product.approved_ingredients or []}
+
+
+@router.put("/products/{product_id}/approved-ingredients")
+def set_approved(product_id: int, body: ApprovedIn, request: Request, db: Session = Depends(get_db)):
+    """The ingredients this product's recipe may use (Recipe standards), each once."""
+    product = db.get(Product, product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found.")
+    names, seen = [], set()
+    for n in body.ingredients:
+        clean = " ".join(str(n or "").split())[:120]
+        if clean and _key(clean) not in seen:
+            seen.add(_key(clean))
+            names.append(clean)
+    # An ingredient may be removed even if the current recipe uses it (e.g. added by mistake): the
+    # saved recipe stays as it is, and its next version must leave it out.
+    product.approved_ingredients = names or None
+    db.commit()
+    audit.note(request, target_id=product.id, summary=f"Approved ingredients of {product.name}: {len(names)}")
+    return {"ingredients": names}
+
+
+@router.get("/products/{product_id}/recipe/sources")
+def recipe_sources(product_id: int, db: Session = Depends(get_db)):
+    """Recipes a new recipe can start from: every other product's current recipe and every saved
+    version (a list to choose from; the chosen one is loaded into the editor, not saved)."""
+    out = []
+    for p in db.query(Product).filter(Product.id != product_id).order_by(Product.name).all():
+        if (p.recipe or {}).get("ingredients"):
+            out.append({"product_id": p.id, "product_name": p.name, "version": None, "label": f"{p.name} · current recipe",
+                        "recipe": p.recipe})
+    for v in (db.query(RecipeVersion, Product).join(Product, Product.id == RecipeVersion.product_id)
+              .order_by(Product.name, RecipeVersion.version.desc()).all()):
+        rv, p = v
+        if (rv.recipe or {}).get("ingredients"):
+            out.append({"product_id": p.id, "product_name": p.name, "version": rv.version,
+                        "label": f"{p.name} · recipe v{rv.version}", "recipe": rv.recipe})
+    return {"sources": out}
+
+
 @router.put("/products/{product_id}/recipe")
 def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session = Depends(get_db)):
     check_product_access(db, request, product_id)
@@ -119,6 +191,9 @@ def save_recipe(product_id: int, body: RecipeIn, request: Request, db: Session =
 
     # "65 kg" typed in Quantity -> 65 + kg; a number without a unit is kg
     recipe["ingredients"] = normalize_ingredients([i for i in recipe["ingredients"] if i["name"]])
+    ingredient_problem = check_ingredients(product, recipe["ingredients"])
+    if ingredient_problem:
+        raise HTTPException(status_code=400, detail=ingredient_problem)
     # Batch weight: the ingredients must add up to exactly the batch size
     from app.services.recipe_tools import batch_check
 

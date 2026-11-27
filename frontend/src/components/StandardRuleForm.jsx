@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { addStandard, changeStandard, errorText } from "../services/nextApi";
 import { getCategories } from "../services/feedbackApi";
 import Select from "./Select";
+import ComboInput from "./ComboInput";
+import { fillMap, lovValues, onLovLoaded } from "../services/lov";
 import { unitCode, unitGroups } from "../services/units";
 
 /*
@@ -19,12 +21,26 @@ export const KINDS = {
   costs_complete: "Every ingredient has a Cost per KG",
   custom: "Custom rule (by quantity)",
 };
+// The starting labels, kept for rules whose type was later deleted in Master (still shown by name).
+const KIND_DEFAULTS = { ...KINDS };
+// Labels from Master > Recipe standard type once the lists load (the values above are the fallback).
+// Every active rule type in Master (built-in and added, each added one checked like a built-in rule).
+const KIND_BASE = {};
+const baseKind = (code) => KIND_BASE[code] || code;
+onLovLoaded(() => {
+  fillMap(KINDS, "RECIPE_STANDARD_TYPE");
+  Object.keys(KIND_BASE).forEach((k) => delete KIND_BASE[k]);
+  (lovValues("RECIPE_STANDARD_TYPE") || []).forEach((v) => { if (v.extra?.behaves_like) KIND_BASE[v.code] = v.extra.behaves_like; });
+});
+/** The label of a rule's type: its Master type if chosen there, else the built-in one. */
+export const kindLabel = (r) => KINDS[r.type_code] || KINDS[r.kind] || KIND_DEFAULTS[r.kind] || r.type_code || r.kind;
 const NEEDS_INGREDIENT = ["required_ingredient", "ingredient_share", "ingredient_cost_per_kg", "custom"];
 // Rules whose limits have a unit of measure (quantity, or ₹ per unit).
 const HAS_UOM = ["custom", "ingredient_cost_per_kg", "max_cost_per_kg"];
 const asText = (v) => (v == null ? "" : String(v));
 
-export function ruleCondition(r) {
+export function ruleCondition(rule) {
+  const r = { ...rule, kind: baseKind(rule.kind) };
   const money = (v) => `₹${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
   const u = r.unit || "kg";
   if (r.kind === "required_ingredient") return `contains ${r.ingredient}`;
@@ -34,6 +50,7 @@ export function ruleCondition(r) {
   }
   if (r.kind === "ingredient_cost_per_kg") return `${r.ingredient} at most ${money(r.max_value)}/${u}`;
   if (r.kind === "max_cost_per_kg") return `recipe at most ${money(r.max_value)}/${u}`;
+  if (r.kind === "manual") return "written rule, checked manually";
   if (r.kind === "custom") {
     if (!r.ingredient) return "written rule, checked manually";
     const lo = r.min_value, hi = r.max_value;
@@ -42,9 +59,17 @@ export function ruleCondition(r) {
   return "every ingredient costed";
 }
 
-export default function StandardRuleForm({ productId = null, rule = null, onSaved, onCancel, initialKind = null }) {
+function suggestName(kind, ingredient) {
+  const i = String(ingredient || "").trim();
+  if (!i) return "";
+  const b = baseKind(kind);
+  return b === "required_ingredient" ? `Contains ${i}` : b === "ingredient_share" ? `${i} usage %`
+    : b === "ingredient_cost_per_kg" ? `${i} cost limit` : b === "custom" ? `${i} quantity` : i;
+}
+
+export default function StandardRuleForm({ productId = null, rule = null, onSaved, onCancel, initialKind = null, approved = [] }) {
   const [f, setF] = useState(() => ({
-    name: rule?.name || "", kind: rule?.kind || initialKind || "ingredient_share", ingredient: rule?.ingredient || "",
+    name: rule?.name || "", kind: (rule?.type_code && KINDS[rule.type_code] ? rule.type_code : rule?.kind) || initialKind || (KINDS.ingredient_share ? "ingredient_share" : Object.keys(KINDS)[0]), ingredient: rule?.ingredient || "",
     min_value: asText(rule?.min_value), max_value: asText(rule?.max_value), unit: unitCode(rule?.unit) || "kg",
     scope: rule ? (rule.applies_to_all ? "all" : rule.category_id ? String(rule.category_id) : "") : "",
   }));
@@ -55,15 +80,16 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
     if (productId) return;
     getCategories().then((r) => setCategories(Array.isArray(r) ? r : r?.categories || [])).catch(() => {});
   }, [productId]);
+  const bk = baseKind(f.kind); // the built-in rule the chosen type is checked like
   const num = (v) => (String(v).trim() === "" ? null : Number(String(v).replace(/,/g, "")));
   const save = async () => {
     setError("");
     if (!productId && !f.scope) return setError("Choose what the rule applies to.");
     const body = {
-      name: f.name.trim(), kind: f.kind, ingredient: NEEDS_INGREDIENT.includes(f.kind) ? f.ingredient.trim() || null : null,
-      min_value: ["ingredient_share", "custom"].includes(f.kind) ? num(f.min_value) : null,
-      max_value: ["ingredient_share", "ingredient_cost_per_kg", "max_cost_per_kg", "custom"].includes(f.kind) ? num(f.max_value) : null,
-      unit: HAS_UOM.includes(f.kind) ? f.unit : null,
+      name: f.name.trim(), kind: f.kind, ingredient: NEEDS_INGREDIENT.includes(bk) ? f.ingredient.trim() || null : null,
+      min_value: ["ingredient_share", "custom"].includes(bk) ? num(f.min_value) : null,
+      max_value: ["ingredient_share", "ingredient_cost_per_kg", "max_cost_per_kg", "custom"].includes(bk) ? num(f.max_value) : null,
+      unit: HAS_UOM.includes(bk) ? f.unit : null,
       product_id: productId || null,
       category_id: !productId && f.scope && f.scope !== "all" ? Number(f.scope) : null,
       applies_to_all: !productId && f.scope === "all",
@@ -79,7 +105,7 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
       setBusy(false);
     }
   };
-  const isCost = f.kind === "ingredient_cost_per_kg" || f.kind === "max_cost_per_kg";
+  const isCost = bk === "ingredient_cost_per_kg" || bk === "max_cost_per_kg";
   const units = unitGroups();
   const uomSelect = (
     <Select className="input std-uom" value={f.unit} aria-label="UOM (unit of measure)" title="UOM (unit of measure)"
@@ -93,18 +119,28 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
     <div className="std-form">
       <Select className="input" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} aria-label="Rule type">
         {Object.entries(KINDS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        {/* A rule being edited keeps its type even if that type was deleted from Master. */}
+        {!KINDS[f.kind] && <option value={f.kind}>{KIND_DEFAULTS[f.kind] || f.kind}</option>}
       </Select>
-      <input className="input" placeholder={f.kind === "custom" ? "Rule name, e.g. Paneer quantity" : "Rule name, e.g. Cardamom at most ₹2,500/kg"} value={f.name} aria-label="Rule name"
-        onChange={(e) => setF({ ...f, name: e.target.value })} />
-      {NEEDS_INGREDIENT.includes(f.kind) && (
-        <input className="input" placeholder="Ingredient, e.g. cardamom powder" value={f.ingredient} aria-label="Ingredient"
-          onChange={(e) => setF({ ...f, ingredient: e.target.value })} />
+      {/* Rule type, then the ingredient (the approved ingredients are suggested; typing works too), then its name. */}
+      {NEEDS_INGREDIENT.includes(bk) && (
+        <>
+          <ComboInput className="input" options={approved} placeholder={approved.length ? "Choose or type an ingredient" : "Ingredient, e.g. cardamom powder"}
+            value={f.ingredient} aria-label="Ingredient"
+            onChange={(ingredient) => {
+              // Suggest a name from the type and ingredient until one is typed.
+              const auto = !f.name.trim() || f.name === suggestName(f.kind, f.ingredient);
+              setF({ ...f, ingredient, name: auto ? suggestName(f.kind, ingredient) : f.name });
+            }} />
+        </>
       )}
-      {f.kind === "ingredient_share" && (
+      <input className="input" placeholder={bk === "custom" ? "Rule name, e.g. Paneer quantity" : "Rule name, e.g. Cardamom at most ₹2,500/kg"} value={f.name} aria-label="Rule name"
+        onChange={(e) => setF({ ...f, name: e.target.value })} />
+      {bk === "ingredient_share" && (
         <input className="input" inputMode="decimal" placeholder="Min %" value={f.min_value} aria-label="Min %"
           onChange={(e) => setF({ ...f, min_value: e.target.value })} />
       )}
-      {f.kind === "custom" && (
+      {bk === "custom" && (
         <>
           <input className="input" inputMode="decimal" placeholder={`Min ${f.unit}`} value={f.min_value} aria-label={`Min quantity in ${f.unit}`}
             onChange={(e) => setF({ ...f, min_value: e.target.value })} />
@@ -113,7 +149,7 @@ export default function StandardRuleForm({ productId = null, rule = null, onSave
           {uomSelect}
         </>
       )}
-      {(f.kind === "ingredient_share" || isCost) && (
+      {(bk === "ingredient_share" || isCost) && (
         <input className="input" inputMode="decimal" placeholder={isCost ? `Max ₹ per ${f.unit}` : "Max %"} value={f.max_value}
           aria-label={isCost ? `Max ₹ per ${f.unit}` : "Max %"} onChange={(e) => setF({ ...f, max_value: e.target.value })} />
       )}

@@ -186,6 +186,9 @@ class Product(AuditMixin, Base):
     # Recipe plan: the defaults every action plan of this product starts from
     # (target responses, survey persons needed, dates, cities, audience, notes ...).
     recipe_plan = Column(JSON, nullable=True)
+    # Recipe standards: the ingredients this product's recipe may use (["Sugar", "Salt", ...]).
+    # Empty / NULL = no list yet, any ingredient may be typed (as before).
+    approved_ingredients = Column(JSON, nullable=True)
     # Kept from the earlier survey form approval step. The Super Admin's survey questions are
     # final now, so this is always "approved" (start-up resets any old "pending" / "returned").
     questions_status = Column(String(20), nullable=False, default="approved")
@@ -829,6 +832,9 @@ class RecipeStandard(AuditMixin, Base):
     name = Column(String(160), nullable=False)
     # required_ingredient | ingredient_share | max_cost_per_kg | costs_complete
     kind = Column(String(30), nullable=False)
+    # The Recipe standard type chosen from Master when it isn't one of the six built-in ones:
+    # kind then holds the built-in rule it is checked like. NULL = built-in.
+    type_code = Column(String(80), nullable=True)
     ingredient = Column(String(120), nullable=True)
     min_value = Column(Float, nullable=True)
     max_value = Column(Float, nullable=True)
@@ -928,6 +934,9 @@ class OtherMasterName(AuditMixin, Base):
     is_active = Column(Integer, nullable=False, default=1)
     can_edit = Column(Integer, nullable=False, default=1)
     allow_add = Column(Integer, nullable=False, default=1)
+    # Codes of starting values (services/lov.py) an admin deleted: start-up seeding skips them,
+    # so a deleted value doesn't come back.
+    removed_codes = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
 

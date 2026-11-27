@@ -13435,3 +13435,63 @@ button.kpi-btn:hover { box-shadow: var(--shadow-md, 0 6px 18px rgba(0,0,0,.08));
 .recipe-lock-bar .lock-icon { flex: none; width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; background: #fff; font-size: 15px; }
 .recipe-lock-bar .btn-primary { background: var(--act); border-color: var(--act); }
 .recipe-lock-bar .btn-primary:hover { background: #6e4509; border-color: #6e4509; }
+
+/* Title Case (every word capitalised) for the interface's own labels: headings, navigation,
+   tabs, buttons, table headers, field labels, card labels and chips. Sentences, descriptions,
+   inputs and the data people type stay exactly as written. */
+h1, h2, h3, h4, legend,
+.topnav button, .page-tabs-u button, .segmented button, .chip-filter,
+.btn, .link-btn, .sidebar-add,
+.data-table th, .field-label, .h-stat-label, .kpi-title,
+.status-chip, .round-chip, .pv-chip, .sv-tag, .count-badge,
+.panel-title, .org-panel-title, .report-h, .sidebar-label, .std-sub, .om-section-title,
+.recipe-card-head h3, .runs-summary span, .cmp-card > span, .tl-kind, .tl-title,
+.notif-head strong, .notif-title, .pager-size label, .pager-page { text-transform: capitalize; }
+/* Codes and values shown as they are stored (e.g. single_choice, RCP-0008, kg) */
+code, .is-code, .om-context-chip.is-code, input, textarea, select, option { text-transform: none; }
+/* Dialog titles are sentences with names in them ("Remove “recipe.pdf”?", "Delete the active
+   survey plan first"): written as they are, not every word capitalised. */
+.dialog-title, .modal-head h2 { text-transform: none; }
+
+/* Approved ingredients (Recipe standards) and recipe sources */
+.appr { display: grid; gap: 8px; margin: 6px 0 18px; padding-top: 12px; border-top: 1px solid var(--line); }
+.appr-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.appr-head .std-sub { margin: 0; }
+.appr-chips { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.appr-chips li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; font-size: 13.5px; }
+.appr-chips li.is-used { background: var(--pos-soft); border-color: color-mix(in srgb, var(--pos) 30%, transparent); }
+.appr-chips button { border: 0; background: transparent; color: var(--muted); font-size: 16px; cursor: pointer; padding: 0 4px; }
+.appr-chips button:hover { color: var(--neg); }
+.appr-used { font-size: 11px; font-weight: 700; color: var(--pos); padding-right: 6px; }
+.appr-add { display: flex; gap: 8px; } .appr-add .input { flex: 1; }
+.src-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.src-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
+
+.attach-actions { display: inline-flex; align-items: center; gap: 12px; } .attach-view { width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 9px; color: var(--brand); } .attach-view:hover { background: var(--brand-soft); }
+
+/* ComboInput: "Use “…”" for a typed value, ticks in multi-choice lists */
+.ss-option.is-custom { color: var(--brand); font-weight: 600; }
+.ss-check { display: inline-block; width: 18px; color: var(--brand); font-weight: 700; }
+.ap-cities .ss-trigger.ap-city-input { flex: 1 1 160px; min-width: 140px; }
+
+/* Recipe standards card: three separate titled boxes (Check Results, Approved Ingredients,
+   Configured Rules), each with its own header, icon colour and border. */
+.std-block { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); margin: 0 0 16px; overflow: hidden; }
+.std-block:last-child { margin-bottom: 0; }
+.std-block-head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--block-soft); border-bottom: 1px solid var(--line); }
+.std-block-icon { flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--surface); color: var(--block); border: 1px solid color-mix(in srgb, var(--block) 25%, transparent); }
+.std-block-icon svg { width: 18px; height: 18px; }
+.std-block-title { flex: 1; min-width: 0; }
+.std-block-title h4 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; color: var(--ink); }
+.std-block-title p { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.std-block-aside { flex: none; }
+.std-block-body { padding: 14px 16px; }
+.std-block.tone-check { --block: #1e6b52; --block-soft: #eef7f2; }
+.std-block.tone-ingr { --block: #8a560c; --block-soft: #fbf5ea; }
+.std-block.tone-rules { --block: #0a4174; --block-soft: #eef4fa; }
+.std-block .table-wrap { margin: 0 !important; }
+.std-block .std-empty { margin: 0; }
+.std-block .appr { margin: 0; padding-top: 0; border-top: 0; }
+.std-block .std-product-rules { margin-top: 0; padding-top: 0; border-top: 0; }
+.std-block .std-results { margin-top: 0; }
+@media (max-width: 640px) { .std-block-head { flex-wrap: wrap; } .std-block-aside { width: 100%; } }

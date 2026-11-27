@@ -47,15 +47,37 @@ function publish(next) {
   listeners.forEach((fn) => fn());
 }
 
+/* Staying in step with admin changes made anywhere (another tab, another person, another computer):
+   GET /lov/version is a cheap fingerprint of every master table; when it changes the lists reload
+   and every screen using them re-renders. Same-browser tabs are told at once (BroadcastChannel). */
+const POLL_MS = 10000;
+let version = null;
+const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel("fmcg-lov") : null;
+
 /** Load (or reload after an admin change) the lists. Never throws. */
-export function loadLov(force = false) {
+export function loadLov(force = false, { announce = force } = {}) {
   if (loading && !force) return loading;
   loading = getLov()
-    .then(publish)
+    .then((next) => {
+      publish(next);
+      if (announce) channel?.postMessage("changed"); // other tabs of this browser reload now
+      data(api.get("/lov/version")).then((v) => { version = v.version; }).catch(() => {});
+    })
     .catch(() => {
       loading = null; // try again on the next call
     });
   return loading;
+}
+
+/** Reloads the lists if they changed since the last load (cheap when nothing changed). */
+export async function checkLov() {
+  try {
+    const { version: now } = await data(api.get("/lov/version"));
+    if (version !== null && now !== version) await loadLov(true, { announce: false });
+    version = now;
+  } catch {
+    /* offline or signed out: try again on the next check */
+  }
 }
 
 /** Re-renders the caller when the lists (re)load. Use once, in the App root. */
@@ -66,7 +88,19 @@ export function useLov(enabled = true) {
     const fn = () => setVersion((v) => v + 1);
     listeners.add(fn);
     loadLov();
-    return () => listeners.delete(fn);
+    const tick = () => document.visibilityState === "visible" && checkLov();
+    const timer = setInterval(tick, POLL_MS);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("focus", tick);
+    const onMessage = () => loadLov(true, { announce: false });
+    channel?.addEventListener("message", onMessage);
+    return () => {
+      listeners.delete(fn);
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("focus", tick);
+      channel?.removeEventListener("message", onMessage);
+    };
   }, [enabled]);
 }
 

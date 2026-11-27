@@ -29,6 +29,7 @@ def test_an_earlier_survey_shows_its_own_recipe_and_questions(client, db, produc
     assert snap.status_code == 200, snap.text
     body = snap.json()
     assert body["recipe"]["version"] == 1 and body["recipe"]["ingredients"][0]["name"] == "Corn"
+    assert body["attachments"] == [], "process files of the survey's recipe version (none here)"
     assert body["costing"] is not None, "old versions keep Cost per KG and Cost in Use"
     texts = [q["text"] for q in body["questions"]]
     assert "Question 1?" in texts and "Brand new question?" not in texts

@@ -15,6 +15,7 @@ export const deleteMasterTable = (id) => changed(api.delete(`/admin/other-master
 export const listMasterValues = (id) => data(api.get(`/admin/other-masters/${id}/values`));
 export const addMasterValue = (id, body) => changed(api.post(`/admin/other-masters/${id}/values`, body));
 export const updateMasterValue = (valueId, body) => changed(api.patch(`/admin/other-masters/values/${valueId}`, body));
+export const deleteMasterValue = (valueId) => changed(api.delete(`/admin/other-masters/values/${valueId}`));
 
 export function masterError(err, fallback = "Something went wrong. Try again.") {
   const d = err?.response?.data?.detail;

@@ -30,6 +30,20 @@ def _value(v: OtherMasterData) -> dict:
             "parent_id": v.parent_id, "extra": v.extra or {}, "is_active": bool(v.is_active)}
 
 
+@router.get("/lov/version")
+def lov_version(db: Session = Depends(get_db)):
+    """A fingerprint of every master table and value (counts and latest changes). Pages poll this
+    cheaply and reload GET /lov only when it changes, so an admin's change shows up everywhere."""
+    from sqlalchemy import func
+
+    parts = []
+    for model in (OtherMasterName, OtherMasterData):
+        n, created, changed, active = db.query(func.count(model.id), func.max(model.created_at), func.max(model.mod_at),
+                                               func.sum(model.is_active)).one()
+        parts += [n, created, changed, active]
+    return {"version": "|".join(str(p) for p in parts)}
+
+
 @router.get("/lov")
 def lov(all: bool = False, db: Session = Depends(get_db)):
     masters = db.query(OtherMasterName).filter(OtherMasterName.is_active == 1).all()
@@ -115,8 +129,6 @@ def change_value(value_id: int, body: LovPatch, request: Request, db: Session = 
     problem = may_edit(master)  # Active + Can Edit (Other Master Data)
     if problem:
         raise HTTPException(status_code=409, detail=problem)
-    if body.is_active is not None and master.is_system and not body.is_active:
-        raise HTTPException(status_code=409, detail=f"{master.master_name} is used by the program: values can't be hidden.")
     if body.label is not None:
         v.data_value = _clean(body.label)
     if body.sort_order is not None:

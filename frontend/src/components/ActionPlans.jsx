@@ -7,6 +7,7 @@ import {
   allocatePlan, allocationHistory, createActionPlan, deleteActionPlan, getActionPlans, orgError, updateActionPlan,
 } from "../services/orgApi";
 import Select from "./Select";
+import ComboInput from "./ComboInput";
 import DateField, { todayIso } from "./DateField";
 
 /*
@@ -58,15 +59,12 @@ const span = (p) => (p.start_date || p.end_date ? `${fmtDate(p.start_date) || "�
 const AUDIENCE = { internal: "Internal", external: "External" };
 
 /* Cities as chips; suggestions from the database list CITY (Catalog > Master lists). */
-export function CitiesInput({ value = [], onChange, options, placeholder = "Type a city and press Enter (empty = anywhere)", id }) {
-  const [text, setText] = useState("");
+export function CitiesInput({ value = [], onChange, options, placeholder = "Choose or type a city (empty = anywhere)", id }) {
   const suggestions = useMemo(() => options || [...new Set(lovValues("CITY").map((v) => v.label))].sort(), [options]);
   const add = (raw) => {
     const city = raw.replace(/,/g, " ").trim().replace(/\s+/g, " ");
     if (city && !value.some((c) => c.toLowerCase() === city.toLowerCase())) onChange([...value, city]);
-    setText("");
   };
-  const listId = `${id || "cities"}-list`;
   return (
     <div className="ap-cities">
       {value.map((c) => (
@@ -75,13 +73,16 @@ export function CitiesInput({ value = [], onChange, options, placeholder = "Type
           <button type="button" aria-label={`Remove ${c}`} onClick={() => onChange(value.filter((x) => x !== c))}>×</button>
         </span>
       ))}
-      <input id={id} className="input ap-city-input" list={listId} value={text} placeholder={value.length ? "Add a city" : placeholder}
-        onChange={(e) => { const v = e.target.value; if (suggestions.includes(v)) add(v); else setText(v); }}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(text); } }}
-        onBlur={() => text.trim() && add(text)} />
-      <datalist id={listId}>{suggestions.map((c) => <option key={c} value={c} />)}</datalist>
+      <ComboInput id={id} className="input ap-city-input" value="" placeholder={value.length ? "Add a city" : placeholder}
+        options={suggestions.filter((c) => !value.some((x) => x.toLowerCase() === c.toLowerCase()))}
+        onChange={add} aria-label="City" />
     </div>
   );
+}
+
+/* A survey person's cities: the app's dropdown with search, ticking several (or typing a new one). */
+function AllocCity({ label, cities, options, onChange }) {
+  return <ComboInput className="input" aria-label={label} placeholder="Any city" multi values={cities} options={options} onChange={onChange} />;
 }
 
 /* The plan form: responses, dates, cities, audience, notes. */
@@ -250,9 +251,9 @@ export function PlanCard({ p, canAllocate, canEdit, onTeam, onEdit, onDelete }) 
           <strong>Team</strong>
           <span className={`status-chip ${staffed && p.allocation_complete ? "is-ok" : "is-warn"}`}>
             {!staffed ? "Not allocated yet"
-              : p.allocation_complete ? `${p.allocated} of ${p.target} shared`
+              : p.allocation_complete ? `Shared ${p.allocated} / ${p.target}`
                 : p.allocated > (p.target || 0) ? "Needs reallocation"
-                  : `${p.allocated} of ${p.target} shared · ${p.unallocated} left`}
+                  : `Shared ${p.allocated} / ${p.target} · ${p.unallocated} left`}
           </span>
         </div>
         {staffed ? (
@@ -363,7 +364,6 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
               <span>Survey person</span><span>City</span><span>Responses</span><span />
             </div>
           )}
-          <datalist id={`alloc-cities-${plan.id}`}>{citySuggestions.map((c) => <option key={c} value={c} />)}</datalist>
           {rows.map((r, i) => {
             const mine = Number(r.share) || 0;
             const most = Math.max(remaining + mine, done[r.uid] || 0, 1);
@@ -380,9 +380,8 @@ export function AllocateDialog({ plan, plans, onClose, onSaved }) {
                   {taken && <span className="muted small">Also in {taken.map((n) => `“${n}”`).join(", ")}</span>}
                 </span>
                 <span className="alloc-city">
-                  <input className="input" aria-label={`City for survey person ${i + 1}`} list={`alloc-cities-${plan.id}`}
-                    placeholder="Any city" value={r.cities.join(", ")}
-                    onChange={(e) => setRow(i, { cities: e.target.value.split(",").map((c) => c.trim()).filter(Boolean) })} />
+                  <AllocCity label={`City for survey person ${i + 1}`} cities={r.cities} options={citySuggestions}
+                    onChange={(cities) => setRow(i, { cities })} />
                 </span>
                 <Select className="input" aria-label={`Responses for survey person ${i + 1}`} value={r.share}
                   onChange={(e) => setRow(i, { share: e.target.value })}>

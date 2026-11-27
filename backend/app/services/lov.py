@@ -87,6 +87,15 @@ DEFAULTS = [
         ("failed", "Analysis failed", {"tone": "warn"}),
         ("none", "No recording yet", {"tone": "neutral"}),
     ]),
+    # The rule types of Recipe standards (services/recipe_tools.check_rule knows how to check each).
+    ("RECIPE_STANDARD_TYPE", "Recipe standard type", 1, [
+        ("required_ingredient", "Must contain an ingredient", {"hint": "The recipe must include this ingredient."}),
+        ("ingredient_share", "Ingredient usage % between", {"hint": "An ingredient's share of the batch, within a range."}),
+        ("ingredient_cost_per_kg", "Ingredient cost at most (per UOM)", {"hint": "One ingredient's cost limit."}),
+        ("max_cost_per_kg", "Recipe cost at most (per UOM, whole recipe)", {"hint": "The whole recipe's cost limit."}),
+        ("costs_complete", "Every ingredient has a cost per KG", {"hint": "No ingredient without a cost."}),
+        ("custom", "Custom rule (by quantity)", {"hint": "An ingredient's quantity, within a range."}),
+    ]),
     ("RATING_SCALE", "Rating scale", 1, [
         ("5", "5 ★", None),
         ("4", "4 ★", None),
@@ -128,11 +137,12 @@ def seed_lov() -> int:
             if master is None:
                 # System lists: the program uses their codes, so no values are added (Add Value off).
                 master = OtherMasterName(master_code=code, master_name=name, is_system=is_system,
-                                         allow_add=1 if (not is_system or code in EXTENSIBLE_SYSTEM) else 0)
+                                         allow_add=1)
                 db.add(master)
                 db.flush()
                 added += 1
             have = {c for (c,) in db.query(OtherMasterData.data_code).filter(OtherMasterData.master_id == master.id)}
+            have |= set(master.removed_codes or [])  # deleted by an admin: not added again
             for position, (data_code, label, extra) in enumerate(values):
                 if data_code not in have:
                     db.add(OtherMasterData(master_id=master.id, data_code=data_code, data_value=label,
@@ -174,13 +184,16 @@ def _seed_units(db) -> int:
         return m
 
     cats = master("UNIT_CATEGORY", "Measurement category", "Weight/Mass and Volume: the categories of measurement units.",
-                  allow_add=0)
+                  allow_add=1)
     units = master("MEASUREMENT_UNIT", "Measurement unit", "Units for recipe ingredient quantities, by category.", cats)
     have = {r.data_code: r for r in db.query(OtherMasterData).filter(OtherMasterData.master_id.in_([cats.id, units.id]))
             if r.master_id == cats.id}
     have_units = {r.data_code for r in db.query(OtherMasterData).filter(OtherMasterData.master_id == units.id)}
+    have_units |= set(units.removed_codes or [])  # deleted by an admin: not added again
     for pos, (code, label, base) in enumerate(UNIT_CATEGORIES):
         row = have.get(code)
+        if row is None and code in (cats.removed_codes or []):
+            continue
         if row is None:
             row = OtherMasterData(master_id=cats.id, data_code=code, data_value=label, sort_order=pos, extra={"base": base})
             db.add(row)
@@ -220,6 +233,8 @@ def _seed_geo(db) -> int:
     def ensure(master, data_code, label, aliases, parent, position):
         nonlocal added
         row = existing.get((master.id, data_code))
+        if row is None and (parent is False or data_code in (master.removed_codes or [])):
+            return False  # deleted by an admin (or under a deleted one): not added again
         if row is None:
             row = OtherMasterData(master_id=master.id, data_code=data_code, data_value=label, sort_order=position,
                                   parent_id=parent.id if parent else None, extra={"aliases": aliases} if aliases else None)
@@ -247,8 +262,14 @@ def _seed_geo(db) -> int:
 
 # System lists that may still take new values: each new value behaves like one of the built-in
 # codes (extra.behaves_like), so the program knows what to do with it.
-EXTENSIBLE_SYSTEM = {"QUESTION_TYPE"}
+EXTENSIBLE_SYSTEM = {"QUESTION_TYPE", "RECIPE_STANDARD_TYPE"}
 BUILT_IN_QUESTION_TYPES = ("rating", "yes_no", "single_choice", "multiple_choice", "preference", "text")
+BUILT_IN_STANDARD_TYPES = ("required_ingredient", "ingredient_share", "ingredient_cost_per_kg", "max_cost_per_kg",
+                           "costs_complete", "custom")
+# Each extensible list: what a value added in Master behaves like. A new question type is answered
+# as free text; a new recipe standard type is a written rule people check ("manual", never blocks).
+BEHAVES_LIKE = {"QUESTION_TYPE": BUILT_IN_QUESTION_TYPES, "RECIPE_STANDARD_TYPE": BUILT_IN_STANDARD_TYPES + ("manual",)}
+ADDED_BEHAVES_LIKE = {"QUESTION_TYPE": "text", "RECIPE_STANDARD_TYPE": "manual"}
 
 
 def resolve_question_type(code) -> tuple:
@@ -268,4 +289,25 @@ def resolve_question_type(code) -> tuple:
     base = ((row.extra or {}).get("behaves_like") if row else None)
     if base not in BUILT_IN_QUESTION_TYPES:
         raise ValueError(f"“{code}” isn't an active question type (Master > Question type).")
+    return base, code
+
+
+def resolve_added_type(master_code: str, code) -> tuple:
+    """(built-in code, Master code or None) for a value of an extensible list (Question type,
+    Recipe standard type): a built-in code is itself; one added in Master resolves to the built-in
+    code it behaves like. Unknown or inactive codes raise ValueError."""
+    built_in = BEHAVES_LIKE[master_code]
+    code = str(code or "").strip()
+    if code in built_in:
+        return code, None
+    db = SessionLocal()
+    try:
+        master = db.query(OtherMasterName).filter(OtherMasterName.master_code == master_code).first()
+        row = (db.query(OtherMasterData).filter(OtherMasterData.master_id == master.id, OtherMasterData.data_code == code,
+                                                OtherMasterData.is_active == 1).first() if master else None)
+    finally:
+        db.close()
+    base = (row.extra or {}).get("behaves_like") if row else None
+    if base not in built_in:
+        raise ValueError(f"“{code}” isn't an active value of {master.master_name if master else master_code} (Master).")
     return base, code
