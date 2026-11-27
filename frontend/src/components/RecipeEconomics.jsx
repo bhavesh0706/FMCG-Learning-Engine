@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { compareRecipe, getRecipeRecommendations, saveCommercials } from "../services/catalogAdminApi";
 
 /* Recipe economics, used while adding a new recipe version (all figures come from the server):
-   - RecommendationsPanel: the latest consumer report's recipe recommendations; Apply puts the
+- RecommendationsPanel: the latest consumer report's recipe recommendations; Apply puts the
      proposed quantity into the draft, Reject records the decision; either can be changed again.
-   - CostComparison: the current version against the draft (ingredient changes, batch cost, cost per
+- CostComparison: the current version against the draft (ingredient changes, batch cost, cost per
      kg, gross profit and margin at the selling price), the commercial targets, the warnings, and the
      approval a version needs when it breaks the cost limit or the minimum margin. */
 
@@ -139,8 +139,17 @@ export function CostComparison({ productId, recipe, fromVersion, approve, onAppr
   const rows = all ? cmp.rows : cmp.rows.filter((r) => r.status !== "same");
   const o = cmp.old, n = cmp.new;
   return (
-    <section className="recipe-card econ-panel" aria-labelledby="econ-cmp-title">
-      <h3 id="econ-cmp-title">{saved ? `Cost compared with recipe v${fromVersion}` : `Cost comparison · v${fromVersion} → new version`}</h3>
+    <section
+      className="recipe-card econ-panel rc-tone rc-costing"
+      aria-labelledby="econ-cmp-title"
+    >
+      <header className="recipe-card-head">
+        <h3 id="econ-cmp-title">
+          {saved
+            ? `Cost compared with recipe v${fromVersion}`
+            : `Cost comparison · v${fromVersion} → new version`}
+        </h3>
+      </header>
       {!saved && <TargetsEditor productId={productId} targets={cmp.targets} onSaved={() => setTick((t) => t + 1)} />}
       <div className="table-wrap">
         <table className="data-table econ-table">
