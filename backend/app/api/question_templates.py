@@ -203,7 +203,7 @@ def apply_template(body: ApplyIn, request: Request, db: Session = Depends(get_db
             q.is_active = 0
     for i, q in enumerate(incoming, start=len(keep) + 1):
         db.add(SurveyQuestion(product_id=product.id, position=i, text=q["text"], question_type=q["question_type"],
-                              options=q.get("options"), required=1 if q.get("required", True) else 0,
+                              type_code=q.get("type_code"), options=q.get("options"), required=1 if q.get("required", True) else 0,
                               report_role=q.get("report_role")))
     db.commit()
     audit.note(request, target_id=product.id, summary=(

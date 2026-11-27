@@ -1,3 +1,4 @@
+import SectionIcon from "./SectionIcon";
 import { nextPlanCode, PlanCard, PlanDialog, wholeNumberProblem } from "./ActionPlans";
 import { ProductDialog } from "./CatalogPage";
 import { SaveTemplateDialog, UseTemplateDialog } from "./QuestionTemplates";
@@ -2092,22 +2093,42 @@ function RecordingAccessTab({ product }) {
   if (state.error) return <ErrorPanel text={state.error} onRetry={reload} />;
   const { history } = state.data;
 
+  const ok = (h) => ["granted", "played"].includes(h.outcome);
+  const ROLE = { admin: "Admin", client: "Super Admin", executive: "Survey person" };
+  const initials = (n) => (n || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
+
   return (
     <div className="rec-access">
-      <p className="field-hint">Consumer recordings are stored encrypted. You and every Admin play them from the analysis page; a survey person plays their own only with the recording passkey. Each attempt is listed here.</p>
-      <section className="panel">
-        <h2 className="org-panel-title">Who played the recordings of {product.name}</h2>
-        {!history.length ? <p className="muted">Nobody has played a recording of this product yet.</p> : (
+      <div className="rec-banner">
+        <SectionIcon name="standards" />
+        <div>
+          <strong>Recordings are stored encrypted</strong>
+          <span>You and every Admin play them from the analysis page; a survey person plays their own only with the recording passkey. Every attempt is logged below.</span>
+        </div>
+      </div>
+      <section className="panel rc-tone rec-panel">
+        <header className="recipe-card-head">
+          <div>
+            <h3><SectionIcon name="play" />Who played the recordings of {product.name}</h3>
+            <p className="muted">Newest first.</p>
+          </div>
+        </header>
+        {!history.length ? <p className="muted rec-empty">Nobody has played a recording of this product yet.</p> : (
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table rec-table">
               <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Recording</th><th scope="col">Result</th></tr></thead>
               <tbody>
                 {history.map((h, i) => (
                   <tr key={`${h.at}-${i}`}>
-                    <td>{fmtDateTime(h.at)}</td>
-                    <td>{h.user || "—"}<span className="muted"> · {h.role}</span></td>
-                    <td>{h.feedback_id ? `#${h.feedback_id}` : "—"}</td>
-                    <td><span className={`status-chip ${["granted", "played"].includes(h.outcome) ? "is-ok" : "is-warn"}`}>{OUTCOME[h.outcome] || h.outcome}</span></td>
+                    <td><strong className="rec-when">{fmtDateTime(h.at)}</strong><span className="cell-sub">{ago(h.at)}</span></td>
+                    <td>
+                      <span className="rec-who">
+                        <span className={`rec-avatar role-${h.role}`} aria-hidden="true">{initials(h.user)}</span>
+                        <span><strong>{h.user || "—"}</strong><span className={`rec-role role-${h.role}`}>{ROLE[h.role] || h.role}</span></span>
+                      </span>
+                    </td>
+                    <td>{h.feedback_id ? <span className="rec-rec">▶ Recording #{h.feedback_id}</span> : "—"}</td>
+                    <td><span className={`status-chip ${ok(h) ? "is-ok" : "is-warn"}`}>{ok(h) ? "✓ " : "✕ "}{OUTCOME[h.outcome] || h.outcome}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -2335,9 +2356,15 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice, base = `
   }
   return (
     <section className="panel org-panel org-rounds">
+      <header className="runs-head">
+        <div>
+          <h2 className="runs-title"><SectionIcon name="history" />Survey runs</h2>
+          <p className="muted small">Every survey of {product.name}, newest first: its recipe, progress and result.</p>
+        </div>
+      </header>
       <ol className="org-timeline">
         {rounds.map((r) => (
-          <li key={r.number} className="org-tl">
+          <li key={r.number} className={`org-tl run-card is-${r.status === "live" ? "live" : r.closed_reason === "ended" ? "ended" : "done"}`}>
             <span className={`org-tl-dot${r.status === "live" ? " is-live" : ""}`} aria-hidden="true">{r.number}</span>
             <div className="org-tl-body">
               <div className="org-tl-head">
@@ -2355,11 +2382,17 @@ function RoundsSection({ product, detail, onStart, onChanged, onNotice, base = `
                 {fmtDate(r.started_at)} – {r.closed_at ? fmtDate(r.closed_at) : "now"}
                 {r.due_date ? ` · wanted by ${fmtDate(r.due_date)}` : ""} · started by {starter(r)}
               </p>
-              <Progress done={r.done} target={r.target} />
-              <p className="muted small">
-                {r.done} submitted of {r.target} target · {Math.max((r.target || 0) - (r.done || 0), 0)} remaining{r.rating != null ? ` · rating ${one(r.rating)}★` : ""}
-                {r.note ? ` · “${r.note}”` : ""}
-              </p>
+              <div className="run-stats">
+                <div><span>Submitted</span><strong>{r.done}</strong></div>
+                <div><span>Target</span><strong>{r.target}</strong></div>
+                <div><span>Remaining</span><strong>{Math.max((r.target || 0) - (r.done || 0), 0)}</strong></div>
+                <div className="is-rating"><span>Rating</span><strong>{r.rating != null ? `${one(r.rating)}★` : "—"}</strong></div>
+                <div className="run-progress">
+                  <span>{r.target ? Math.round((100 * (r.done || 0)) / r.target) : 0}% of target</span>
+                  <Progress done={r.done} target={r.target} />
+                </div>
+              </div>
+              {r.note && <blockquote className="run-note">{r.note}</blockquote>}
               <div className="org-tl-actions">
                 {r.rating != null && (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => go(`${base}/report/${r.number}`)}>Open report</button>
@@ -2591,8 +2624,8 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
             </button>
           </div>
           <div className="org-compare-grid">
-            <section className="panel org-panel">
-              <h3 className="org-panel-title">Key numbers</h3>
+            <section className="panel org-panel rc-tone cmp-panel cmp-numbers">
+              <h3 className="org-panel-title cmp-title"><SectionIcon name="compare" />Key numbers</h3>
               <div className="table-wrap">
                 <table className="data-table org-num-table">
                   <thead>
@@ -2615,8 +2648,9 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
                 </table>
               </div>
             </section>
-            <section className="panel org-panel">
-              <h3 className="org-panel-title">What consumers said</h3>
+            <section className="panel org-panel rc-tone cmp-panel cmp-said">
+              <h3 className="org-panel-title cmp-title"><SectionIcon name="people" />What consumers said</h3>
+              <p className="muted small cmp-legend"><i className="cmp-swatch is-a" /> Concern in Survey {a.number} <i className="cmp-swatch is-b" /> Concern in Survey {b.number} · lower is better</p>
               {c.aspects.length === 0 ? (
                 <p className="muted">No aspects to compare yet.</p>
               ) : (
@@ -2628,7 +2662,13 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
                     <tbody>
                       {c.aspects.map((r) => (
                         <tr key={r.name}>
-                          <td>{r.name}</td>
+                          <td>
+                            <strong>{r.name}</strong>
+                            <span className="cmp-bars" aria-hidden="true">
+                              <i className="is-a" style={{ width: `${r.a.concern_pct || 0}%` }} />
+                              <i className="is-b" style={{ width: `${r.b.concern_pct || 0}%` }} />
+                            </span>
+                          </td>
                           <td>{pct(r.a.concern_pct)}</td>
                           <td>
                             {pct(r.b.concern_pct)} <small><Delta a={r.a.concern_pct} b={r.b.concern_pct} better="down" /></small>
@@ -2641,10 +2681,19 @@ export function CompareSection({ product, rounds, base = `products/${product.id}
                 </div>
               )}
             </section>
-            <section className="panel org-panel org-span">
-              <h3 className="org-panel-title">Recipe used: v{a.recipe_version ?? "—"} → v{b.recipe_version ?? "—"}</h3>
+            <section className="panel org-panel org-span rc-tone cmp-panel cmp-recipe">
+              <h3 className="org-panel-title cmp-title">
+                <SectionIcon name="ingredients" />Recipe used
+                <span className="cmp-versions"><span>v{a.recipe_version ?? "—"}</span>→<span>v{b.recipe_version ?? "—"}</span></span>
+              </h3>
               {c.recipe_changes.length ? (
-                <ul className="org-changes">{c.recipe_changes.map((x) => <li key={x}>{x}</li>)}</ul>
+                <ul className="cmp-changes">
+                  {c.recipe_changes.map((x) => {
+                    const kind = /^added/i.test(x) ? "is-add" : /^removed/i.test(x) ? "is-remove" : x.includes("→") ? "is-change" : "is-note";
+                    const tag = { "is-add": "Added", "is-remove": "Removed", "is-change": "Changed", "is-note": "Updated" }[kind];
+                    return <li key={x} className={kind}><span className="cmp-tag">{tag}</span><span>{x.replace(/^(Added|Removed)\s*/i, "")}</span></li>;
+                  })}
+                </ul>
               ) : (
                 <p className="muted">{c.same_recipe ? "Same recipe in both surveys." : "No recipe details to compare."}</p>
               )}

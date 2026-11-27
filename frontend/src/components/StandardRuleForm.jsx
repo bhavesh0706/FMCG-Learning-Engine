@@ -42,9 +42,9 @@ export function ruleCondition(r) {
   return "every ingredient costed";
 }
 
-export default function StandardRuleForm({ productId = null, rule = null, onSaved, onCancel }) {
+export default function StandardRuleForm({ productId = null, rule = null, onSaved, onCancel, initialKind = null }) {
   const [f, setF] = useState(() => ({
-    name: rule?.name || "", kind: rule?.kind || "ingredient_share", ingredient: rule?.ingredient || "",
+    name: rule?.name || "", kind: rule?.kind || initialKind || "ingredient_share", ingredient: rule?.ingredient || "",
     min_value: asText(rule?.min_value), max_value: asText(rule?.max_value), unit: unitCode(rule?.unit) || "kg",
     scope: rule ? (rule.applies_to_all ? "all" : rule.category_id ? String(rule.category_id) : "") : "",
   }));

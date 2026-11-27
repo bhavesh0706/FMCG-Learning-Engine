@@ -236,6 +236,10 @@ def run_migrations():
             conn.execute(text("UPDATE m_othermastername SET allow_add = 0 WHERE is_system = 1"))
     _add_column("m_othermastername", "can_edit", "INT NOT NULL DEFAULT 1")
     _add_column("recipe_standards", "unit", "VARCHAR(16) NULL")  # UOM of a rule's limits (NULL = kg)
+    _add_column("survey_questions", "type_code", "VARCHAR(80) NULL")  # a Question type added in Master
+    with engine.begin() as conn:  # Question type takes new values (each behaves like a built-in type)
+        conn.execute(text("UPDATE m_othermastername SET allow_add = 1 WHERE master_code = 'QUESTION_TYPE' AND allow_add = 0 "
+                          "AND mod_at = created_at"))
     #    Older uploads keep NULL: they aren't linked to a survey.
     _add_column("feedback_records", "response_id", "INT NULL", index=True)
     _add_column("survey_answers", "value_en", "TEXT NULL")

@@ -1,3 +1,4 @@
+import { lovLabel } from "../services/lov";
 import { useEffect, useState } from "react";
 import Modal from "./Modal";
 import { applyQuestionTemplate, createQuestionTemplate, listQuestionTemplates, questionSourceProducts } from "../services/catalogAdminApi";
@@ -81,7 +82,7 @@ export function UseTemplateDialog({ product, currentCount, onClose, onApplied })
             <>
               <ol>
                 {preview.map((q, i) => (
-                  <li key={i}><span>{q.text}</span> <span className="status-chip is-neutral">{TYPE[q.question_type] || q.question_type}</span>
+                  <li key={i}><span>{q.text}</span> <span className="status-chip is-neutral">{lovLabel("QUESTION_TYPE", q.type_code || q.question_type, TYPE[q.question_type] || q.question_type)}</span>
                     {Array.isArray(q.options) && q.options.length > 0 && <span className="muted small"> · {q.options.join(" / ")}</span>}
                   </li>
                 ))}

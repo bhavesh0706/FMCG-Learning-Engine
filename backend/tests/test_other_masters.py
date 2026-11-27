@@ -134,3 +134,40 @@ def test_a_unit_added_in_other_master_works_everywhere_without_code(client, admi
     # Inactive: no longer a unit anywhere.
     client.patch(f"{URL}/values/{made.json()['id']}", headers=auth(admin), json={"is_active": False})
     assert "cg" not in TO_KG
+
+
+def test_a_question_type_added_in_master_works_in_survey_questions(client, db, admin):
+    """New question types are allowed and must say which built-in type they work like; a
+    question saved with one keeps the chosen type and gets the built-in type's behaviour."""
+    from app.database.models import Category, Product
+
+    seed_lov()
+    tables = {x["code"]: x for x in client.get(URL, headers=auth(admin)).json()["tables"]}
+    qt = tables["QUESTION_TYPE"]
+    assert qt["add_problem"] is None, "Question type takes new values"
+    assert tables["SENTIMENT"]["add_problem"] and "AI" in tables["SENTIMENT"]["add_problem"]
+    url = f"{URL}/{qt['id']}/values"
+    code = _unique("dropdown_")
+    assert client.post(url, headers=auth(admin), json={"code": code}).status_code == 422, "needs behaves_like"
+    made = client.post(url, headers=auth(admin), json={"code": code, "description": "Dropdown", "behaves_like": "single_choice"})
+    assert made.status_code == 201 and made.json()["extra"] == {"behaves_like": "single_choice"}
+    assert any(v["code"] == code for v in client.get("/lov", headers=auth(admin)).json()["QUESTION_TYPE"]["values"])
+
+    org = make_user(db, role="client")
+    cat = Category(name=_unique("QT "), is_active=1)
+    db.add(cat)
+    db.commit()
+    p = Product(category_id=cat.id, name=_unique("QT product "), is_active=1)
+    db.add(p)
+    db.commit()
+    body = {"text": "Which pack size do you prefer?", "question_type": code, "options": ["Small", "Large"]}
+    q = client.post(f"/products/{p.id}/questions", headers=auth(org), json=body)
+    assert q.status_code == 201, q.text
+    assert q.json()["question_type"] == "single_choice" and q.json()["type_code"] == code
+    assert client.post(f"/products/{p.id}/questions", headers=auth(org), json={**body, "options": ["Only one"]}).status_code == 422, \
+        "single-choice rules apply"
+    # Made inactive: no longer offered for new questions; the built-in ones can't be switched off.
+    client.patch(f"{URL}/values/{made.json()['id']}", headers=auth(admin), json={"is_active": False})
+    assert client.post(f"/products/{p.id}/questions", headers=auth(org), json=body).status_code == 422
+    builtin = next(v for v in client.get(url, headers=auth(admin)).json()["values"] if v["code"] == "rating")
+    assert client.patch(f"{URL}/values/{builtin['id']}", headers=auth(admin), json={"is_active": False}).status_code == 409

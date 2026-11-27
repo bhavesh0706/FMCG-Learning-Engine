@@ -5,10 +5,14 @@
 */
 
 class LovValue {
-  const LovValue({required this.id, required this.label, this.parentId, this.aliases = const []});
+  const LovValue({required this.id, required this.label, this.parentId, this.aliases = const [], this.code = '', this.behavesLike});
 
   final int id;
   final String label;
+  /// The value's code (what the app stores), e.g. "single_choice" or a type added in Master.
+  final String code;
+  /// Question types added in Master: the built-in type it works like (`extra.behaves_like`).
+  final String? behavesLike;
   final int? parentId;
 
   /// Other names of the same place (e.g. "Bangalore" for Bengaluru), from `extra.aliases`.
@@ -35,6 +39,8 @@ class Lov {
               LovValue(
                 id: (v['id'] as num).toInt(),
                 label: '${v['label'] ?? ''}'.trim(),
+                code: '${v['code'] ?? ''}',
+                behavesLike: v['extra'] is Map && v['extra']['behaves_like'] is String ? v['extra']['behaves_like'] as String : null,
                 parentId: v['parent_id'] is num ? (v['parent_id'] as num).toInt() : null,
                 aliases: [
                   for (final a in ((v['extra'] is Map ? v['extra']['aliases'] : null) as List? ?? const [])) '$a',

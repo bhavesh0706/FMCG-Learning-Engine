@@ -212,6 +212,9 @@ class SurveyQuestion(AuditMixin, Base):
 
     # rating (1-5) | yes_no | single_choice | text
     question_type = Column(String(30), nullable=False, default="text")
+    # The Question type chosen from Master when it isn't one of the six built-in ones (e.g.
+    # "dropdown"): question_type then holds the built-in type it behaves like. NULL = built-in.
+    type_code = Column(String(80), nullable=True)
     # Which section of the client summary this question feeds (optional):
     # preference | price | score | improvement | purchase_intent | ease
     report_role = Column(String(30), nullable=True)

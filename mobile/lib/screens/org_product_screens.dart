@@ -9,6 +9,7 @@ import 'next_update_screens.dart' show RecipeExtrasView, ReportDownloads, Action
 import '../widgets/search_dropdown.dart';
 import 'survey_snapshot.dart';
 import 'project_screens.dart' show ProductSetupBar, openProjectFor;
+import '../services/lov.dart';
 
 /* ============================================================
    One product (organization): Report · Recipe · Questions · Rounds · Compare
@@ -761,6 +762,37 @@ const _typeLabels = {
 };
 const _optionTypes = {'single_choice', 'multiple_choice', 'preference'};
 
+/// Question types from Master (GET /lov QUESTION_TYPE): built-in and added ones, with the built-in
+/// type each added one works like. Falls back to the six built-in types until the lists load.
+class _QuestionTypes {
+  _QuestionTypes._();
+  static final labels = Map<String, String>.of(_typeLabels);
+  static final base = <String, String>{};
+  static bool _loaded = false;
+
+  static Future<void> load() async {
+    try {
+      final lov = Lov.parse(await OrgApi.request('GET', '/lov'));
+      final values = lov.values('QUESTION_TYPE');
+      if (values.isEmpty) return;
+      labels
+        ..clear()
+        ..addEntries(values.where((v) => v.code.isNotEmpty).map((v) => MapEntry(v.code, v.label)));
+      base
+        ..clear()
+        ..addEntries(values.where((v) => v.behavesLike != null).map((v) => MapEntry(v.code, v.behavesLike!)));
+      _loaded = true;
+    } catch (_) {
+      // Offline or older server: keep the built-in list.
+    }
+  }
+
+  static bool get loaded => _loaded;
+  static String baseOf(String code) => base[code] ?? code;
+  static String labelOf(Json q) =>
+      labels[str(q['type_code'])] ?? labels[str(q['question_type'])] ?? _typeLabels[str(q['question_type'])] ?? str(q['question_type']);
+}
+
 class ProductQuestionsTab extends StatelessWidget {
   const ProductQuestionsTab({required this.productId, this.snapshot});
 
@@ -842,7 +874,7 @@ class ProductQuestionsTab extends StatelessWidget {
                       const SizedBox(height: 3),
                       Text(
                         [
-                          _typeLabels[str(qs[k]['question_type'])] ?? str(qs[k]['question_type']),
+                          _QuestionTypes.labelOf(qs[k]),
                           if (qs[k]['required'] == true) 'required',
                           if (qs[k]['options'] is List) (qs[k]['options'] as List).join(' / '),
                           if (readOnly && qs[k]['still_asked'] == false) 'no longer asked',
@@ -903,7 +935,17 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
   late final TextEditingController _options = TextEditingController(
     text: widget.question?['options'] is List ? (widget.question!['options'] as List).join('\n') : '',
   );
-  late String _type = str(widget.question?['question_type'], 'rating');
+  // The chosen type: a built-in code or one added in Master (its behaviour: _QuestionTypes.baseOf).
+  late String _type = (_QuestionTypes.labels.containsKey(str(widget.question?['type_code'])))
+      ? str(widget.question?['type_code'])
+      : str(widget.question?['question_type'], 'rating');
+  String get _base => _QuestionTypes.baseOf(_type);
+
+  @override
+  void initState() {
+    super.initState();
+    if (!_QuestionTypes.loaded) _QuestionTypes.load().then((_) { if (mounted) setState(() {}); });
+  }
   late bool _required = widget.question?['required'] != false;
   bool _saving = false;
   String? _error;
@@ -921,7 +963,7 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
       setState(() => _error = 'Write the question (at least 5 characters).');
       return;
     }
-    if ((_type == 'single_choice' || _type == 'multiple_choice') && options.length < 2) {
+    if ((_base == 'single_choice' || _base == 'multiple_choice') && options.length < 2) {
       setState(() => _error = 'Add at least two answer options, one per line.');
       return;
     }
@@ -929,7 +971,7 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
       'text': _text.text.trim(),
       'question_type': _type,
       'required': _required,
-      'options': _optionTypes.contains(_type) ? (_type == 'preference' && options.isEmpty ? null : options) : null,
+      'options': _optionTypes.contains(_base) ? (_base == 'preference' && options.isEmpty ? null : options) : null,
     };
     setState(() {
       _saving = true;
@@ -965,18 +1007,18 @@ class _QuestionEditorSheetState extends State<QuestionEditorSheet> {
             isExpanded: true,
             value: _type,
             decoration: const InputDecoration(labelText: 'Answer type'),
-            items: [for (final e in _typeLabels.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
+            items: [for (final e in _QuestionTypes.labels.entries) DropdownMenuItem(value: e.key, child: Text(e.value))],
             onChanged: (v) => setState(() => _type = v ?? 'rating'),
           ),
-          if (_optionTypes.contains(_type)) ...[
+          if (_optionTypes.contains(_base)) ...[
             const SizedBox(height: 12),
             TextField(
               controller: _options,
-              minLines: _type == 'preference' ? 2 : 3,
+              minLines: _base == 'preference' ? 2 : 3,
               maxLines: 6,
               decoration: InputDecoration(
-                labelText: _type == 'preference' ? 'The two samples (empty = Sample A, Sample B)' : 'Answer options',
-                hintText: _type == 'preference' ? 'Sample A\nSample B' : 'One per line',
+                labelText: _base == 'preference' ? 'The two samples (empty = Sample A, Sample B)' : 'Answer options',
+                hintText: _base == 'preference' ? 'Sample A\nSample B' : 'One per line',
               ),
             ),
           ],

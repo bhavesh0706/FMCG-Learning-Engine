@@ -1,8 +1,9 @@
+import SectionIcon from "./SectionIcon";
 import { CostComparison, RecommendationsPanel } from "./RecipeEconomics";
 import { ActionPlansSection } from "./ActionPlans";
 import MastersDialog from "./MastersDialog";
 import KpiIcon from "./KpiIcon";
-import { onLovLoaded, patchMap } from "../services/lov";
+import { fillMap, lovValues, onLovLoaded, patchMap } from "../services/lov";
 import { toKg, unitCode, unitGroups, unitTable } from "../services/units";
 import { AttachmentsCard, LegacyStepsCard, StandardsCard } from "./RecipeExtras";
 
@@ -82,6 +83,10 @@ const TYPES = {
   text: "Text answer",
 };
 const OPTION_TYPES = ["single_choice", "multiple_choice", "preference"];
+// Question types added in Master: { code: built-in type it works like }. Filled from the lists.
+const TYPE_BASE = {};
+// The built-in type a question type (built-in or added in Master) behaves like.
+const baseType = (code) => TYPE_BASE[code] || code;
 
 const MIN_Q = 5;
 const MAX_Q = 10;
@@ -1005,7 +1010,10 @@ const REPORT_ROLES = {
 
 // Labels from the database lists (LOV QUESTION_TYPE, REPORT_ROLE) once loaded; the values above are the fallback.
 onLovLoaded(() => {
-  patchMap(TYPES, "QUESTION_TYPE", (_, v) => v.label);
+  // Every active Question type in Master, built-in and added (with the type it works like).
+  fillMap(TYPES, "QUESTION_TYPE");
+  Object.keys(TYPE_BASE).forEach((k) => delete TYPE_BASE[k]);
+  (lovValues("QUESTION_TYPE") || []).forEach((v) => { if (v.extra?.behaves_like) TYPE_BASE[v.code] = v.extra.behaves_like; });
   patchMap(REPORT_ROLES, "REPORT_ROLE", (role, v) => {
     role.label = v.label;
     if (v.extra?.hint) role.hint = v.extra.hint;
@@ -1048,7 +1056,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
       question_type: editing.question_type,
       required: editing.required,
       report_role: editing.report_role || null,
-      options: OPTION_TYPES.includes(editing.question_type)
+      options: OPTION_TYPES.includes(baseType(editing.question_type))
         ? editing.options.split("\n").map((o) => o.trim()).filter(Boolean)
         : null,
     };
@@ -1124,28 +1132,28 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
           onChange={(e) => setEditing({ ...editing, report_role: e.target.value })}>
           <option value="">Not in the client summary (still in survey answers)</option>
           {Object.entries(REPORT_ROLES)
-            .filter(([k, r]) => r.types.includes(editing.question_type) || k === editing.report_role)
+            .filter(([k, r]) => r.types.includes(baseType(editing.question_type)) || k === editing.report_role)
             .map(([k, r]) => <option key={k} value={k}>{r.label}</option>)}
         </Select>
         {editing.report_role && REPORT_ROLES[editing.report_role] && (
           <span className="field-hint">
-            {REPORT_ROLES[editing.report_role].types.includes(editing.question_type)
+            {REPORT_ROLES[editing.report_role].types.includes(baseType(editing.question_type))
               ? REPORT_ROLES[editing.report_role].hint
               : `${REPORT_ROLES[editing.report_role].label} needs a ${REPORT_ROLES[editing.report_role].types.map((t) => TYPES[t]).join(" or ")} question.`}
           </span>
         )}
       </label>
-      {OPTION_TYPES.includes(editing.question_type) && (
+      {OPTION_TYPES.includes(baseType(editing.question_type)) && (
         <label className="field">
           <span className="field-label">
-            {editing.question_type === "preference"
+            {baseType(editing.question_type) === "preference"
               ? "The two samples (one per line; empty = Sample A and Sample B)"
-              : editing.question_type === "multiple_choice"
+              : baseType(editing.question_type) === "multiple_choice"
               ? "Options (2–10, one per line; customers can tick several)"
               : "Options (2–8, one per line)"}
           </span>
-          <textarea className="input" rows={editing.question_type === "preference" ? 2 : 4} value={editing.options}
-            placeholder={editing.question_type === "preference" ? "Sample A\nSample B" : "Too sweet\nJust right\nNot sweet enough"}
+          <textarea className="input" rows={baseType(editing.question_type) === "preference" ? 2 : 4} value={editing.options}
+            placeholder={baseType(editing.question_type) === "preference" ? "Sample A\nSample B" : "Too sweet\nJust right\nNot sweet enough"}
             onChange={(e) => setEditing({ ...editing, options: e.target.value })} />
         </label>
       )}
@@ -1205,7 +1213,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
                 <div className="question-admin-text">
                   <strong>{q.text}</strong>
                   <span className="question-meta">
-                    <span className={`qtype qtype-${q.question_type}`}>{TYPES[q.question_type] || q.question_type}</span>
+                    <span className={`qtype qtype-${q.question_type}`}>{TYPES[q.type_code] || TYPES[q.question_type] || q.type_code || q.question_type}</span>
                     {!q.required && <span className="qtag">Optional</span>}
                     {snapshot && q.still_asked === false && <span className="qtag">No longer asked</span>}
                     {q.report_role && REPORT_ROLES[q.report_role] && (
@@ -1219,7 +1227,7 @@ export function QuestionsTab({ product, onChanged = () => {}, onNotice, readOnly
                   <button type="button" className="icon-btn" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
                   <button type="button" className="icon-btn" aria-label="Move down" disabled={i === count - 1} onClick={() => move(i, 1)}>↓</button>
                   <button type="button" className="link-btn"
-                    onClick={() => setEditing({ id: q.id, text: q.text, question_type: q.question_type, required: q.required, options: (q.options || []).join("\n"), report_role: q.report_role || "" })}>
+                    onClick={() => setEditing({ id: q.id, text: q.text, question_type: q.type_code && TYPES[q.type_code] ? q.type_code : q.question_type, required: q.required, options: (q.options || []).join("\n"), report_role: q.report_role || "" })}>
                     Edit
                   </button>
                   <button type="button" className="link-btn danger-link" onClick={() => remove(q)}>Remove</button>
@@ -1479,7 +1487,7 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       {/* ---- batch ---- */}
       {!readOnlyBase && locked && !newVersion && (
         <div className="callout org-callout recipe-lock-bar" role="status">
-          <span><strong>Recipe v{extras?.latest_version} is locked:</strong> consumers have responded to it. To change the recipe, add a new version.</span>
+          <span className="lock-icon" aria-hidden="true">🔒</span><span><strong>Recipe v{extras?.latest_version} is locked:</strong> consumers have responded to it. To change the recipe, add a new version.</span>
           <button type="button" className="btn btn-primary btn-sm" onClick={() => {
             setNewVersion(true);
             setEditing({ batch: true, ingredients: true, steps: false });
@@ -1494,10 +1502,10 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
         </div>
       )}
       {newVersion && <RecommendationsPanel productId={product.id} decisions={decisions} onDecide={decide} onApply={applyRecommendation} />}
-      <section className="recipe-card">
+      <section className="recipe-card rc-tone rc-batch">
         <header className="recipe-card-head">
           <div>
-            <h3>Batch size</h3>
+            <h3><SectionIcon name="batch" />Batch size</h3>
             <p className="muted">How much one production batch makes. The ingredient quantities below are for this batch.</p>
           </div>
           {!readOnly && !editing.batch && <button type="button" className="btn btn-secondary btn-sm" onClick={() => edit("batch")}>Edit</button>}
@@ -1514,10 +1522,10 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       </section>
 
       {/* ---- ingredients ---- */}
-      <section className="recipe-card">
+      <section className="recipe-card rc-tone rc-ingredients">
         <header className="recipe-card-head">
           <div>
-            <h3>Ingredients for one batch <span className="count-badge">{recipe.ingredients.filter((i) => i.name.trim()).length}</span></h3>
+            <h3><SectionIcon name="ingredients" />Ingredients for one batch <span className="count-badge">{recipe.ingredients.filter((i) => i.name.trim()).length}</span></h3>
             <p className="muted">What goes into the product, how much, why it's there, and its cost. Cost in Use = Cost per KG × share of the batch (its cost in 1 kg of product).</p>
           </div>
           <div className="recipe-card-actions">
@@ -1643,10 +1651,10 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       {!newVersion && !snapshot && extras?.latest_cost_comparison && (
         <CostComparison productId={product.id} saved={extras.latest_cost_comparison} fromVersion={(extras?.latest_version || 1) - 1} />
       )}
-      <section className="recipe-card">
+      <section className="recipe-card rc-tone rc-process">
         <header className="recipe-card-head">
           <div>
-            <h3>Production process</h3>
+            <h3><SectionIcon name="process" />Production process</h3>
             <p className="muted">Write the process step by step here, attach process files below, or both.</p>
           </div>
         </header>
@@ -1662,10 +1670,10 @@ export function RecipeTab({ product, onNotice, onSaved, readOnly: readOnlyProp =
       <LegacyStepsCard legacy={extras?.legacy_steps} />
 
       {/* ---- notes ---- */}
-      <section className="recipe-card">
+      <section className="recipe-card rc-tone rc-notes">
         <header className="recipe-card-head">
           <div>
-            <h3>Notes</h3>
+            <h3><SectionIcon name="notes" />Notes</h3>
             <p className="muted">Shelf life, storage, allergens, quality checks…</p>
           </div>
         </header>
@@ -1797,10 +1805,10 @@ function RecipeHistory({ productId, canDelete = false, onDeleted, onError }) {
   };
 
   return (
-    <section className="recipe-history" aria-labelledby={`history-${productId}`}>
+    <section className="recipe-history rc-tone rc-history" aria-labelledby={`history-${productId}`}>
       <div className="recipe-history-head">
         <div>
-          <h3 id={`history-${productId}`}>Version history</h3>
+          <h3 id={`history-${productId}`}><SectionIcon name="history" />Version history</h3>
           <p className="muted">
             {versions.length} {versions.length === 1 ? "version" : "versions"} · latest v{versions[0].version} by{" "}
             {versions[0].changed_by_name || "—"} {versions[0].changed_at ? `· ${ago(versions[0].changed_at)}` : ""}

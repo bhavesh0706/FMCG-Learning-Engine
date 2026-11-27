@@ -1,3 +1,4 @@
+import SectionIcon from "./SectionIcon";
 import { useCallback, useEffect, useState } from "react";
 import { downloadAttachment, errorText, listStandards, removeAttachment, removeStandard, uploadAttachment } from "../services/nextApi";
 import StandardRuleForm, { KINDS, ruleCondition } from "./StandardRuleForm";
@@ -15,7 +16,7 @@ export function CostingCard({ costing }) {
   const rows = costing?.ingredients || [];
   if (!rows.length) return null;
   return (
-    <section className="recipe-card" aria-labelledby="costing-title">
+    <section className="recipe-card rc-tone rc-costing" aria-labelledby="costing-title">
       <header className="recipe-card-head">
         <div>
           <h3 id="costing-title">Costing</h3>
@@ -63,7 +64,7 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
   // Rules made for this product only (Super Admin adds, edits and removes them here)
   const [rules, setRules] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState(false); // false, or the rule type to start with
   const loadRules = useCallback(() => {
     if (readOnly || !productId) return;
     listStandards(productId).then((r) => setRules(r.standards || [])).catch(() => {});
@@ -79,10 +80,11 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
   };
   const SCOPE = { product: "This product", category: "Category", all: "All products" };
   return (
-    <section className="recipe-card" aria-labelledby="standards-title">
+    <section className="recipe-card rc-tone rc-standards" aria-labelledby="standards-title">
       <header className="recipe-card-head">
         <div>
-          <h3 id="standards-title">{readOnly ? "Recipe standards" : "Set recipe standards for this product"}</h3>
+          <h3 id="standards-title"><SectionIcon name="standards" />{readOnly ? "Recipe standards" : "Recipe standards for this product"}</h3>
+          <p className="muted">Rules the recipe must meet before it can be saved and surveyed.</p>
         </div>
         {results.length > 0 && (
           <span className={`status-chip ${standards.passed ? "is-ok" : "is-neg"}`}>
@@ -91,8 +93,9 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
         )}
       </header>
       {results.length === 0 ? (
-        null
+        <div className="std-empty"><strong>No standards configured yet</strong><span>Add a rule below: the recipe is then checked against it on every save.</span></div>
       ) : (
+        <>
         <div className="table-wrap">
           <table className="data-table std-table">
             <thead>
@@ -100,7 +103,7 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
             </thead>
             <tbody>
               {results.map((r) => (
-                <tr key={r.rule_id}>
+                <tr key={r.rule_id} className={r.passed ? "std-row-ok" : "std-row-fail"}>
                   <td><strong>{r.name}</strong><span className="cell-sub">{SCOPE[r.scope] || ""}</span></td>
                   <td>{r.expected || "—"}</td>
                   <td>{r.actual || "—"}</td>
@@ -111,9 +114,11 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
             </tbody>
           </table>
         </div>
+        </>
       )}
       {!readOnly && productId && (
         <div className="std-product-rules">
+          <h4 className="std-sub">Configured rules <span className="count-badge">{rules.length}</span></h4>
           <ul className="std-results">
             {rules.map((r) => editing === r.id ? (
               <li key={r.id} className="is-editing"><StandardRuleForm productId={productId} rule={r} onSaved={changed} onCancel={() => setEditing(null)} /></li>
@@ -128,9 +133,10 @@ export function StandardsCard({ standards, productId, readOnly = true, onChanged
             ))}
           </ul>
           {adding ? (
-            <StandardRuleForm productId={productId} onSaved={changed} onCancel={() => setAdding(false)} />
+            <StandardRuleForm key={String(adding)} productId={productId} initialKind={typeof adding === "string" ? adding : null}
+              onSaved={changed} onCancel={() => setAdding(false)} />
           ) : (
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>Add a rule for this product</button>
+            <button type="button" className="btn btn-primary btn-sm std-add" onClick={() => setAdding(true)}>+ Add a rule for this product</button>
           )}
         </div>
       )}
@@ -166,10 +172,10 @@ export function AttachmentsCard({ productId, attachments = [], readOnly, onChang
     }
   };
   return (
-    <section className="recipe-card" aria-labelledby="attach-title">
+    <section className="recipe-card rc-tone rc-attach" aria-labelledby="attach-title">
       <header className="recipe-card-head">
         <div>
-          <h3 id="attach-title">Process attachments <span className="count-badge">{attachments.length}</span></h3>
+          <h3 id="attach-title"><SectionIcon name="attach" />Process attachments <span className="count-badge">{attachments.length}</span></h3>
           <p className="muted">Supporting files for the recipe process: specifications, photos, process sheets (PDF, images, Office files, up to 20 MB).</p>
         </div>
         {!readOnly && (

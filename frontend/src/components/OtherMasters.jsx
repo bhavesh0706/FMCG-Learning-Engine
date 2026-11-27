@@ -43,6 +43,8 @@ function TableDialog({ table, onClose, onSaved }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const sys = Boolean(table?.is_system);
+  // System lists whose new values the app can use (Question type: each works like a built-in type).
+  const addFixed = sys && Boolean(table?.closed_why);
   const save = async () => {
     if (form.name.trim().length < 2) return setError("Enter the table name (at least 2 characters).");
     if (!form.description.trim()) return setError("Enter a description.");
@@ -91,10 +93,15 @@ function TableDialog({ table, onClose, onSaved }) {
               hint={sys ? "Used by the program: always active" : ""} onChange={(v) => setForm({ ...form, is_active: v })} />
             <Permission title="Can Edit" text="Existing values can be changed." checked={form.can_edit}
               onChange={(v) => setForm({ ...form, can_edit: v })} />
-            <Permission title="Add Value" text="New values can be added." checked={form.allow_add} disabled={sys}
-              hint={sys ? "Used by the program: its values are fixed" : ""} onChange={(v) => setForm({ ...form, allow_add: v })} />
+            <Permission title="Add Value" text="New values can be added." checked={form.allow_add} disabled={addFixed}
+              hint={addFixed ? table.closed_why : ""} onChange={(v) => setForm({ ...form, allow_add: v })} />
           </div>
-          {sys && <p className="field-hint">A system table: the program relies on its codes, so it stays active and takes no new values.</p>}
+          {sys && (
+            <p className="field-hint">
+              Built into the app: it always stays active.{" "}
+              {addFixed ? <>New values can't be added: {table.closed_why}</> : "New values can be added: each one works like one of the built-in values."}
+            </p>
+          )}
         </section>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -108,7 +115,9 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
     code: value?.code || "", description: value?.description || "", is_active: value ? value.is_active : true,
     parent_id: value?.parent?.id ? String(value.parent.id) : (parentOptions[0] ? String(parentOptions[0].id) : ""),
     factor: value?.extra?.to_base != null ? String(value.extra.to_base) : "",
+    behaves_like: value?.extra?.behaves_like || "single_choice",
   });
+  const isQuestionType = table.code === "QUESTION_TYPE";
   // A value inside a category with a base unit (Measurement unit: kg / L) is a unit of measure:
   // it has a conversion factor, which every recipe calculation uses.
   const parentOpt = parentOptions.find((p) => String(p.id) === form.parent_id);
@@ -128,6 +137,7 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
           code: form.code.trim(), description: form.description.trim() || null, is_active: form.is_active,
           parent_id: table.parent ? Number(form.parent_id) || null : null,
           ...(base ? { factor: factorNum } : {}),
+          ...(isQuestionType ? { behaves_like: form.behaves_like } : {}),
         }));
     } catch (e) {
       setError(masterError(e, "The value couldn't be saved."));
@@ -172,6 +182,16 @@ function ValueDialog({ table, value, parentOptions, onClose, onSaved }) {
           </div>
         </section>
 
+        {isQuestionType && !value && (
+          <section className="om-section" aria-label="Works like">
+            <h3 className="om-section-title">Works like <span className="req" aria-hidden="true">*</span></h3>
+            <Select className="input" value={form.behaves_like} onChange={(e) => setForm({ ...form, behaves_like: e.target.value })}
+              aria-label="Built-in type it works like">
+              {Object.entries(BUILT_IN_TYPES).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+            </Select>
+            <p className="field-hint">How surveys ask it, what options it needs, and how reports count its answers.</p>
+          </section>
+        )}
         {base && (
           <section className="om-section" aria-label="Conversion">
             <h3 className="om-section-title">Conversion <span className="req" aria-hidden="true">*</span></h3>
@@ -233,7 +253,10 @@ function DeleteTableDialog({ table, onClose, onDeleted }) {
   );
 }
 
-const PAGE_SIZES = [10, 20, 50, 0]; // 0 = all on one page
+const PAGE_SIZES = [10, 20, 50, 0];
+// The six question types the app itself knows how to ask and report (backend BUILT_IN_QUESTION_TYPES).
+const BUILT_IN_TYPES = { rating: "Rating 1–5", yes_no: "Yes / No", single_choice: "Choice (one answer)",
+  multiple_choice: "Multiple choice", preference: "Preference (Sample A vs B)", text: "Text answer" }; // 0 = all on one page
 
 /* The same pager as the Home page's tables (App.jsx Pager, styles .pager). */
 function Pager({ total, page, pages, size, onSize, onPage }) {
@@ -314,9 +337,10 @@ export default function OtherMasters() {
   const current = Math.min(page, pages);
   const pageValues = size ? filtered.slice((current - 1) * size, current * size) : filtered;
   const isUnits = Boolean(detail?.parent_options?.some((p) => p.extra?.base)); // a table of units of measure
-  const addProblem = !t ? "" : !t.is_active ? "This table is inactive." : t.is_system ? "A system table: its values are fixed."
-    : !t.allow_add ? "Add Value is closed for this table." : "";
-  const editProblem = !t ? "" : !t.is_active ? "This table is inactive." : !t.can_edit ? "Can Edit is closed for this table." : "";
+  // What the server allows (api/other_masters.py may_add / may_edit), with its reason.
+  const addProblem = t?.add_problem || "";
+  const editProblem = t?.edit_problem || "";
+  const isQuestionTypes = t?.code === "QUESTION_TYPE";
   const refresh = async (msg) => {
     setNotice(msg || "");
     await Promise.all([loadTables(), loadDetail(selectedId)]);
@@ -413,7 +437,7 @@ export default function OtherMasters() {
                   <p className="om-flags">
                     <span className={`status-chip ${t.is_active ? "is-ok" : "is-neutral"}`}>Active: {t.is_active ? "Yes" : "No"}</span>
                     <span className={`status-chip ${t.can_edit ? "is-ok" : "is-neutral"}`}>Can edit: {t.can_edit ? "Yes" : "No"}</span>
-                    <span className={`status-chip ${t.allow_add && !t.is_system ? "is-ok" : "is-neutral"}`}>Add value: {t.allow_add && !t.is_system ? "Yes" : "No"}</span>
+                    <span className={`status-chip ${!addProblem ? "is-ok" : "is-neutral"}`}>Add value: {!addProblem ? "Yes" : "No"}</span>
                   </p>
                 </div>
                 <div className="catalog-main-actions">
@@ -425,7 +449,11 @@ export default function OtherMasters() {
                   )}
                 </div>
               </div>
-              {addProblem && <p className="field-hint om-why">{addProblem} New values can't be added.</p>}
+              {addProblem && <p className="field-hint om-why">New values can't be added: {addProblem}</p>}
+              {isQuestionTypes && !addProblem && (
+                <p className="field-hint om-why">A new question type works like one of the six built-in types (its answers, options and report),
+                  and appears straight away in the Question type list of every product's survey questions.</p>
+              )}
 
               {allValues.length > 0 && (
                 <div className="table-toolbar">
@@ -450,6 +478,7 @@ export default function OtherMasters() {
                         <th scope="col">Value code</th>
                         <th scope="col">Description</th>
                         {isUnits && <th scope="col">Conversion</th>}
+                        {isQuestionTypes && <th scope="col">Works like</th>}
                         <th scope="col">Status</th>
                         <th scope="col">Last changed</th>
                         <th scope="col"><span className="visually-hidden">Actions</span></th>
@@ -462,13 +491,14 @@ export default function OtherMasters() {
                           {t.parent && <td>{v.parent?.description || "—"}</td>}
                           <td><strong>{v.code}</strong></td>
                           <td>{v.description && v.description !== v.code ? v.description : <span className="muted">—</span>}</td>
+                          {isQuestionTypes && <td>{v.extra?.behaves_like ? (BUILT_IN_TYPES[v.extra.behaves_like] || v.extra.behaves_like) : <span className="muted">Built-in type</span>}</td>}
                           {isUnits && <td>{v.extra?.to_base != null ? `1 ${v.code} = ${Number(v.extra.to_base).toLocaleString(undefined, { maximumSignificantDigits: 12 })} ${v.extra.base || ""}` : "—"}</td>}
                           <td><span className={`status-chip ${v.is_active ? "is-ok" : "is-neutral"}`}>{v.is_active ? "Active" : "Inactive"}</span></td>
                           <td className="muted small">{fmt(v.mod_at || v.created_at)}{(v.mod_by || v.created_by) ? ` · ${v.mod_by || v.created_by}` : ""}</td>
                           <td className="om-row-actions">
                             <button type="button" className="link-btn" disabled={Boolean(editProblem)} title={editProblem}
                               onClick={() => setDialog({ type: "value", value: v })}>Edit</button>
-                            {!t.is_system && (
+                            {(!t.is_system || (isQuestionTypes && v.extra?.behaves_like)) && (
                               <button type="button" className="link-btn" disabled={Boolean(editProblem)} title={editProblem}
                                 onClick={() => toggleValue(v)}>{v.is_active ? "Deactivate" : "Activate"}</button>
                             )}

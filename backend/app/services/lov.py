@@ -128,7 +128,7 @@ def seed_lov() -> int:
             if master is None:
                 # System lists: the program uses their codes, so no values are added (Add Value off).
                 master = OtherMasterName(master_code=code, master_name=name, is_system=is_system,
-                                         allow_add=0 if is_system else 1)
+                                         allow_add=1 if (not is_system or code in EXTENSIBLE_SYSTEM) else 0)
                 db.add(master)
                 db.flush()
                 added += 1
@@ -244,3 +244,28 @@ def _seed_geo(db) -> int:
             for k, (city, city_aliases) in enumerate(sorted(city_entries(cities))):
                 ensure(masters["CITY"], f"{state_code}/{city}", city, city_aliases, state, k)
     return added
+
+# System lists that may still take new values: each new value behaves like one of the built-in
+# codes (extra.behaves_like), so the program knows what to do with it.
+EXTENSIBLE_SYSTEM = {"QUESTION_TYPE"}
+BUILT_IN_QUESTION_TYPES = ("rating", "yes_no", "single_choice", "multiple_choice", "preference", "text")
+
+
+def resolve_question_type(code) -> tuple:
+    """(built-in type, Master code or None) for a question type chosen in a form. A built-in code
+    is itself; a type added in Master resolves to the built-in type it behaves like. Unknown or
+    inactive codes raise ValueError."""
+    code = str(code or "text").strip()
+    if code in BUILT_IN_QUESTION_TYPES:
+        return code, None
+    db = SessionLocal()
+    try:
+        master = db.query(OtherMasterName).filter(OtherMasterName.master_code == "QUESTION_TYPE").first()
+        row = (db.query(OtherMasterData).filter(OtherMasterData.master_id == master.id, OtherMasterData.data_code == code,
+                                                OtherMasterData.is_active == 1).first() if master else None)
+    finally:
+        db.close()
+    base = ((row.extra or {}).get("behaves_like") if row else None)
+    if base not in BUILT_IN_QUESTION_TYPES:
+        raise ValueError(f"“{code}” isn't an active question type (Master > Question type).")
+    return base, code

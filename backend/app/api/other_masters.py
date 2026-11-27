@@ -55,6 +55,9 @@ def _table_out(m: OtherMasterName, counts: dict, parents: dict, names: dict) -> 
     return {
         "id": m.id, "code": m.master_code, "name": m.master_name, "description": m.description,
         "is_active": bool(m.is_active), "can_edit": bool(m.can_edit), "allow_add": bool(m.allow_add),
+        "closed_why": CLOSED_WHY.get(m.master_code),  # why a system list takes no new values
+        # The server's own verdicts (None = allowed): the page shows these, never its own rules.
+        "add_problem": may_add(m), "edit_problem": may_edit(m),
         "is_system": bool(m.is_system),
         "built_in": bool(m.is_system) or m.master_code in built_in_codes(),
         "parent": {"id": parent.id, "name": parent.master_name} if parent else None,
@@ -226,6 +229,8 @@ class ValueIn(BaseModel):
     parent_id: Optional[int] = None
     # Units of measure: how many of the category's base unit one of this unit is (1 g = 0.001 kg).
     factor: Optional[float] = Field(default=None, gt=0)
+    # Question type: the built-in type a new type works like (its answers, options and report).
+    behaves_like: Optional[str] = Field(default=None, max_length=30)
 
 
 class ValuePatch(BaseModel):
@@ -235,14 +240,30 @@ class ValuePatch(BaseModel):
     sort_order: Optional[int] = Field(default=None, ge=0, le=10000)
 
 
+# Why each system list takes no new values (shown on the Master page).
+CLOSED_WHY = {
+    "RATING_SCALE": "Ratings are always 1 to 5: averages and reports are built on that scale. Labels can be renamed.",
+    "SENTIMENT": "Sentiments are produced by the AI analysis, so a new one would never be used. Labels can be renamed.",
+    "SEVERITY": "Severities are produced by the AI analysis, so a new one would never be used. Labels can be renamed.",
+    "SURVEY_STATUS": "Survey statuses are set by the app as a survey moves along. Labels can be renamed.",
+    "PRODUCT_STATE": "Product states are worked out by the app from its surveys. Labels can be renamed.",
+    "USER_ROLE": "Each role carries its own permissions in the app. Labels can be renamed.",
+    "REPORT_BREAKDOWN": "Each breakdown reads one field of the respondent. Labels can be renamed.",
+    "REPORT_ROLE": "Each role fills one section of the report. Labels can be renamed.",
+    "UNIT_CATEGORY": "Units are grouped in exactly two categories: Weight/Mass and Volume. Add units in Measurement unit.",
+}
+
+
 def may_add(m: OtherMasterName) -> Optional[str]:
     """Why no value may be added to this table now (None = it may)."""
     if not m.is_active:
         return f"“{m.master_name}” is inactive: make it active to add values."
-    if m.is_system:
-        return f"{m.master_name} is used by the program: values can be renamed, not added."
+    from app.services.lov import EXTENSIBLE_SYSTEM
+
+    if m.is_system and m.master_code not in EXTENSIBLE_SYSTEM:
+        return CLOSED_WHY.get(m.master_code, f"{m.master_name} is used by the program: values can be renamed, not added.")
     if not m.allow_add:
-        return f"Adding values to “{m.master_name}” is closed (Add Value is off)."
+        return CLOSED_WHY.get(m.master_code) or f"Adding values to “{m.master_name}” is closed (Add Value is off)."
     return None
 
 
@@ -279,6 +300,12 @@ def add_value(table_id: int, body: ValueIn, request: Request, db: Session = Depe
         if body.factor is None:
             raise HTTPException(status_code=422, detail=f"Give the conversion factor: 1 {code} = how many {base}?")
         extra = {"to_base": body.factor, "base": base}
+    if m.master_code == "QUESTION_TYPE":
+        from app.services.lov import BUILT_IN_QUESTION_TYPES
+
+        if body.behaves_like not in BUILT_IN_QUESTION_TYPES:
+            raise HTTPException(status_code=422, detail="Choose which built-in type this question type works like.")
+        extra = {"behaves_like": body.behaves_like}
     rows = db.query(OtherMasterData).filter(OtherMasterData.master_id == m.id).all()
     if any(r.data_code.lower() == code.lower() for r in rows):
         raise HTTPException(status_code=409, detail=f"The value code “{code}” is already in “{m.master_name}”.")
@@ -302,7 +329,10 @@ def change_value(value_id: int, body: ValuePatch, request: Request, db: Session 
     problem = may_edit(m)
     if problem:
         raise HTTPException(status_code=409, detail=problem)
-    if body.is_active is False and m.is_system:
+    from app.services.lov import BUILT_IN_QUESTION_TYPES
+
+    added_later = m.master_code == "QUESTION_TYPE" and v.data_code not in BUILT_IN_QUESTION_TYPES
+    if body.is_active is False and m.is_system and not added_later:
         raise HTTPException(status_code=409, detail=f"{m.master_name} is used by the program: its values can't be made inactive.")
     if body.description is not None:
         v.data_value = _clean(body.description) or v.data_code

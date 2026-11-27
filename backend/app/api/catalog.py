@@ -127,12 +127,25 @@ ReportRole = Literal["preference", "price", "score", "improvement", "purchase_in
 
 class QuestionIn(BaseModel):
     text: str = Field(min_length=5, max_length=500)
-    question_type: QuestionType = "text"
+    # A built-in type, or a type added in Master > Question type (resolved below to the built-in
+    # type it behaves like; the chosen code is kept in type_code).
+    question_type: str = Field(default="text", max_length=80)
+    type_code: Optional[str] = None
     options: Optional[List[str]] = None
     required: bool = True
     report_role: Optional[ReportRole] = None
 
     _clean_text = field_validator("text", mode="before")(_clean)
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_type(cls, data):
+        if isinstance(data, dict) and data.get("question_type"):
+            from app.services.lov import resolve_question_type
+
+            base, code = resolve_question_type(data["question_type"])
+            data = {**data, "question_type": base, "type_code": code}
+        return data
 
     @model_validator(mode="after")
     def check_options(self):
@@ -161,7 +174,7 @@ class QuestionIn(BaseModel):
 
 class QuestionUpdate(QuestionIn):
     text: Optional[str] = Field(default=None, min_length=5, max_length=500)
-    question_type: Optional[QuestionType] = None
+    question_type: Optional[str] = Field(default=None, max_length=80)
     required: Optional[bool] = None
     is_active: Optional[bool] = None
 
@@ -201,6 +214,7 @@ def _question_out(q: SurveyQuestion) -> dict:
         "position": q.position,
         "text": q.text,
         "question_type": q.question_type,
+        "type_code": getattr(q, "type_code", None),  # a Master question type (behaving like question_type)
         "options": q.options,
         "required": bool(q.required),
         "is_active": bool(q.is_active),
@@ -604,7 +618,7 @@ def question_dicts(questions) -> List[dict]:
     out = []
     for i, q in enumerate(questions or [], start=1):
         data = q if isinstance(q, dict) else {
-            "text": q.text, "question_type": q.question_type, "options": q.options,
+            "text": q.text, "question_type": getattr(q, "type_code", None) or q.question_type, "options": q.options,
             "required": bool(q.required), "report_role": getattr(q, "report_role", None),
         }
         try:
@@ -871,6 +885,7 @@ def add_question(product_id: int, body: QuestionIn, request: Request, db: Sessio
         position=len(existing) + 1,
         text=body.text,
         question_type=body.question_type,
+        type_code=body.type_code,
         options=body.options,
         required=1 if body.required else 0,
         report_role=body.report_role,
@@ -897,7 +912,7 @@ def update_question(question_id: int, body: QuestionUpdate, request: Request, db
     try:
         final = QuestionIn(
             text=data.get("text") or question.text,
-            question_type=data.get("question_type") or question.question_type,
+            question_type=data.get("question_type") or getattr(question, "type_code", None) or question.question_type,
             options=data["options"] if "options" in data else question.options,
             required=data["required"] if data.get("required") is not None else bool(question.required),
             report_role=data["report_role"] if "report_role" in data else getattr(question, "report_role", None),
@@ -907,6 +922,7 @@ def update_question(question_id: int, body: QuestionUpdate, request: Request, db
         raise HTTPException(status_code=422, detail=message)
     question.text = final.text
     question.question_type = final.question_type
+    question.type_code = final.type_code
     question.options = final.options
     question.required = 1 if final.required else 0
     question.report_role = final.report_role

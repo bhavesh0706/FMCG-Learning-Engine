@@ -383,7 +383,8 @@ void main() {
       await SurveyQueue.process();
       final s = SurveyQueue.items.value.single;
       expect(s.status, SurveyStatus.waiting);
-      expect(s.error, contains('Sign in again'));
+      // The app renews the sign-in by itself (refresh token) and uploads afterwards.
+      expect(s.error, contains('Renewing the sign-in'));
     });
 
     test('nothing is uploaded during an offline session (no server token)', () async {
